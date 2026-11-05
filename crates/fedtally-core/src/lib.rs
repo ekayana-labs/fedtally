@@ -8,6 +8,7 @@ pub mod log;
 pub mod model;
 pub mod plan;
 pub mod record;
+pub mod replay;
 pub mod vector;
 
 pub use pq_ucan;
