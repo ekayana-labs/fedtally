@@ -174,6 +174,48 @@ Sampling costs one hash per site of the task, about 155 CU each. At 1024
 sites `commit_root` fits the default limit of 200,000 CU with little to
 spare, so a client should ask for more.
 
+## Anchoring a run
+
+`fedtally anchor` sends these transactions for one party, from the crate
+[`fedtally-chain`](../crates/fedtally-chain). It runs beside the party's node
+and follows the log that node keeps. Each step it reads the task, the rounds
+and its own accounts, works out the one transaction that is due, sends it and
+waits for it to be confirmed. It keeps nothing about the ledger between
+steps, so it can be stopped and started at any point.
+
+| Role | Sends |
+| --- | --- |
+| `publisher` | `publish` with the plan's terms and the stakes given, and `withdraw` once the task is over. |
+| `aggregator` | `back`, then per round `open_round`, `commit_root` and `post_aggregate` as the log reaches them, and `settle` after every ack and the window. `abort` if the log was aborted, and `withdraw` at the end. |
+| `site` | `enroll` with the digest of its Join record. `ack` for a round it acknowledged in its own log, and only while the ledger holds that round's roots. `claim` for each final round, and `withdraw` at the end. |
+| `watcher` | Nothing while rounds add up. It is not in the plan, so the aggregator has to name it with `--watcher`. It fetches each round's vectors, checks them against the ledger's roots and adds them up. For a wrong leaf it sends `buffer_init`, `dispute_open`, then `buffer_write` and `dispute_leaf` for every part, and `dispute_close`. It also sends `revoke_check` for a site the log has revoked. |
+
+A site that finds other roots on the ledger than in its log does not
+acknowledge, and says so. A watcher says so too, and still disputes if the
+aggregator serves vectors that match what it posted.
+
+A watcher can only prove what it can fetch. The aggregator serves a round's
+vectors while the round is under way, and afterwards only if it keeps its
+spool. A status list is found on the ledger under its issuer's wallet and
+the first four bytes of the digest of the list's id.
+
+```console
+fedtally anchor --role publisher --rpc $RPC --program $ID --key sponsor.key --plan plan.json \
+    --stakes 1000000000 5000000000 300000000 1000000000 150 1500
+fedtally anchor --role aggregator --rpc $RPC --program $ID --key aggregator.key --plan plan.json --dir aggregator
+fedtally anchor --role site --rpc $RPC --program $ID --key site.key --plan plan.json --dir site
+fedtally anchor --role watcher --rpc $RPC --program $ID --key watcher.key --plan plan.json --dir watcher \
+    --connect aggregator.example:7443
+```
+
+[`program/tests/anchored.rs`](program/tests/anchored.rs) mirrors a real run
+into LiteSVM by hand. The same run against a local validator, with every
+role and a dishonest aggregator, is an ignored test of `fedtally-chain`:
+
+```console
+cargo test -p fedtally-chain --test validator -- --ignored --nocapture
+```
+
 ## What it does not do
 
 - Rewards and stakes are lamports. There are no token rewards.
@@ -188,10 +230,6 @@ spare, so a client should ask for more.
   chain side decides whether they are the right ones.
 - Sites are not slashed. A site's stake is only held and returned.
 - The program ID is a placeholder, as said above.
-- The fedtally nodes don't send these transactions themselves yet.
-  [`program/tests/anchored.rs`](program/tests/anchored.rs) runs a real
-  federation, mirrors its log here with the parties' own keys, and settles a
-  dispute on the vectors the run left on disk.
 
 ## License
 
