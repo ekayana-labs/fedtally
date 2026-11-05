@@ -5,6 +5,7 @@ pub mod admission;
 pub mod field;
 pub mod keys;
 pub mod log;
+pub mod merkle;
 pub mod model;
 pub mod plan;
 pub mod record;

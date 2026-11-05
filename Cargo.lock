@@ -815,6 +815,7 @@ dependencies = [
  "rayon",
  "serde",
  "serde_json",
+ "sha2",
  "tempfile",
  "thiserror",
  "x25519-dalek",
