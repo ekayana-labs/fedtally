@@ -53,6 +53,10 @@ pub struct AggregatorConfig {
     /// Where the newest revocation lists are kept, if the plan has a policy.
     /// Any the log lacks are added before each round opens.
     pub status_dir: Option<PathBuf>,
+    /// Parties outside the plan that may follow the log and read the vectors
+    /// of a round once its outcome is in the log. Only a spool that is kept
+    /// stays readable after its round.
+    pub watchers: Vec<String>,
 }
 
 struct Upload {
@@ -105,6 +109,7 @@ struct Shared {
     hook: Option<Hook>,
     keep_spool: bool,
     status_dir: Option<PathBuf>,
+    watchers: Vec<String>,
 }
 
 impl Shared {
@@ -232,6 +237,7 @@ pub async fn run_aggregator(config: AggregatorConfig) -> Result<Replay, NodeErro
         hook: config.hook,
         keep_spool: config.keep_spool,
         status_dir: config.status_dir,
+        watchers: config.watchers,
     });
     recover_uploads(&shared).await?;
 
@@ -339,6 +345,7 @@ async fn serve(shared: Arc<Shared>, listener: Listener) {
 enum Role {
     Site(u32),
     Helper(u32),
+    Watcher,
 }
 
 async fn serve_peer<S>(
@@ -354,6 +361,8 @@ where
         Role::Site(i as u32)
     } else if let Some(i) = shared.plan.helper_index(&did) {
         Role::Helper(i as u32)
+    } else if shared.watchers.contains(&did) {
+        Role::Watcher
     } else {
         return Err(NodeError::Refused(format!("{did} is not in the plan")));
     };
@@ -556,6 +565,9 @@ async fn reply(data: &mpsc::Sender<Msg>, msg: Msg) -> Result<(), NodeError> {
 }
 
 fn readable(shared: &Shared, role: Role, object: Object) -> bool {
+    if role == Role::Watcher {
+        return watchable(shared, object);
+    }
     match object {
         Object::Aggregate { .. } | Object::Model { .. } | Object::InitialModel => true,
         // A masked vector is noise to a site, so it's safe to audit, but only the
@@ -584,6 +596,22 @@ fn readable(shared: &Shared, role: Role, object: Object) -> bool {
         }
         Object::Mask { .. } => false,
     }
+}
+
+/// A watcher holds no seeds, so the masked vectors and the mask totals of a
+/// round tell it the aggregate and nothing more.
+fn watchable(shared: &Shared, object: Object) -> bool {
+    let round = match object {
+        Object::Upload { round, .. } | Object::Mask { round, .. } | Object::Aggregate { round } => {
+            round
+        }
+        Object::Model { .. } | Object::InitialModel => return true,
+    };
+    let state = shared.lock();
+    let known = round.checked_sub(1).map(|i| i as usize);
+    known
+        .and_then(|i| state.replay.rounds.get(i))
+        .is_some_and(|r| r.outcome.is_some())
 }
 
 fn write_atomic(path: &Path, data: &[u8]) -> Result<(), NodeError> {
@@ -644,6 +672,9 @@ fn try_append(
     let record = Record::parse(line)?;
     if record.signer != did {
         return Err(NodeError::Protocol("record signed by another party".into()));
+    }
+    if role == Role::Watcher {
+        return Err(NodeError::Refused("a watcher only reads".into()));
     }
     let mut state = shared.lock();
     match &record.body {
@@ -896,7 +927,10 @@ async fn manifest_for(
     }
     let shape = shared.shape;
     let manifest = blocking(move || Ok(vector::manifest_of(&path, shape)?)).await?;
-    shared.lock().manifests.insert(object, manifest.clone());
+    // A watcher is told what the disk holds now, so nothing is kept for it.
+    if role != Role::Watcher {
+        shared.lock().manifests.insert(object, manifest.clone());
+    }
     Ok(Some(manifest))
 }
 

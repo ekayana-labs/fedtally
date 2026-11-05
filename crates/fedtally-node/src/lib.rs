@@ -6,6 +6,7 @@ mod follower;
 pub mod helper;
 pub mod local;
 pub mod net;
+pub mod observer;
 pub mod registry;
 pub mod site;
 pub mod wire;

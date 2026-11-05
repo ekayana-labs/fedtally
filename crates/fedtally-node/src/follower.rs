@@ -280,8 +280,18 @@ impl Follower {
         root: Digest,
         out: &Path,
     ) -> Result<(), NodeError> {
-        let manifest = self.fetch_manifest(client, object, root).await?;
-        let shape = self.shape();
+        Follower::fetch(client, self.shape(), object, root, out).await
+    }
+
+    /// As `fetch_vector`, for a reader that keeps no replica of the log.
+    pub async fn fetch(
+        client: &mut Client,
+        shape: Shape,
+        object: Object,
+        root: Digest,
+        out: &Path,
+    ) -> Result<(), NodeError> {
+        let manifest = Follower::fetch_manifest(client, shape, object, root).await?;
         let file = Arc::new(
             OpenOptions::new()
                 .create(true)
@@ -291,7 +301,7 @@ impl Follower {
         );
         file.set_len(shape.coords * 8)?;
         let target = file.clone();
-        self.fetch_chunks(client, object, manifest, move |chunk, data| {
+        Follower::fetch_chunks(client, shape, object, manifest, move |chunk, data| {
             Ok(vector::write_chunk_bytes(&target, shape, chunk, data)?)
         })
         .await?;
@@ -308,11 +318,12 @@ impl Follower {
         root: Digest,
         rho: Fp2,
     ) -> Result<Fp2, NodeError> {
-        let manifest = self.fetch_manifest(client, object, root).await?;
-        let prints = vector::Fingerprinter::new(self.shape(), rho);
+        let shape = self.shape();
+        let manifest = Follower::fetch_manifest(client, shape, object, root).await?;
+        let prints = vector::Fingerprinter::new(shape, rho);
         let total = Arc::new(Mutex::new(Fp2::ZERO));
         let sum = total.clone();
-        self.fetch_chunks(client, object, manifest, move |chunk, data| {
+        Follower::fetch_chunks(client, shape, object, manifest, move |chunk, data| {
             let term = prints.chunk_bytes(chunk, data);
             let mut sum = sum.lock().unwrap_or_else(PoisonError::into_inner);
             *sum = *sum + term;
@@ -324,8 +335,8 @@ impl Follower {
     }
 
     async fn fetch_manifest(
-        &self,
         client: &mut Client,
+        shape: Shape,
         object: Object,
         root: Digest,
     ) -> Result<Manifest, NodeError> {
@@ -343,7 +354,7 @@ impl Follower {
         };
         if manifest.root != root
             || Manifest::root_of(&manifest.chunks) != root
-            || manifest.chunks.len() as u64 != self.shape().chunks()
+            || manifest.chunks.len() as u64 != shape.chunks()
         {
             return Err(NodeError::Check(format!(
                 "{object:?} has the wrong manifest"
@@ -354,13 +365,12 @@ impl Follower {
 
     /// Asks for every chunk and hands each to `store` once it matches the manifest.
     async fn fetch_chunks(
-        &self,
         client: &mut Client,
+        shape: Shape,
         object: Object,
         manifest: Manifest,
         store: impl Fn(u64, &[u8]) -> Result<(), NodeError> + Send + Sync + 'static,
     ) -> Result<(), NodeError> {
-        let shape = self.shape();
         let store = Arc::new(store);
         let total = shape.chunks();
         let mut arrived = Arrivals::new(total);

@@ -447,6 +447,7 @@ async fn run(command: Command) -> Result<ExitCode, Failure> {
                 on_ready: Some(Box::new(|addr| println!("listening on {addr}"))),
                 keep_spool,
                 status_dir,
+                watchers: Vec::new(),
             })
             .await?;
             println!("final model {}", replay.model);

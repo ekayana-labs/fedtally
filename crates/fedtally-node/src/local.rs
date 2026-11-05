@@ -603,6 +603,7 @@ impl LocalFederation {
             on_ready: None,
             keep_spool: false,
             status_dir: self.issuers.as_ref().map(|_| self.status_dir()),
+            watchers: Vec::new(),
         }
     }
 
