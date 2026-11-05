@@ -16,13 +16,16 @@ use rayon::prelude::*;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use crate::field::{Fp, Fp2, P};
+use crate::merkle;
 
 #[cfg(target_endian = "big")]
 compile_error!("the vector format is little-endian and is read without conversion");
 
 const WORD: usize = size_of::<u64>();
+/// Coordinates in one Merkle leaf.
+pub const LEAF_COORDS: u64 = (merkle::LEAF_BYTES / WORD) as u64;
 
-/// A 32 byte BLAKE3 digest, shown as hex.
+/// A 32 byte digest, shown as hex.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
 pub struct Digest(pub [u8; 32]);
 
@@ -95,9 +98,129 @@ impl Shape {
     fn offset(&self, chunk: u64) -> u64 {
         chunk * self.chunk_coords * WORD as u64
     }
+
+    pub fn leaves(&self) -> u64 {
+        self.coords.div_ceil(LEAF_COORDS)
+    }
+
+    /// True when every chunk is a whole power-of-two number of leaves. The
+    /// root is then the plain RFC 6962 tree over the vector's leaves, and a
+    /// single leaf can be proven against it.
+    pub fn aligned(&self) -> bool {
+        self.chunk_coords.is_multiple_of(LEAF_COORDS)
+            && (self.chunk_coords / LEAF_COORDS).is_power_of_two()
+    }
 }
 
-/// Chunk digests and the root that commits to them.
+/// One leaf of a vector, with the hashes that tie it to the vector's root.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LeafProof {
+    pub index: u64,
+    pub values: Vec<u64>,
+    pub path: Vec<merkle::Hash>,
+}
+
+impl LeafProof {
+    /// True when this is leaf `index` of the vector with that root and shape.
+    pub fn fits(&self, root: &Digest, shape: Shape) -> bool {
+        let (start, end) = leaf_range(shape, self.index);
+        self.index < shape.leaves()
+            && self.values.len() as u64 == end - start
+            && merkle::climb(
+                merkle::leaf(bytemuck::cast_slice(&self.values)),
+                self.index,
+                shape.leaves(),
+                &self.path,
+            ) == Some(root.0)
+    }
+}
+
+fn leaf_range(shape: Shape, leaf: u64) -> (u64, u64) {
+    let start = leaf * LEAF_COORDS;
+    (start, (start + LEAF_COORDS).min(shape.coords))
+}
+
+fn unaligned() -> io::Error {
+    io::Error::new(
+        io::ErrorKind::InvalidInput,
+        "single leaves can only be proven when chunks are 128 * 2^k coordinates",
+    )
+}
+
+/// Proves leaf `leaf` of the vector at `path`, whose chunk digests are `manifest`.
+pub fn prove_leaf(
+    path: &Path,
+    shape: Shape,
+    manifest: &Manifest,
+    leaf: u64,
+) -> io::Result<LeafProof> {
+    if !shape.aligned() || leaf >= shape.leaves() {
+        return Err(unaligned());
+    }
+    let per_chunk = shape.chunk_coords / LEAF_COORDS;
+    let (chunk, within) = (leaf / per_chunk, (leaf % per_chunk) as usize);
+    let mut data = Vec::new();
+    read_chunk(&File::open(path)?, shape, chunk, &mut data)?;
+    let leaves: Vec<merkle::Hash> = bytemuck::cast_slice::<u64, u8>(&data)
+        .chunks(merkle::LEAF_BYTES)
+        .map(merkle::leaf)
+        .collect();
+    let mut hashes = merkle::path(leaves, within);
+    let chunk_roots = manifest.chunks.iter().map(|c| c.0).collect();
+    hashes.extend(merkle::path(chunk_roots, chunk as usize));
+    let from = within * LEAF_COORDS as usize;
+    let to = (from + LEAF_COORDS as usize).min(data.len());
+    Ok(LeafProof {
+        index: leaf,
+        values: data[from..to].to_vec(),
+        path: hashes,
+    })
+}
+
+/// The first leaf where `aggregate` is not the sum of `add` minus the sum of
+/// `sub`, if there is one.
+pub fn first_wrong_leaf(
+    shape: Shape,
+    add: &[&Path],
+    sub: &[&Path],
+    aggregate: &Path,
+) -> io::Result<Option<u64>> {
+    if !shape.aligned() {
+        return Err(unaligned());
+    }
+    let open =
+        |paths: &[&Path]| -> io::Result<Vec<File>> { paths.iter().map(File::open).collect() };
+    let (add, sub, aggregate) = (open(add)?, open(sub)?, File::open(aggregate)?);
+    let per_chunk = shape.chunk_coords / LEAF_COORDS;
+    let wrong: io::Result<Vec<Option<u64>>> = (0..shape.chunks())
+        .into_par_iter()
+        .map(|chunk| {
+            SCRATCH.with_borrow_mut(|(buf, scratch)| {
+                buf.clear();
+                buf.resize(shape.chunk_bytes(chunk) / WORD, 0);
+                for (files, negate) in [(&add, false), (&sub, true)] {
+                    for file in files {
+                        read_chunk(file, shape, chunk, scratch)?;
+                        for (acc, v) in buf.iter_mut().zip(scratch.iter()) {
+                            let v = Fp::new(*v);
+                            *acc = (Fp::new(*acc) + if negate { -v } else { v }).value();
+                        }
+                    }
+                }
+                read_chunk(&aggregate, shape, chunk, scratch)?;
+                let differs = buf
+                    .iter()
+                    .zip(scratch.iter())
+                    .position(|(sum, stated)| Fp::new(*sum) != Fp::new(*stated));
+                Ok(differs.map(|at| chunk * per_chunk + at as u64 / LEAF_COORDS))
+            })
+        })
+        .collect();
+    Ok(wrong?.into_iter().flatten().min())
+}
+
+/// Chunk digests and the root that commits to them. Each chunk digest is the
+/// Merkle root of that chunk, and the root is the tree over all of them.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Manifest {
     pub root: Digest,
@@ -113,17 +236,18 @@ impl Manifest {
     }
 
     pub fn root_of(chunks: &[Digest]) -> Digest {
-        let mut hasher = blake3::Hasher::new_derive_key("fedtally v1 manifest");
-        hasher.update(&(chunks.len() as u64).to_le_bytes());
-        for chunk in chunks {
-            hasher.update(&chunk.0);
-        }
-        Digest(*hasher.finalize().as_bytes())
+        Digest(merkle::root(chunks.iter().map(|c| c.0).collect()))
     }
 }
 
 pub fn digest_chunk(data: &[u64]) -> Digest {
-    Digest::of(bytemuck::cast_slice(data))
+    digest_chunk_bytes(bytemuck::cast_slice(data))
+}
+
+pub fn digest_chunk_bytes(bytes: &[u8]) -> Digest {
+    Digest(merkle::root(
+        bytes.chunks(merkle::LEAF_BYTES).map(merkle::leaf).collect(),
+    ))
 }
 
 pub fn read_chunk(file: &File, shape: Shape, chunk: u64, buf: &mut Vec<u64>) -> io::Result<()> {
@@ -430,6 +554,142 @@ mod tests {
         assert_eq!(buf, replacement);
         read_chunk(&file, shape, 0, &mut buf).unwrap();
         assert_eq!(buf, vec![1u64; 64]);
+    }
+
+    #[test]
+    fn the_root_is_the_rfc_6962_tree_over_one_kib_leaves() {
+        let dir = tempfile::tempdir().unwrap();
+        let values: Vec<u64> = (0..1500u64).map(|i| i * 7 + 1).collect();
+        let bytes: &[u8] = bytemuck::cast_slice(&values);
+        let whole = merkle::root(bytes.chunks(merkle::LEAF_BYTES).map(merkle::leaf).collect());
+        for chunk_coords in [128, 256, 512, 2048] {
+            let shape = Shape {
+                coords: 1500,
+                chunk_coords,
+            };
+            let manifest = write(&dir.path().join("v"), shape, &values);
+            assert_eq!(manifest.root.0, whole, "chunks of {chunk_coords}");
+        }
+    }
+
+    #[test]
+    fn every_leaf_can_be_proven_against_the_root_and_only_in_its_place() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("v");
+        for (coords, chunk_coords) in [
+            (1, 128),
+            (128, 128),
+            (129, 128),
+            (1500, 256),
+            (5000, 1024),
+            (4096, 512),
+        ] {
+            let shape = Shape {
+                coords,
+                chunk_coords,
+            };
+            assert!(shape.aligned());
+            let values: Vec<u64> = (0..coords).map(|i| i * 31 + 5).collect();
+            let manifest = write(&path, shape, &values);
+            let whole: Vec<merkle::Hash> = bytemuck::cast_slice::<u64, u8>(&values)
+                .chunks(merkle::LEAF_BYTES)
+                .map(merkle::leaf)
+                .collect();
+            assert_eq!(shape.leaves() as usize, whole.len());
+            for leaf in 0..shape.leaves() {
+                let proof = prove_leaf(&path, shape, &manifest, leaf).unwrap();
+                assert!(
+                    proof.fits(&manifest.root, shape),
+                    "{coords}/{chunk_coords} leaf {leaf}"
+                );
+                assert_eq!(proof.path, merkle::path(whole.clone(), leaf as usize));
+                let (start, end) = leaf_range(shape, leaf);
+                assert_eq!(proof.values, values[start as usize..end as usize]);
+
+                let mut moved = proof.clone();
+                moved.index = (leaf + 1) % shape.leaves();
+                assert!(shape.leaves() == 1 || !moved.fits(&manifest.root, shape));
+                let mut edited = proof.clone();
+                edited.values[0] ^= 1;
+                assert!(!edited.fits(&manifest.root, shape));
+                let mut short = proof.clone();
+                short.values.pop();
+                assert!(!short.fits(&manifest.root, shape));
+            }
+            assert!(prove_leaf(&path, shape, &manifest, shape.leaves()).is_err());
+        }
+    }
+
+    #[test]
+    fn leaves_are_only_proven_for_aligned_shapes() {
+        for (chunk_coords, aligned) in [
+            (128, true),
+            (256, true),
+            (1 << 19, true),
+            (64, false),
+            (384, false),
+            (130, false),
+        ] {
+            let shape = Shape {
+                coords: 10_000,
+                chunk_coords,
+            };
+            assert_eq!(shape.aligned(), aligned, "{chunk_coords}");
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("v");
+        let shape = Shape {
+            coords: 500,
+            chunk_coords: 100,
+        };
+        let manifest = write(&path, shape, &vec![1; 500]);
+        assert!(prove_leaf(&path, shape, &manifest, 0).is_err());
+        assert!(first_wrong_leaf(shape, &[&path], &[], &path).is_err());
+    }
+
+    #[test]
+    fn a_wrong_sum_is_traced_to_its_first_leaf() {
+        let dir = tempfile::tempdir().unwrap();
+        let shape = Shape {
+            coords: 3000,
+            chunk_coords: 512,
+        };
+        let at = |name: &str| dir.path().join(name);
+        let (a, b, m, sum) = (at("a"), at("b"), at("m"), at("sum"));
+        write(&a, shape, &(0..3000).map(|i| P - 1 - i).collect::<Vec<_>>());
+        write(&b, shape, &(0..3000).map(|i| i * 7).collect::<Vec<_>>());
+        write(&m, shape, &(0..3000).map(|i| i + 9).collect::<Vec<_>>());
+        combine(&sum, shape, &[&a, &b], &[&m]).unwrap();
+        assert_eq!(
+            first_wrong_leaf(shape, &[&a, &b], &[&m], &sum).unwrap(),
+            None
+        );
+
+        for (coordinate, leaf) in [(0u64, 0u64), (127, 0), (128, 1), (1700, 13), (2999, 23)] {
+            let wrong = at("wrong");
+            std::fs::copy(&sum, &wrong).unwrap();
+            let file = OpenOptions::new()
+                .read(true)
+                .write(true)
+                .open(&wrong)
+                .unwrap();
+            let chunk = coordinate / 512;
+            let mut buf = Vec::new();
+            read_chunk(&file, shape, chunk, &mut buf).unwrap();
+            let slot = (coordinate % 512) as usize;
+            buf[slot] = (Fp::new(buf[slot]) + Fp::ONE).value();
+            write_chunk_bytes(&file, shape, chunk, chunk_bytes(&buf)).unwrap();
+            assert_eq!(
+                first_wrong_leaf(shape, &[&a, &b], &[&m], &wrong).unwrap(),
+                Some(leaf),
+                "coordinate {coordinate}"
+            );
+        }
+        // Leaving a vector out is caught at the first leaf it would have changed.
+        assert_eq!(
+            first_wrong_leaf(shape, &[&a], &[&m], &sum).unwrap(),
+            Some(0)
+        );
     }
 
     #[test]
