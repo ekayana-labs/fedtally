@@ -2,6 +2,7 @@
 //! the signed run log and the rules that decide whether a log is valid.
 
 pub mod admission;
+pub mod anchor;
 pub mod credential;
 pub mod duo;
 pub mod field;
