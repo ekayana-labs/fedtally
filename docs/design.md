@@ -24,6 +24,7 @@ There are no other control messages. Each role looks at the state and does what'
 Phase       aggregator          helper             site
 Joining     open when ready                        join
 Collecting  close when ready                       train, contribute, upload
+Screening   close when checked  check norm proofs  (bounded plans only)
 Masking     outcome when ready  sum masks, upload
 Attesting   seal when ready     attest             check, attest
 Acking      next round                             check, acknowledge
@@ -94,6 +95,37 @@ The noise in a sum is the noise of every site in it, so nobody has to trust the 
 
 A site can make privacy a condition of joining: its grant can cap the run's whole budget and set the fewest colluding sites the accounting must assume.
 
+## Bounding a dishonest site
+
+Privacy terms bound what an honest site sends. A plan with `bounded` set also bounds a dishonest one: every site proves that its update, noise included, is no longer than `norm`, and a site whose proof fails is left out before the round closes.
+
+Nobody holds `x_i`, so nobody can measure it. The aggregator holds `y_i` and each helper can expand its mask, which together are an additive sharing of `x_i`. The site proves the bound to all of them at once with a fully linear proof (Boneh et al., 2019), arranged as in PINE (Rothblum et al., 2023):
+
+1. **Sum of squares.** The vector is cut into wires of `P - 1` coordinates, each the values of a polynomial on the `P`-th roots of unity with one random value added. The site sends the coefficients of `p = sum w_t^2`. Each party evaluates its share of every wire and of `p` at a point `r`, and the sums must satisfy `p(r) = sum w_t(r)^2`. Then `sum_j x_j^2` is a fixed linear function of `p`'s coefficients.
+2. **Range.** The site shares the bits of that sum and of `norm^2 - sum`. A second small proof shows every bit is a bit.
+3. **No wraparound.** A vector with huge coordinates can have small squares in the field. So the site also shows that 64 random sums `sum z_j x_j`, with `z_j` in `{-1, 0, 1}`, are small, by their bits. A vector whose squares overflow the field passes one such test with probability at most 1/2 (PINE, Proposition 3.5), so it passes all of them with probability `2^-64`. An honest one fails with probability below `2^-63`, and then the site encodes again with fresh noise.
+
+The random sums are drawn from the roots and sealed seeds the site signed, so it fixes the vector before it learns them. The point `r` comes from the log head after the aggregator's `Screen` record, which names the contributions to check and which no site can predict. Each party's message is a share of `c + 4` field elements for `c about sqrt(2d)` wires, and reveals nothing: every wire is blinded by its random value.
+
+The round gains one step. After collecting, the aggregator signs `Screen`. Each helper sends its messages and signs their digest in `Check`. The aggregator adds its own, keeps the sites whose messages add up to a valid proof, and closes the round over those. The site auditing another site's vector also recomputes the aggregator's message about it, since the aggregator sees the helpers' messages first and could write one that makes anything pass.
+
+With the exact bound, a proof for 67 million coordinates is 242 KB and takes about half a second to make and to check on a laptop ([benchmarks.md](benchmarks.md)).
+
+**The exact bound only fits small models.** Steps 1 and 2 need `norm^2` to be about 16,000 times smaller than the field, and `norm` includes the noise: `clip + sqrt(d) + 1 + sqrt(noise * (2d + 256))`. With the noise of a private run and a 64 bit field that holds up to somewhere between a thousand and a hundred thousand parameters, depending on the privacy terms. Above that the proof keeps step 3 alone. A vector longer than nine times the half width of the test interval fails each test with probability at least 1/2, by the same Berry-Esseen argument, so a dishonest site is held to between 63 and 126 times `norm` and no further. `Params::enforced` says which bound a plan gets. Getting the exact bound for large models needs a wider field, which this code doesn't have.
+
+**What it doesn't cover.** A site gets one try per vector it commits to, but it can make as many vectors offline as it likes, each a full pass over the model, and keep one that passes: 2^64 tries on average. A helper's share can't be recomputed by anyone else, so a site and a helper together can pass anything. The bound is on the update plus its noise, so with heavy noise a dishonest site can send more signal than an honest one, up to that total. And this is new code implementing a recent construction: nobody has reviewed it.
+
+## Rewards by contribution
+
+A score for one site is a statistic about that site, which is what site-level privacy bounds. A plan with `scoring` therefore scores groups. After a round closes, the log head splits the cohort into groups of at least `group` sites. Each helper sends a mask total per group, the aggregator publishes each group's sum, and a group's score is the inner product of its sum with the sum of all the others. A group's own length doesn't count, so neither its noise nor a long random update earns anything. Shares of the round's reward are the scores in millionths, and a group's members share alike.
+
+- **It costs privacy, and the budget says so.** One site's data moves one group's sum, and that sum carries the noise of its members only. So a scoring round is charged at the size of its smallest group, about `cohort / group` times what the same round costs unscored.
+- **Every site checks the sums and the shares.** The fingerprint each group's sum must have follows from values its members and the helpers already signed. Each site downloads every group sum, checks it against that fingerprint, recomputes the shares and compares them with the seal before it acknowledges.
+- **The split can't be chosen by a site.** It comes from the head after Close. The aggregator signs Close, so it can influence the split by choosing who is in the cohort.
+- **It takes three groups.** Two groups always tie, since each scores the same inner product against the other. With no reference data, two groups can't show which of them is right.
+- **A score can be gamed in two ways we know of.** A free rider can replay last round's update, which points the same way as everyone else's new one and scores above zero. And one dataset split across two identities in different groups gains the inner product of its two halves. Credentials and stake price the second, and nothing prices the first.
+- A scoring plan can't be anchored on the ledger yet: the program charges a round at its cohort and pays equal shares.
+
 ## Admission
 
 Two things must both hold before a site is in a run.
@@ -102,7 +134,7 @@ Two things must both hold before a site is in a run.
 
 A rule only asks for credentials, never for their absence. So adding one can't turn an admitted site away, and revoking one can't let a refused site in.
 
-- **Credentials** are W3C Verifiable Credentials (Data Model 2.0) with an `eddsa-jcs-2022` proof. The code reproduces the W3C test vector for that suite byte for byte. A GA4GH visa is carried as its `ga4gh_visa_v1` object in the credential's subject.
+- **Credentials** are W3C Verifiable Credentials (Data Model 2.0) with a Data Integrity proof over the JSON canonical form. An Ed25519 issuer signs with `eddsa-jcs-2022`, and the code reproduces the W3C test vector for that suite byte for byte. An ML-DSA issuer signs with `mldsa44-jcs-2024` from the W3C Quantum-Resistant Cryptosuites draft, or with `mldsa65-jcs-2024` or `mldsa87-jcs-2024`, which follow the draft's rules under names it does not define yet. A proof must use the suite of the key that made it. A GA4GH visa is carried as its `ga4gh_visa_v1` object in the credential's subject.
 - **Data use.** A dataset's terms are GA4GH Data Use Ontology codes. The plan states what the run will do with data, and `duo::permits` decides whether the terms allow it: a purpose fits the same permission or a broader one, never a narrower one. Anything the code can't decide is refused, since a person should look at it.
 - **Revocation** is a W3C Bitstring Status List: one signed list of bits per issuer. A list is a record in the log, so a replay needs no network. A newer list may only add bits. Any party may bring one, and each site brings any newer list it holds before every round. Once a list reaches the log, a site whose credentials no longer meet the policy is out of every later cohort. If an operator's no longer do, the run stops.
 - **Every replica makes the same decision**, at the time the site's Join states, against the lists in the log. A credential that can be revoked only counts once its issuer's list is in the log. Lists are kept per issuer, so one issuer can't take another's.
@@ -140,7 +172,8 @@ The aggregator holds `y_i` and `Y`, and learns `A`. Without a seed `s_ih` for at
 |---|---|---|
 | Aggregator alone | Read an update. Get an acknowledgement for a model that isn't the committed sum. Spend past the privacy budget, or draw its own cohort after round 1 | Stop or stall the run. Leave invited sites out, down to `min_cohort`. Refuse to log a record: the site knows, and the report lists it as absent |
 | Helper alone | Read an update. Change the sum | Stop the run |
-| Site alone | Read another site's update. Spoil a seal by lying. Stay in after its credential is revoked and the list is logged | Send any update it likes, since a masked vector can't be range checked. Stop the run |
+| Site alone | Read another site's update. Spoil a seal by lying. Stay in after its credential is revoked and the list is logged. In a bounded plan, get an update longer than `norm` into a round | Without norm proofs, send any update it likes. Stop the run |
+| Site + helper | | Pass a norm proof for any update |
 | Aggregator + 1 site | Change the sum unnoticed, with `audits >= 1` | Read a victim's update if `min_cohort` is 2 and the run has no privacy terms |
 | Aggregator + `k` sites | Read an honest site's update if `min_cohort > k + 1`. Change the sum unnoticed if `k <= audits` | With `k > audits`, have its sites audit each other |
 | Aggregator + site + helper | | Choose that site's input after seeing the true sum. With no bound on inputs this means any model |
@@ -164,7 +197,13 @@ During the window anyone holding the vectors can open a dispute at one leaf. Eac
 
 The program enforces the same privacy arithmetic and the same cohort draw as the replay, so neither can be misstated to it.
 
-See [ledger/README.md](../ledger/README.md) for accounts, instructions and measured compute costs. The nodes don't submit transactions themselves yet.
+**Anchoring is a follower of the log.** `fedtally anchor` runs beside a node, reads the log that node keeps, reads the ledger's accounts, and sends the one transaction its role owes next. It keeps nothing between steps, so it can be killed and restarted at any point. A site acknowledges on the ledger only a round it acknowledged in its own log, and only when the cohort and roots posted there equal the ones in that log.
+
+**A watcher** holds no data and no seeds. It fetches each round's masked vectors, mask totals and aggregate from the aggregator once the outcome is logged, checks them against the roots, and recomputes the sum leaf by leaf. If a leaf is wrong it opens a dispute and proves it. Masked vectors and mask totals together tell a watcher the aggregate and nothing more.
+
+**A fraud proof needs the vectors.** The watcher can prove only what it was served. An aggregator that posts a bad root and then withholds the vectors can't be slashed by this program. The sites are not exposed to that: none of them acknowledges, in the log or on the ledger, a round it couldn't check, so such a round never settles.
+
+See [ledger/README.md](../ledger/README.md) for accounts, instructions, the anchor roles and measured compute costs.
 
 ## Post-quantum parts
 
@@ -172,7 +211,8 @@ See [ledger/README.md](../ledger/README.md) for accounts, instructions and measu
 - Sealed seeds: X25519 and ML-KEM-768 together.
 - TLS: connections settle on X25519MLKEM768, and a test confirms the negotiated group.
 - Masks: ChaCha12 with 256 bit seeds.
-- Not yet: credentials and revocation lists are Ed25519 only, since no post-quantum suite for them is final. `did:bio` and ledger accounts are Ed25519 by nature.
+- Credentials and revocation lists: ML-DSA issuers sign with the draft suites above. The draft is experimental and may change.
+- Not post-quantum: `did:bio` and ledger accounts are Ed25519 by nature.
 
 ## Data plane
 
@@ -182,9 +222,9 @@ A chunk's root is checked on arrival, and an upload is synced before it can be c
 
 ## Limits this design accepts
 
-- **Masked updates can't be inspected.** A site can send an update of any size. Privacy terms bound what an honest site sends, not a dishonest one. Proving a norm bound on a masked vector is the main open item; the split between aggregator and helper is the setting PINE-style proofs are made for.
+- **Norm proofs bound length, not direction.** A dishonest site can still send the worst update of the allowed length, and one working with a helper can send anything.
 - **Privacy with few sites is expensive.** Noise in the average falls with the cohort size, so tens of sites pay heavily in accuracy at small epsilon. [benchmarks.md](benchmarks.md) has measurements.
-- **Rewards can't follow contribution.** A per-site score is a statistic about one site, which is exactly what site-level privacy hides. The ledger pays an equal share per round and slashes only what can be proven.
+- **Rewards follow groups, not sites.** A per-site score is a statistic about one site, which is exactly what site-level privacy hides. Scoring groups costs privacy in proportion, and the ledger still pays equal shares and slashes only what can be proven.
 - **One party can stop a run.** Any site or helper can. This trades liveness for the guarantee that nobody takes a model some party couldn't check.
 - **A helper's disk must survive.** "Once per round" rests on the helper's replica.
 - **All helpers are needed**, and the aggregator is one process. A restart resumes it, but there's no failover.
