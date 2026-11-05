@@ -1,0 +1,19 @@
+[project]
+name = "fedavg-bench"
+version = "1.0.0"
+description = "The shared benchmark workload on stock FedAvg"
+license = "Apache-2.0"
+dependencies = ["flwr>=1.43", "numpy"]
+
+[tool.flwr.app]
+publisher = "fedtally-bench"
+
+[tool.flwr.app.components]
+serverapp = "fedavg_bench.server_app:app"
+clientapp = "fedavg_bench.client_app:app"
+
+[tool.flwr.app.config]
+sites = 2
+mib = 1
+rounds = 1
+result-file = ""
