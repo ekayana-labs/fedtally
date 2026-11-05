@@ -211,3 +211,70 @@ print(json.dumps(out))
     report = ft.verify(tmp_path / "aggregator" / "log.jsonl", results[0]["final_model"])
     assert report["complete"]
     assert np.allclose(ft.load_model(results[0]["final_model"])["w"], 1.0, atol=1e-5)
+
+
+def test_a_private_run_reports_what_it_spent(tmp_path):
+    privacy = ft.Privacy(epsilon=4.0, delta=1e-5, clip=1.0)
+    result = fed(tmp_path, sites=4, rounds=2, privacy=privacy).run(
+        toward([1.0, 1.0, 1.0, 1.0], weights=[1, 5, 9, 2])
+    )
+    assert result.ok, result.sites
+    assert result.report["complete"]
+    spent = result.report["privacy"]
+    assert 0 < spent["epsilon_spent"] <= 4.0 + 1e-6
+    assert spent["rho_spent"] <= spent["rho_budget"]
+    assert spent["delta"] == 1e-5
+    assert all(r["total_weight"] == 4 for r in result.report["rounds"])
+    # The clip keeps each site's move to a norm of one, and the rest is noise.
+    assert np.abs(result.model["w"]).max() < 5.0
+    assert np.asarray(result.model["w"]).std() > 0.01
+
+
+def test_a_run_without_privacy_says_so(tmp_path):
+    result = fed(tmp_path).run(toward([1.0, 1.0, 1.0]))
+    assert result.report["privacy"] is None
+
+
+def test_an_impossible_privacy_target_is_refused(tmp_path):
+    with pytest.raises(ft.FedtallyError):
+        fed(tmp_path, privacy=ft.Privacy(epsilon=1.0, delta=1e-5, clip=-1.0))
+    with pytest.raises(ValueError):
+        fed(tmp_path, no_such_option=1)
+
+
+def test_credentials_gate_a_run_and_a_revocation_shows_in_the_report(tmp_path):
+    federation = fed(tmp_path, rounds=2, credentials=True, min_cohort=2)
+
+    def train(site, round_number, params):
+        if site == 0 and round_number == 1:
+            federation.revoke_access(2)
+        return {k: np.full_like(v, 1.0) for k, v in params.items()}, 1
+
+    result = federation.run(train)
+    assert result.ok, result.sites
+    report = result.report
+    assert report["complete"]
+    kinds = [c["kind"] for c in report["joined"][0]["credentials"]]
+    assert "ControlledAccessGrants" in kinds and "Provenance" in kinds
+    assert report["joined"][0]["dataset"].startswith("did:key:")
+    assert [len(r["included"]) for r in report["rounds"]] == [3, 2]
+    assert len(report["revoked"]) == 1
+    assert "revoked" in report["revoked"][0]["reason"]
+
+
+def test_sampling_draws_some_sites_each_round(tmp_path):
+    result = fed(tmp_path, sites=4, rounds=3, sample=2, min_cohort=2).run(
+        toward([1.0, 1.0, 1.0, 1.0])
+    )
+    assert result.ok, result.sites
+    assert result.report["complete"]
+    for round_report in result.report["rounds"]:
+        assert len(round_report["invited"]) == 2
+        assert len(round_report["included"]) == 2
+
+
+def test_parties_can_go_by_did_bio(tmp_path):
+    result = fed(tmp_path, did_bio="devnet").run(toward([1.0, 1.0, 1.0]))
+    assert result.ok, result.sites
+    assert result.report["aggregator"].startswith("did:bio:devnet:")
+    assert all(j["site"].startswith("did:bio:devnet:") for j in result.report["joined"])

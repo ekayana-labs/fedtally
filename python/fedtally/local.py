@@ -1,6 +1,7 @@
 """A whole federation on one machine, over real TLS on loopback."""
 
-from dataclasses import dataclass
+import json
+from dataclasses import asdict, dataclass
 from pathlib import Path
 
 from . import _native
@@ -9,9 +10,20 @@ from .site import trainer_for
 from .verify import verify
 
 
-def default_min_cohort(sites: int) -> int:
-    """Three quarters of the sites, since the aggregator chooses who is in a round."""
-    return max(min(sites, 2), -(-sites * 3 // 4))
+@dataclass
+class Privacy:
+    """A privacy target for a whole site's data.
+
+    Every site clips its update to an L2 norm of `clip`, in the model's own
+    units, and adds noise before masking. The run stops rather than spend more
+    than `epsilon` at `delta`. `colluding` is how many sites in a round are
+    assumed to give their noise away.
+    """
+
+    epsilon: float
+    delta: float
+    clip: float
+    colluding: int = 0
 
 
 @dataclass
@@ -32,7 +44,8 @@ class LocalFederation:
     """Keys, plan and grants for every party, in one directory.
 
     A real deployment makes these separately and no party holds another's key.
-    `train(site, round, params)` returns `(params, weight)`.
+    `train(site, round, params)` returns `(params, weight)`. With `privacy`
+    set, every site counts the same and the weight is ignored.
     """
 
     def __init__(
@@ -43,45 +56,27 @@ class LocalFederation:
         sites: int,
         helpers: int = 1,
         rounds: int = 1,
-        min_cohort: int | None = None,
-        chunk_coords: int = 1 << 19,
-        frac_bits: int = 24,
-        clip: float = 128.0,
-        max_weight: int = 1 << 20,
-        audits: int = 1,
-        purpose: str = "local run",
-        granted_purpose: str | None = None,
-        join_secs: int = 120,
-        collect_secs: int = 600,
-        attest_secs: int = 300,
-        ack_secs: int = 120,
-        sig_alg: str = "ed25519",
+        privacy: Privacy | None = None,
+        **options,
     ):
+        """`options` are passed through: `min_cohort`, `chunk_coords`,
+        `frac_bits`, `clip`, `max_weight`, `audits`, `purpose`,
+        `granted_purpose`, `sig_alg`, the four `*_secs` timeouts, `sample`
+        (how many sites each round draws), `credentials` (admit sites only
+        on credentials from a university, a review board and a data access
+        committee, which this class then plays) and `did_bio` (name every
+        party by `did:bio` on that network)."""
         self.root = Path(root)
         self.root.mkdir(parents=True, exist_ok=True)
         self.layout = layout_of(initial)
         first = self.root / "initial.safetensors"
         save_model(first, initial)
+        given = {k: v for k, v in options.items() if v is not None}
+        given.update(sites=sites, helpers=helpers, rounds=rounds)
+        if privacy is not None:
+            given["privacy"] = asdict(privacy)
         self.native = _native.Federation(
-            str(self.root),
-            self.layout,
-            str(first),
-            sites,
-            helpers,
-            rounds,
-            min_cohort if min_cohort is not None else default_min_cohort(sites),
-            chunk_coords,
-            frac_bits,
-            clip,
-            max_weight,
-            audits,
-            purpose,
-            granted_purpose,
-            join_secs,
-            collect_secs,
-            attest_secs,
-            ack_secs,
-            sig_alg,
+            str(self.root), self.layout, str(first), json.dumps(given)
         )
         self.sites = sites
 
@@ -91,6 +86,10 @@ class LocalFederation:
 
     def save(self) -> None:
         self.native.save()
+
+    def revoke_access(self, site: int) -> None:
+        """Takes back a site's access grant. It is out from the next round."""
+        self.native.revoke_access(site)
 
     def run(self, train, keep_spool: bool = False) -> RunResult:
         def for_site(i):
