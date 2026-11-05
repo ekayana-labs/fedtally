@@ -4,6 +4,7 @@
 pub mod field;
 pub mod keys;
 pub mod model;
+pub mod plan;
 pub mod vector;
 
 pub use pq_ucan;
