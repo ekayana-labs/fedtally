@@ -3,6 +3,7 @@
 
 pub mod admission;
 pub mod credential;
+pub mod duo;
 pub mod field;
 pub mod keys;
 pub mod log;
