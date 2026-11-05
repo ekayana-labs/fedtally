@@ -1,0 +1,29 @@
+{
+  "framework": "fedtally",
+  "sites": 4,
+  "model_mib": 256,
+  "rounds": 1,
+  "helpers": 1,
+  "total_seconds": 7.54,
+  "memory": {
+    "aggregator": {
+      "peak_total_mib": 145.0,
+      "peak_each_mib": 145.0
+    },
+    "helpers": {
+      "peak_total_mib": 26.2,
+      "peak_each_mib": 26.2
+    },
+    "sites": {
+      "peak_total_mib": 1506.3,
+      "peak_each_mib": 517.2
+    }
+  },
+  "aggregator_peak_disk_mib": 4096.2,
+  "log_bytes": 21172,
+  "verify_seconds": 0.147,
+  "verified_complete": true,
+  "model_error": 1.2144446359663164e-07,
+  "tls": true,
+  "masked": true
+}

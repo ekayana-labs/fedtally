@@ -1,0 +1,1159 @@
+{
+  "framework": "nvflare",
+  "version": "2.10.0dev0+170.g3083649b3",
+  "sites": 4,
+  "model_mib": 32,
+  "rounds": 4,
+  "kill_in_round": 2,
+  "wait_seconds": 180.0,
+  "settings": "defaults, except the snapshot_setting trial, which runs ScatterAndGather",
+  "bash_version": "GNU bash, version 3.2.57(1)-release (arm64-apple-darwin25)",
+  "trials": [
+    {
+      "trial": "server_parent",
+      "workflow": "fedavg",
+      "killed_roles": [
+        "parent"
+      ],
+      "events": [
+        {
+          "t": 0.0,
+          "event": "server parent pid 5347 gone"
+        },
+        {
+          "t": 6.1,
+          "event": "server parent pid 5511 running"
+        },
+        {
+          "t": 6.1,
+          "event": "connected clients per server: []"
+        },
+        {
+          "t": 6.1,
+          "event": "running jobs per server: []"
+        },
+        {
+          "t": 8.3,
+          "event": "connected clients per server: ['site-2']"
+        },
+        {
+          "t": 9.3,
+          "event": "connected clients per server: ['site-1', 'site-2']"
+        },
+        {
+          "t": 10.3,
+          "event": "server job (job 35862d62) pid 5479 gone"
+        },
+        {
+          "t": 14.5,
+          "event": "site-2 job (job 35862d62) pid 5482 gone"
+        },
+        {
+          "t": 14.5,
+          "event": "site-1 job (job 35862d62) pid 5483 gone"
+        },
+        {
+          "t": 16.5,
+          "event": "connected clients per server: ['site-1', 'site-2', 'site-3']"
+        },
+        {
+          "t": 17.5,
+          "event": "connected clients per server: ['site-1', 'site-2', 'site-3', 'site-4']"
+        },
+        {
+          "t": 20.6,
+          "event": "site-3 job (job 35862d62) pid 5480 gone"
+        },
+        {
+          "t": 21.6,
+          "event": "site-4 job (job 35862d62) pid 5481 gone"
+        }
+      ],
+      "status_timeline": [
+        {
+          "t": 5.1,
+          "status": "NoConnection: cannot connect to server for 5 seconds"
+        },
+        {
+          "t": 7.3,
+          "status": "RUNNING"
+        }
+      ],
+      "job_id": "35862d62-8cfe-42d6-b5f4-a677874b1e10",
+      "status_before_kill": "RUNNING",
+      "rounds_started_before_kill": [
+        0,
+        1,
+        2
+      ],
+      "results_sent_by_site_before_kill": {
+        "site-1": 2,
+        "site-2": 2,
+        "site-3": 2,
+        "site-4": 2
+      },
+      "processes_before_kill": [
+        "server job (job 35862d62)",
+        "server parent",
+        "server supervisor",
+        "site-1 job (job 35862d62)",
+        "site-1 parent",
+        "site-1 supervisor",
+        "site-2 job (job 35862d62)",
+        "site-2 parent",
+        "site-2 supervisor",
+        "site-3 job (job 35862d62)",
+        "site-3 parent",
+        "site-3 supervisor",
+        "site-4 job (job 35862d62)",
+        "site-4 parent",
+        "site-4 supervisor"
+      ],
+      "daemon_pid_fl_content": "\n",
+      "killed": {
+        "parent": [
+          5347
+        ]
+      },
+      "server_parent_back_at": 6.1,
+      "restart_by": "sub_start.sh supervisor, already running",
+      "clients_all_connected_at": 17.5,
+      "status_after_wait": "RUNNING",
+      "seconds_watched": 180.9,
+      "job_finished": false,
+      "rounds_started_after_kill": [],
+      "results_sent_by_site_after_wait": {
+        "site-1": 2,
+        "site-2": 2,
+        "site-3": 2,
+        "site-4": 2
+      },
+      "processes_after_wait": [
+        "server parent",
+        "server supervisor",
+        "site-1 parent",
+        "site-1 supervisor",
+        "site-2 parent",
+        "site-2 supervisor",
+        "site-3 parent",
+        "site-3 supervisor",
+        "site-4 parent",
+        "site-4 supervisor"
+      ],
+      "snapshot_storage_files": [],
+      "run_dir_survived_restart": true,
+      "checkpoint_at_kill_error_vs_rounds_done": 2.3616813127347314e-07,
+      "logs_after_kill": {
+        "server_console": [
+          {
+            "first": "05:41:47.023",
+            "text": "- CoreCell - WARNING - [ME=server.:74b1e10 O=? D=server F=? T=? CH=server_parent_listener TP=heartbeat SCH=? STP=? SEQ=?] no connection to parent server",
+            "count": 4
+          },
+          {
+            "first": "05:41:47.025",
+            "text": "- CoreCell - ERROR - [ME=server.:74b1e10 O=server.:74b1e10 D=server F=server.:74b1e10 T=server CH=server_parent_listener TP=heartbeat SCH=? STP=? SEQ=?] cannot send to 'server': target_unreachable",
+            "count": 2
+          },
+          {
+            "first": "05:41:49.883",
+            "text": "- ServerDeployer - INFO - server heartbeat timeout set to 600",
+            "count": 1
+          },
+          {
+            "first": "05:41:50.483",
+            "text": "- AuxRunner - INFO - registered aux handler for topic ObjectStreamer.Abort",
+            "count": 1
+          },
+          {
+            "first": "05:41:53.034",
+            "text": "- CoreCell - WARNING - [ME=server.:74b1e10 O=? D=server F=? T=? CH=server_parent_listener TP=update_run_status SCH=? STP=? SEQ=?] no connection to parent server",
+            "count": 2
+          },
+          {
+            "first": "05:41:53.035",
+            "text": "- CoreCell - ERROR - [ME=server.:74b1e10 O=server.:74b1e10 D=server F=server.:74b1e10 T=server CH=server_parent_listener TP=update_run_status SCH=? STP=? SEQ=?] cannot send to 'server': target_unreachable",
+            "count": 1
+          },
+          {
+            "first": "05:41:53.886",
+            "text": "- ClientManager - INFO - Client: New admin admin@nvidia.com@192.168.29.250 joined. Sent token.  Total clients: 0",
+            "count": 1
+          },
+          {
+            "first": "05:41:56.043",
+            "text": "- MPM - WARNING - #### MPM: still running thread Thread-2 (run_engine)",
+            "count": 1
+          },
+          {
+            "first": "05:42:01.132",
+            "text": "- FederatedServer - WARNING - Dropped terminal outcome for untracked job/client 35862d62-8cfe-42d6-b5f4-a677874b1e10/site-2",
+            "count": 4
+          },
+          {
+            "first": "05:42:01.649",
+            "text": "- JobLogReceiver - INFO - [identity=server, run=?, peer=site-2, peer_run=35862d62-8cfe-42d6-b5f4-a677874b1e10] - Saved live log 'error_log.txt' from site-2 for job 35862d62-8cfe-42d6-b5f4-a677874b1e10",
+            "count": 4
+          }
+        ],
+        "server_job": [
+          {
+            "first": "05:41:47.023",
+            "text": "- CoreCell - WARNING - [ME=server.:74b1e10 O=? D=server F=? T=? CH=server_parent_listener TP=heartbeat SCH=? STP=? SEQ=?] no connection to parent server",
+            "count": 4
+          },
+          {
+            "first": "05:41:47.025",
+            "text": "- CoreCell - ERROR - [ME=server.:74b1e10 O=server.:74b1e10 D=server F=server.:74b1e10 T=server CH=server_parent_listener TP=heartbeat SCH=? STP=? SEQ=?] cannot send to 'server': target_unreachable",
+            "count": 2
+          },
+          {
+            "first": "05:41:53.034",
+            "text": "- CoreCell - WARNING - [ME=server.:74b1e10 O=? D=server F=? T=? CH=server_parent_listener TP=update_run_status SCH=? STP=? SEQ=?] no connection to parent server",
+            "count": 2
+          },
+          {
+            "first": "05:41:53.035",
+            "text": "- CoreCell - ERROR - [ME=server.:74b1e10 O=server.:74b1e10 D=server F=server.:74b1e10 T=server CH=server_parent_listener TP=update_run_status SCH=? STP=? SEQ=?] cannot send to 'server': target_unreachable",
+            "count": 1
+          },
+          {
+            "first": "05:41:56.043",
+            "text": "- MPM - WARNING - #### MPM: still running thread Thread-2 (run_engine)",
+            "count": 1
+          }
+        ],
+        "site-1_console": [
+          {
+            "first": "05:41:47.565",
+            "text": "- byte_streamer - WARNING - Late stream error: stream_id=1793837500997889 channel=server_command topic=get_task sender=site-1.35862d62-8cfe-42d6-b5f4-a677874b1e10 failed_destination=server.35862d62-8cfe-42d6-b5f4-a677874b1e10: stream forwarding to server.35862d62-8cfe-42d6-b5f4-a677874b1e10 failed: ",
+            "count": 16
+          },
+          {
+            "first": "05:41:47.566",
+            "text": "- Communicator - WARNING - Failed to get_task from server. Will try it again.",
+            "count": 16
+          },
+          {
+            "first": "05:41:52.126",
+            "text": "- CoreCell - WARNING - [ME=site-1 O=site-1.:74b1e10 D=server F=site-1.:74b1e10 T=site-1 CH=sm__STREAM TP=sm__DATA SCH=aux_communication STP=ObjectStreamer.Request SEQ=0] no connection to server",
+            "count": 1
+          },
+          {
+            "first": "05:41:52.127",
+            "text": "- CoreCell - ERROR - [ME=site-1 O=site-1.:74b1e10 D=server F=site-1.:74b1e10 T=site-1 CH=sm__STREAM TP=sm__DATA SCH=aux_communication STP=ObjectStreamer.Request SEQ=0] cannot forward req: no path",
+            "count": 1
+          },
+          {
+            "first": "05:41:52.239",
+            "text": "- byte_streamer - WARNING - Late stream error: stream_id=1793837500997900 channel=aux_communication topic=__job_heartbeat__ sender=site-1.35862d62-8cfe-42d6-b5f4-a677874b1e10 failed_destination=server.35862d62-8cfe-42d6-b5f4-a677874b1e10: stream forwarding to server.35862d62-8cfe-42d6-b5f4-a677874b1",
+            "count": 1
+          },
+          {
+            "first": "05:41:55.582",
+            "text": "- ClientRunner - INFO - [identity=site-1, run=35862d62-8cfe-42d6-b5f4-a677874b1e10] - Received command to abort job",
+            "count": 1
+          },
+          {
+            "first": "05:41:55.683",
+            "text": "- ClientRunner - INFO - [identity=site-1, run=35862d62-8cfe-42d6-b5f4-a677874b1e10] - fired ABORT_TASK event to abort all running tasks",
+            "count": 1
+          },
+          {
+            "first": "05:41:57.209",
+            "text": "- _LogTailProducer - ERROR - error from target server: TIMEOUT",
+            "count": 1
+          },
+          {
+            "first": "05:42:01.133",
+            "text": "- SiteLogStreamer - INFO - [identity=site-1, run=?] - Started completed error log upload for site-1 job 35862d62-8cfe-42d6-b5f4-a677874b1e10: <run>/poc/example_project/prod_00/site-1/35862d62-8cfe-42d6-b5f4-a677874b1e10/error_log.txt",
+            "count": 1
+          }
+        ],
+        "site-1_job": [
+          {
+            "first": "05:41:47.565",
+            "text": "- byte_streamer - WARNING - Late stream error: stream_id=1793837500997889 channel=server_command topic=get_task sender=site-1.35862d62-8cfe-42d6-b5f4-a677874b1e10 failed_destination=server.35862d62-8cfe-42d6-b5f4-a677874b1e10: stream forwarding to server.35862d62-8cfe-42d6-b5f4-a677874b1e10 failed: ",
+            "count": 16
+          },
+          {
+            "first": "05:41:47.566",
+            "text": "- Communicator - WARNING - Failed to get_task from server. Will try it again.",
+            "count": 16
+          },
+          {
+            "first": "05:41:52.239",
+            "text": "- byte_streamer - WARNING - Late stream error: stream_id=1793837500997900 channel=aux_communication topic=__job_heartbeat__ sender=site-1.35862d62-8cfe-42d6-b5f4-a677874b1e10 failed_destination=server.35862d62-8cfe-42d6-b5f4-a677874b1e10: stream forwarding to server.35862d62-8cfe-42d6-b5f4-a677874b1",
+            "count": 1
+          },
+          {
+            "first": "05:41:55.582",
+            "text": "- ClientRunner - INFO - [identity=site-1, run=35862d62-8cfe-42d6-b5f4-a677874b1e10] - Received command to abort job",
+            "count": 1
+          },
+          {
+            "first": "05:41:55.683",
+            "text": "- ClientRunner - INFO - [identity=site-1, run=35862d62-8cfe-42d6-b5f4-a677874b1e10] - fired ABORT_TASK event to abort all running tasks",
+            "count": 1
+          },
+          {
+            "first": "05:41:57.209",
+            "text": "- _LogTailProducer - ERROR - error from target server: TIMEOUT",
+            "count": 1
+          }
+        ]
+      },
+      "recovered": false,
+      "resubmit_from_start": {
+        "job_id": "ec5f55c1-65c4-4ed3-9c90-11e231e28bee",
+        "seconds": 18.2,
+        "status": "FINISHED:COMPLETED",
+        "model_error": 3.612130017316417e-07,
+        "model_right": true
+      },
+      "resume_from_checkpoint": {
+        "job_id": "06aa9986-e9e7-43c1-8535-a0554ed1bb87",
+        "seconds": 13.2,
+        "status": "FINISHED:COMPLETED",
+        "model_error": 3.7687168275013505e-07,
+        "model_right": true
+      },
+      "status_after_follow_ups": "RUNNING",
+      "abort_response": "InternalError: server internal error: Job 35862d62-8cfe-42d6-b5f4-a677874b1e10 is not running.",
+      "status_after_abort": "RUNNING",
+      "list_jobs_entry": {
+        "job_id": "35862d62-8cfe-42d6-b5f4-a677874b1e10",
+        "job_name": "crash-bench",
+        "status": "RUNNING",
+        "submit_time": "2026-11-05T05:41:39.787156+05:30",
+        "duration": "0:03:43.559470",
+        "study": "default"
+      },
+      "delete_response": "JobNotDone: job 35862d62-8cfe-42d6-b5f4-a677874b1e10 is still running",
+      "left_running_after_cleanup": 0
+    },
+    {
+      "trial": "server_tree",
+      "workflow": "fedavg",
+      "killed_roles": [
+        "parent",
+        "job"
+      ],
+      "events": [
+        {
+          "t": 0.0,
+          "event": "server parent pid 6498 gone"
+        },
+        {
+          "t": 0.0,
+          "event": "server job (job 9a30d9a0) pid 6716 gone"
+        },
+        {
+          "t": 6.1,
+          "event": "server parent pid 6752 running"
+        },
+        {
+          "t": 6.1,
+          "event": "connected clients per server: ['site-1']"
+        },
+        {
+          "t": 6.1,
+          "event": "running jobs per server: []"
+        },
+        {
+          "t": 8.3,
+          "event": "connected clients per server: ['site-1', 'site-2']"
+        },
+        {
+          "t": 9.3,
+          "event": "connected clients per server: ['site-1', 'site-2', 'site-3']"
+        },
+        {
+          "t": 15.5,
+          "event": "site-2 job (job 9a30d9a0) pid 6718 gone"
+        },
+        {
+          "t": 15.5,
+          "event": "site-1 job (job 9a30d9a0) pid 6719 gone"
+        },
+        {
+          "t": 15.5,
+          "event": "site-3 job (job 9a30d9a0) pid 6720 gone"
+        },
+        {
+          "t": 16.5,
+          "event": "connected clients per server: ['site-1', 'site-2', 'site-3', 'site-4']"
+        },
+        {
+          "t": 20.6,
+          "event": "site-4 job (job 9a30d9a0) pid 6717 gone"
+        }
+      ],
+      "status_timeline": [
+        {
+          "t": 5.1,
+          "status": "NoConnection: cannot connect to server for 5 seconds"
+        },
+        {
+          "t": 7.3,
+          "status": "RUNNING"
+        }
+      ],
+      "job_id": "9a30d9a0-bf49-4420-9f46-8d594d0e318e",
+      "status_before_kill": "RUNNING",
+      "rounds_started_before_kill": [
+        0,
+        1,
+        2
+      ],
+      "results_sent_by_site_before_kill": {
+        "site-1": 2,
+        "site-2": 2,
+        "site-3": 2,
+        "site-4": 2
+      },
+      "processes_before_kill": [
+        "server job (job 9a30d9a0)",
+        "server parent",
+        "server supervisor",
+        "site-1 job (job 9a30d9a0)",
+        "site-1 parent",
+        "site-1 supervisor",
+        "site-2 job (job 9a30d9a0)",
+        "site-2 parent",
+        "site-2 supervisor",
+        "site-3 job (job 9a30d9a0)",
+        "site-3 parent",
+        "site-3 supervisor",
+        "site-4 job (job 9a30d9a0)",
+        "site-4 parent",
+        "site-4 supervisor"
+      ],
+      "daemon_pid_fl_content": "\n",
+      "killed": {
+        "parent": [
+          6498
+        ],
+        "job": [
+          6716
+        ]
+      },
+      "server_parent_back_at": 6.1,
+      "restart_by": "sub_start.sh supervisor, already running",
+      "clients_all_connected_at": 16.5,
+      "status_after_wait": "RUNNING",
+      "seconds_watched": 180.7,
+      "job_finished": false,
+      "rounds_started_after_kill": [],
+      "results_sent_by_site_after_wait": {
+        "site-1": 2,
+        "site-2": 2,
+        "site-3": 2,
+        "site-4": 2
+      },
+      "processes_after_wait": [
+        "server parent",
+        "server supervisor",
+        "site-1 parent",
+        "site-1 supervisor",
+        "site-2 parent",
+        "site-2 supervisor",
+        "site-3 parent",
+        "site-3 supervisor",
+        "site-4 parent",
+        "site-4 supervisor"
+      ],
+      "snapshot_storage_files": [],
+      "run_dir_survived_restart": true,
+      "checkpoint_at_kill_error_vs_rounds_done": 1.8245242539016715e-07,
+      "logs_after_kill": {
+        "server_console": [
+          {
+            "first": "05:46:12.288",
+            "text": "- ServerDeployer - INFO - server heartbeat timeout set to 600",
+            "count": 1
+          },
+          {
+            "first": "05:46:12.897",
+            "text": "- AuxRunner - INFO - registered aux handler for topic ObjectStreamer.Abort",
+            "count": 1
+          },
+          {
+            "first": "05:46:16.296",
+            "text": "- ClientManager - INFO - Client: New admin admin@nvidia.com@192.168.29.250 joined. Sent token.  Total clients: 1",
+            "count": 1
+          },
+          {
+            "first": "05:46:23.531",
+            "text": "- FederatedServer - WARNING - Dropped terminal outcome for untracked job/client 9a30d9a0-bf49-4420-9f46-8d594d0e318e/site-3",
+            "count": 4
+          },
+          {
+            "first": "05:46:24.051",
+            "text": "- JobLogReceiver - INFO - [identity=server, run=?, peer=site-3, peer_run=9a30d9a0-bf49-4420-9f46-8d594d0e318e] - Saved live log 'error_log.txt' from site-3 for job 9a30d9a0-bf49-4420-9f46-8d594d0e318e",
+            "count": 4
+          }
+        ],
+        "server_job": [],
+        "site-1_console": [
+          {
+            "first": "05:46:09.952",
+            "text": "- byte_streamer - WARNING - Late stream error: stream_id=1793837763293965 channel=server_command topic=get_task sender=site-1.9a30d9a0-bf49-4420-9f46-8d594d0e318e failed_destination=server.9a30d9a0-bf49-4420-9f46-8d594d0e318e: stream forwarding to server.9a30d9a0-bf49-4420-9f46-8d594d0e318e failed: ",
+            "count": 13
+          },
+          {
+            "first": "05:46:09.952",
+            "text": "- Communicator - WARNING - Failed to get_task from server. Will try it again.",
+            "count": 13
+          },
+          {
+            "first": "05:46:14.514",
+            "text": "- CoreCell - WARNING - [ME=site-1 O=site-1.:d0e318e D=server F=site-1.:d0e318e T=site-1 CH=sm__STREAM TP=sm__DATA SCH=aux_communication STP=ObjectStreamer.Request SEQ=0] no connection to server",
+            "count": 1
+          },
+          {
+            "first": "05:46:14.515",
+            "text": "- CoreCell - ERROR - [ME=site-1 O=site-1.:d0e318e D=server F=site-1.:d0e318e T=site-1 CH=sm__STREAM TP=sm__DATA SCH=aux_communication STP=ObjectStreamer.Request SEQ=0] cannot forward req: no path",
+            "count": 1
+          },
+          {
+            "first": "05:46:14.625",
+            "text": "- byte_streamer - WARNING - Late stream error: stream_id=1793837763293976 channel=aux_communication topic=__job_heartbeat__ sender=site-1.9a30d9a0-bf49-4420-9f46-8d594d0e318e failed_destination=server.9a30d9a0-bf49-4420-9f46-8d594d0e318e: stream forwarding to server.9a30d9a0-bf49-4420-9f46-8d594d0e3",
+            "count": 1
+          },
+          {
+            "first": "05:46:16.271",
+            "text": "- ClientRunner - INFO - [identity=site-1, run=9a30d9a0-bf49-4420-9f46-8d594d0e318e] - Received command to abort job",
+            "count": 1
+          },
+          {
+            "first": "05:46:16.537",
+            "text": "- ClientRunner - INFO - [identity=site-1, run=9a30d9a0-bf49-4420-9f46-8d594d0e318e] - fired ABORT_TASK event to abort all running tasks",
+            "count": 1
+          },
+          {
+            "first": "05:46:19.593",
+            "text": "- _LogTailProducer - ERROR - error from target server: TIMEOUT",
+            "count": 1
+          },
+          {
+            "first": "05:46:23.533",
+            "text": "- SiteLogStreamer - INFO - [identity=site-1, run=?] - Started completed error log upload for site-1 job 9a30d9a0-bf49-4420-9f46-8d594d0e318e: <run>/poc/example_project/prod_00/site-1/9a30d9a0-bf49-4420-9f46-8d594d0e318e/error_log.txt",
+            "count": 1
+          }
+        ],
+        "site-1_job": [
+          {
+            "first": "05:46:09.952",
+            "text": "- byte_streamer - WARNING - Late stream error: stream_id=1793837763293965 channel=server_command topic=get_task sender=site-1.9a30d9a0-bf49-4420-9f46-8d594d0e318e failed_destination=server.9a30d9a0-bf49-4420-9f46-8d594d0e318e: stream forwarding to server.9a30d9a0-bf49-4420-9f46-8d594d0e318e failed: ",
+            "count": 13
+          },
+          {
+            "first": "05:46:09.952",
+            "text": "- Communicator - WARNING - Failed to get_task from server. Will try it again.",
+            "count": 13
+          },
+          {
+            "first": "05:46:14.625",
+            "text": "- byte_streamer - WARNING - Late stream error: stream_id=1793837763293976 channel=aux_communication topic=__job_heartbeat__ sender=site-1.9a30d9a0-bf49-4420-9f46-8d594d0e318e failed_destination=server.9a30d9a0-bf49-4420-9f46-8d594d0e318e: stream forwarding to server.9a30d9a0-bf49-4420-9f46-8d594d0e3",
+            "count": 1
+          },
+          {
+            "first": "05:46:16.271",
+            "text": "- ClientRunner - INFO - [identity=site-1, run=9a30d9a0-bf49-4420-9f46-8d594d0e318e] - Received command to abort job",
+            "count": 1
+          },
+          {
+            "first": "05:46:16.537",
+            "text": "- ClientRunner - INFO - [identity=site-1, run=9a30d9a0-bf49-4420-9f46-8d594d0e318e] - fired ABORT_TASK event to abort all running tasks",
+            "count": 1
+          },
+          {
+            "first": "05:46:19.593",
+            "text": "- _LogTailProducer - ERROR - error from target server: TIMEOUT",
+            "count": 1
+          }
+        ]
+      },
+      "recovered": false,
+      "resubmit_from_start": {
+        "job_id": "4076d21f-28ba-456e-87dd-191a752c14c1",
+        "seconds": 19.3,
+        "status": "FINISHED:COMPLETED",
+        "model_error": 3.149153593451359e-07,
+        "model_right": true
+      },
+      "resume_from_checkpoint": {
+        "job_id": "c7675165-91b0-4357-886e-eced87581243",
+        "seconds": 13.2,
+        "status": "FINISHED:COMPLETED",
+        "model_error": 3.304918789748257e-07,
+        "model_right": true
+      },
+      "status_after_follow_ups": "RUNNING",
+      "abort_response": "InternalError: server internal error: Job 9a30d9a0-bf49-4420-9f46-8d594d0e318e is not running.",
+      "status_after_abort": "RUNNING",
+      "list_jobs_entry": {
+        "job_id": "9a30d9a0-bf49-4420-9f46-8d594d0e318e",
+        "job_name": "crash-bench",
+        "status": "RUNNING",
+        "submit_time": "2026-11-05T05:46:02.410322+05:30",
+        "duration": "0:03:44.589377",
+        "study": "default"
+      },
+      "delete_response": "JobNotDone: job 9a30d9a0-bf49-4420-9f46-8d594d0e318e is still running",
+      "left_running_after_cleanup": 0
+    },
+    {
+      "trial": "server_tree_and_supervisor",
+      "workflow": "fedavg",
+      "killed_roles": [
+        "supervisor",
+        "parent",
+        "job"
+      ],
+      "events": [
+        {
+          "t": 0.0,
+          "event": "server supervisor pid 8662 running"
+        },
+        {
+          "t": 0.0,
+          "event": "server supervisor pid 8338 gone"
+        },
+        {
+          "t": 0.0,
+          "event": "server parent pid 8434 gone"
+        },
+        {
+          "t": 0.0,
+          "event": "server job (job 9c9f22fc) pid 8627 gone"
+        },
+        {
+          "t": 6.1,
+          "event": "server parent pid 8690 running"
+        },
+        {
+          "t": 6.1,
+          "event": "connected clients per server: []"
+        },
+        {
+          "t": 6.1,
+          "event": "running jobs per server: []"
+        },
+        {
+          "t": 8.3,
+          "event": "connected clients per server: ['site-3']"
+        },
+        {
+          "t": 9.3,
+          "event": "connected clients per server: ['site-3', 'site-4']"
+        },
+        {
+          "t": 15.5,
+          "event": "site-3 job (job 9c9f22fc) pid 8628 gone"
+        },
+        {
+          "t": 15.5,
+          "event": "site-4 job (job 9c9f22fc) pid 8630 gone"
+        },
+        {
+          "t": 16.5,
+          "event": "connected clients per server: ['site-1', 'site-3', 'site-4']"
+        },
+        {
+          "t": 17.5,
+          "event": "connected clients per server: ['site-1', 'site-2', 'site-3', 'site-4']"
+        },
+        {
+          "t": 20.6,
+          "event": "site-1 job (job 9c9f22fc) pid 8629 gone"
+        },
+        {
+          "t": 21.6,
+          "event": "site-2 job (job 9c9f22fc) pid 8631 gone"
+        }
+      ],
+      "status_timeline": [
+        {
+          "t": 5.1,
+          "status": "NoConnection: cannot connect to server for 5 seconds"
+        },
+        {
+          "t": 7.3,
+          "status": "RUNNING"
+        }
+      ],
+      "job_id": "9c9f22fc-812d-4c20-8b5c-dea8fdbc80a1",
+      "status_before_kill": "RUNNING",
+      "rounds_started_before_kill": [
+        0,
+        1,
+        2
+      ],
+      "results_sent_by_site_before_kill": {
+        "site-1": 2,
+        "site-2": 2,
+        "site-3": 2,
+        "site-4": 2
+      },
+      "processes_before_kill": [
+        "server job (job 9c9f22fc)",
+        "server parent",
+        "server supervisor",
+        "site-1 job (job 9c9f22fc)",
+        "site-1 parent",
+        "site-1 supervisor",
+        "site-2 job (job 9c9f22fc)",
+        "site-2 parent",
+        "site-2 supervisor",
+        "site-3 job (job 9c9f22fc)",
+        "site-3 parent",
+        "site-3 supervisor",
+        "site-4 job (job 9c9f22fc)",
+        "site-4 parent",
+        "site-4 supervisor"
+      ],
+      "daemon_pid_fl_content": "\n",
+      "killed": {
+        "supervisor": [
+          8338
+        ],
+        "parent": [
+          8434
+        ],
+        "job": [
+          8627
+        ]
+      },
+      "start_sh_exit_code": 0,
+      "restart_by": "startup/start.sh",
+      "start_sh_at": 0.0,
+      "server_parent_back_at": 6.1,
+      "clients_all_connected_at": 17.5,
+      "status_after_wait": "RUNNING",
+      "seconds_watched": 180.5,
+      "job_finished": false,
+      "rounds_started_after_kill": [],
+      "results_sent_by_site_after_wait": {
+        "site-1": 2,
+        "site-2": 2,
+        "site-3": 2,
+        "site-4": 2
+      },
+      "start_sh_output": "WORKSPACE set to <run>/poc/example_project/prod_00/server\nPYTHONPATH is /local/custom:\nstart fl because process of 8434 does not exist\nnew pid 8690\n2026-11-05 05:50:39,017 - ServerDeployer - INFO - server heartbeat timeout set to 600\n2026-11-05 05:50:39,060 - CoreCell - INFO - server: creating listener on http://0:8002?admin_listener=true\n2026-11-05 05:50:39,115 - CoreCell - INFO - server: created backbone external listener for http://0:8002?admin_listener=true\n2026-11-05 05:50:39,116 - conn_manager - INFO - Connector [CH00002 PASSIVE tcp://127.0.0.1:2157] is starting\n2026-11-05 05:50:39,618 -",
+      "processes_after_wait": [
+        "server parent",
+        "server supervisor",
+        "site-1 parent",
+        "site-1 supervisor",
+        "site-2 parent",
+        "site-2 supervisor",
+        "site-3 parent",
+        "site-3 supervisor",
+        "site-4 parent",
+        "site-4 supervisor"
+      ],
+      "snapshot_storage_files": [],
+      "run_dir_survived_restart": true,
+      "checkpoint_at_kill_error_vs_rounds_done": 2.1560676377596621e-07,
+      "logs_after_kill": {
+        "server_console": [],
+        "server_job": [],
+        "site-1_console": [
+          {
+            "first": "05:50:34.685",
+            "text": "- byte_streamer - WARNING - Late stream error: stream_id=1793838028593967 channel=server_command topic=get_task sender=site-1.9c9f22fc-812d-4c20-8b5c-dea8fdbc80a1 failed_destination=server.9c9f22fc-812d-4c20-8b5c-dea8fdbc80a1: stream forwarding to server.9c9f22fc-812d-4c20-8b5c-dea8fdbc80a1 failed: ",
+            "count": 30
+          },
+          {
+            "first": "05:50:34.686",
+            "text": "- Communicator - WARNING - Failed to get_task from server. Will try it again.",
+            "count": 30
+          },
+          {
+            "first": "05:50:39.267",
+            "text": "- CoreCell - WARNING - [ME=site-1 O=site-1.:dbc80a1 D=server F=site-1.:dbc80a1 T=site-1 CH=sm__STREAM TP=sm__DATA SCH=aux_communication STP=ObjectStreamer.Request SEQ=0] no connection to server",
+            "count": 1
+          },
+          {
+            "first": "05:50:39.268",
+            "text": "- CoreCell - ERROR - [ME=site-1 O=site-1.:dbc80a1 D=server F=site-1.:dbc80a1 T=site-1 CH=sm__STREAM TP=sm__DATA SCH=aux_communication STP=ObjectStreamer.Request SEQ=0] cannot forward req: no path",
+            "count": 1
+          },
+          {
+            "first": "05:50:39.384",
+            "text": "- byte_streamer - WARNING - Late stream error: stream_id=1793838028593978 channel=aux_communication topic=__job_heartbeat__ sender=site-1.9c9f22fc-812d-4c20-8b5c-dea8fdbc80a1 failed_destination=server.9c9f22fc-812d-4c20-8b5c-dea8fdbc80a1: stream forwarding to server.9c9f22fc-812d-4c20-8b5c-dea8fdbc8",
+            "count": 2
+          },
+          {
+            "first": "05:50:39.798",
+            "text": "- CoreCell - WARNING - [ME=site-1 O=? D=server F=? T=? CH=task TP=heart_beat SCH=? STP=? SEQ=?] no connection to server",
+            "count": 1
+          },
+          {
+            "first": "05:50:39.799",
+            "text": "- CoreCell - ERROR - [ME=site-1 O=site-1 D=server F=site-1 T=server CH=task TP=heart_beat SCH=? STP=? SEQ=?] cannot send to 'server': target_unreachable",
+            "count": 1
+          },
+          {
+            "first": "05:50:44.368",
+            "text": "- _LogTailProducer - ERROR - error from target server: TIMEOUT",
+            "count": 1
+          },
+          {
+            "first": "05:50:49.826",
+            "text": "- ClientRunner - INFO - [identity=site-1, run=9c9f22fc-812d-4c20-8b5c-dea8fdbc80a1] - Received command to abort job",
+            "count": 1
+          },
+          {
+            "first": "05:50:49.931",
+            "text": "- ClientRunner - INFO - [identity=site-1, run=9c9f22fc-812d-4c20-8b5c-dea8fdbc80a1] - fired ABORT_TASK event to abort all running tasks",
+            "count": 1
+          },
+          {
+            "first": "05:50:54.301",
+            "text": "- SiteLogStreamer - INFO - [identity=site-1, run=?] - Started completed error log upload for site-1 job 9c9f22fc-812d-4c20-8b5c-dea8fdbc80a1: <run>/poc/example_project/prod_00/site-1/9c9f22fc-812d-4c20-8b5c-dea8fdbc80a1/error_log.txt",
+            "count": 1
+          }
+        ],
+        "site-1_job": [
+          {
+            "first": "05:50:34.685",
+            "text": "- byte_streamer - WARNING - Late stream error: stream_id=1793838028593967 channel=server_command topic=get_task sender=site-1.9c9f22fc-812d-4c20-8b5c-dea8fdbc80a1 failed_destination=server.9c9f22fc-812d-4c20-8b5c-dea8fdbc80a1: stream forwarding to server.9c9f22fc-812d-4c20-8b5c-dea8fdbc80a1 failed: ",
+            "count": 30
+          },
+          {
+            "first": "05:50:34.686",
+            "text": "- Communicator - WARNING - Failed to get_task from server. Will try it again.",
+            "count": 30
+          },
+          {
+            "first": "05:50:39.384",
+            "text": "- byte_streamer - WARNING - Late stream error: stream_id=1793838028593978 channel=aux_communication topic=__job_heartbeat__ sender=site-1.9c9f22fc-812d-4c20-8b5c-dea8fdbc80a1 failed_destination=server.9c9f22fc-812d-4c20-8b5c-dea8fdbc80a1: stream forwarding to server.9c9f22fc-812d-4c20-8b5c-dea8fdbc8",
+            "count": 2
+          },
+          {
+            "first": "05:50:44.368",
+            "text": "- _LogTailProducer - ERROR - error from target server: TIMEOUT",
+            "count": 1
+          },
+          {
+            "first": "05:50:49.826",
+            "text": "- ClientRunner - INFO - [identity=site-1, run=9c9f22fc-812d-4c20-8b5c-dea8fdbc80a1] - Received command to abort job",
+            "count": 1
+          },
+          {
+            "first": "05:50:49.931",
+            "text": "- ClientRunner - INFO - [identity=site-1, run=9c9f22fc-812d-4c20-8b5c-dea8fdbc80a1] - fired ABORT_TASK event to abort all running tasks",
+            "count": 1
+          }
+        ]
+      },
+      "recovered": false,
+      "resubmit_from_start": {
+        "job_id": "94ecb195-ef5b-441a-adde-9930978364f6",
+        "seconds": 18.2,
+        "status": "FINISHED:COMPLETED",
+        "model_error": 3.191281918724087e-07,
+        "model_right": true
+      },
+      "resume_from_checkpoint": {
+        "job_id": "2c782292-4d9e-4e18-b430-6cf42dbf81b5",
+        "seconds": 13.1,
+        "status": "FINISHED:COMPLETED",
+        "model_error": 3.446103964410696e-07,
+        "model_right": true
+      },
+      "status_after_follow_ups": "RUNNING",
+      "abort_response": "InternalError: server internal error: Job 9c9f22fc-812d-4c20-8b5c-dea8fdbc80a1 is not running.",
+      "status_after_abort": "RUNNING",
+      "list_jobs_entry": {
+        "job_id": "9c9f22fc-812d-4c20-8b5c-dea8fdbc80a1",
+        "job_name": "crash-bench",
+        "status": "RUNNING",
+        "submit_time": "2026-11-05T05:50:26.561980+05:30",
+        "duration": "0:03:43.128893",
+        "study": "default"
+      },
+      "delete_response": "JobNotDone: job 9c9f22fc-812d-4c20-8b5c-dea8fdbc80a1 is still running",
+      "left_running_after_cleanup": 0
+    },
+    {
+      "trial": "snapshot_setting",
+      "workflow": "scatter_and_gather",
+      "killed_roles": [
+        "parent",
+        "job"
+      ],
+      "events": [
+        {
+          "t": 0.0,
+          "event": "server parent pid 10131 gone"
+        },
+        {
+          "t": 0.0,
+          "event": "server job (job 7c143afd) pid 10401 gone"
+        },
+        {
+          "t": 6.1,
+          "event": "server parent pid 10462 running"
+        },
+        {
+          "t": 6.1,
+          "event": "connected clients per server: []"
+        },
+        {
+          "t": 6.1,
+          "event": "running jobs per server: []"
+        },
+        {
+          "t": 8.2,
+          "event": "connected clients per server: ['site-2']"
+        },
+        {
+          "t": 9.3,
+          "event": "connected clients per server: ['site-2', 'site-4']"
+        },
+        {
+          "t": 10.3,
+          "event": "connected clients per server: ['site-1', 'site-2', 'site-4']"
+        },
+        {
+          "t": 14.4,
+          "event": "site-4 job (job 7c143afd) pid 10403 gone"
+        },
+        {
+          "t": 14.4,
+          "event": "site-1 job (job 7c143afd) pid 10404 gone"
+        },
+        {
+          "t": 15.4,
+          "event": "site-2 job (job 7c143afd) pid 10405 gone"
+        },
+        {
+          "t": 17.5,
+          "event": "connected clients per server: ['site-1', 'site-2', 'site-3', 'site-4']"
+        },
+        {
+          "t": 21.5,
+          "event": "site-3 job (job 7c143afd) pid 10402 gone"
+        }
+      ],
+      "status_timeline": [
+        {
+          "t": 5.1,
+          "status": "NoConnection: cannot connect to server for 5 seconds"
+        },
+        {
+          "t": 7.2,
+          "status": "RUNNING"
+        }
+      ],
+      "job_id": "7c143afd-b866-4efb-bb59-f858a897d05d",
+      "status_before_kill": "RUNNING",
+      "rounds_started_before_kill": [
+        0,
+        1,
+        2
+      ],
+      "results_sent_by_site_before_kill": {
+        "site-1": 2,
+        "site-2": 2,
+        "site-3": 2,
+        "site-4": 2
+      },
+      "processes_before_kill": [
+        "server job (job 7c143afd)",
+        "server parent",
+        "server supervisor",
+        "site-1 job (job 7c143afd)",
+        "site-1 parent",
+        "site-1 supervisor",
+        "site-2 job (job 7c143afd)",
+        "site-2 parent",
+        "site-2 supervisor",
+        "site-3 job (job 7c143afd)",
+        "site-3 parent",
+        "site-3 supervisor",
+        "site-4 job (job 7c143afd)",
+        "site-4 parent",
+        "site-4 supervisor"
+      ],
+      "daemon_pid_fl_content": "\n",
+      "killed": {
+        "parent": [
+          10131
+        ],
+        "job": [
+          10401
+        ]
+      },
+      "server_parent_back_at": 6.1,
+      "restart_by": "sub_start.sh supervisor, already running",
+      "clients_all_connected_at": 17.5,
+      "status_after_wait": "RUNNING",
+      "seconds_watched": 180.5,
+      "job_finished": false,
+      "rounds_started_after_kill": [],
+      "results_sent_by_site_after_wait": {
+        "site-1": 2,
+        "site-2": 2,
+        "site-3": 2,
+        "site-4": 2
+      },
+      "processes_after_wait": [
+        "server parent",
+        "server supervisor",
+        "site-1 parent",
+        "site-1 supervisor",
+        "site-2 parent",
+        "site-2 supervisor",
+        "site-3 parent",
+        "site-3 supervisor",
+        "site-4 parent",
+        "site-4 supervisor"
+      ],
+      "snapshot_storage_files": [],
+      "run_dir_survived_restart": true,
+      "checkpoint_at_kill_error_vs_rounds_done": 2.02741846644372e-07,
+      "logs_after_kill": {
+        "server_console": [
+          {
+            "first": "05:54:58.996",
+            "text": "- ServerDeployer - INFO - server heartbeat timeout set to 600",
+            "count": 1
+          },
+          {
+            "first": "05:54:59.602",
+            "text": "- AuxRunner - INFO - registered aux handler for topic ObjectStreamer.Abort",
+            "count": 1
+          },
+          {
+            "first": "05:55:02.359",
+            "text": "- ClientManager - INFO - Client: New admin admin@nvidia.com@192.168.29.250 joined. Sent token.  Total clients: 0",
+            "count": 1
+          },
+          {
+            "first": "05:55:09.156",
+            "text": "- FederatedServer - WARNING - Dropped terminal outcome for untracked job/client 7c143afd-b866-4efb-bb59-f858a897d05d/site-1",
+            "count": 4
+          },
+          {
+            "first": "05:55:09.668",
+            "text": "- JobLogReceiver - INFO - [identity=server, run=?, peer=site-4, peer_run=7c143afd-b866-4efb-bb59-f858a897d05d] - Saved live log 'error_log.txt' from site-4 for job 7c143afd-b866-4efb-bb59-f858a897d05d",
+            "count": 4
+          }
+        ],
+        "server_job": [],
+        "site-1_console": [
+          {
+            "first": "05:54:55.877",
+            "text": "- byte_streamer - WARNING - Late stream error: stream_id=1793838289999952 channel=server_command topic=get_task sender=site-1.7c143afd-b866-4efb-bb59-f858a897d05d failed_destination=server.7c143afd-b866-4efb-bb59-f858a897d05d: stream forwarding to server.7c143afd-b866-4efb-bb59-f858a897d05d failed: ",
+            "count": 18
+          },
+          {
+            "first": "05:54:55.878",
+            "text": "- Communicator - WARNING - Failed to get_task from server. Will try it again.",
+            "count": 18
+          },
+          {
+            "first": "05:55:00.633",
+            "text": "- CoreCell - WARNING - [ME=site-1 O=site-1.:897d05d D=server F=site-1.:897d05d T=site-1 CH=sm__STREAM TP=sm__DATA SCH=aux_communication STP=ObjectStreamer.Request SEQ=0] no connection to server",
+            "count": 1
+          },
+          {
+            "first": "05:55:00.633",
+            "text": "- CoreCell - ERROR - [ME=site-1 O=site-1.:897d05d D=server F=site-1.:897d05d T=site-1 CH=sm__STREAM TP=sm__DATA SCH=aux_communication STP=ObjectStreamer.Request SEQ=0] cannot forward req: no path",
+            "count": 1
+          },
+          {
+            "first": "05:55:00.742",
+            "text": "- byte_streamer - WARNING - Late stream error: stream_id=1793838289999963 channel=aux_communication topic=__job_heartbeat__ sender=site-1.7c143afd-b866-4efb-bb59-f858a897d05d failed_destination=server.7c143afd-b866-4efb-bb59-f858a897d05d: stream forwarding to server.7c143afd-b866-4efb-bb59-f858a897d",
+            "count": 1
+          },
+          {
+            "first": "05:55:04.934",
+            "text": "- ClientRunner - INFO - [identity=site-1, run=7c143afd-b866-4efb-bb59-f858a897d05d] - Received command to abort job",
+            "count": 1
+          },
+          {
+            "first": "05:55:04.976",
+            "text": "- ClientRunner - INFO - [identity=site-1, run=7c143afd-b866-4efb-bb59-f858a897d05d] - fired ABORT_TASK event to abort all running tasks",
+            "count": 1
+          },
+          {
+            "first": "05:55:05.700",
+            "text": "- _LogTailProducer - ERROR - error from target server: TIMEOUT",
+            "count": 1
+          },
+          {
+            "first": "05:55:09.157",
+            "text": "- SiteLogStreamer - INFO - [identity=site-1, run=?] - Started completed error log upload for site-1 job 7c143afd-b866-4efb-bb59-f858a897d05d: <run>/poc/example_project/prod_00/site-1/7c143afd-b866-4efb-bb59-f858a897d05d/error_log.txt",
+            "count": 1
+          }
+        ],
+        "site-1_job": [
+          {
+            "first": "05:54:55.877",
+            "text": "- byte_streamer - WARNING - Late stream error: stream_id=1793838289999952 channel=server_command topic=get_task sender=site-1.7c143afd-b866-4efb-bb59-f858a897d05d failed_destination=server.7c143afd-b866-4efb-bb59-f858a897d05d: stream forwarding to server.7c143afd-b866-4efb-bb59-f858a897d05d failed: ",
+            "count": 18
+          },
+          {
+            "first": "05:54:55.878",
+            "text": "- Communicator - WARNING - Failed to get_task from server. Will try it again.",
+            "count": 18
+          },
+          {
+            "first": "05:55:00.742",
+            "text": "- byte_streamer - WARNING - Late stream error: stream_id=1793838289999963 channel=aux_communication topic=__job_heartbeat__ sender=site-1.7c143afd-b866-4efb-bb59-f858a897d05d failed_destination=server.7c143afd-b866-4efb-bb59-f858a897d05d: stream forwarding to server.7c143afd-b866-4efb-bb59-f858a897d",
+            "count": 1
+          },
+          {
+            "first": "05:55:04.934",
+            "text": "- ClientRunner - INFO - [identity=site-1, run=7c143afd-b866-4efb-bb59-f858a897d05d] - Received command to abort job",
+            "count": 1
+          },
+          {
+            "first": "05:55:04.976",
+            "text": "- ClientRunner - INFO - [identity=site-1, run=7c143afd-b866-4efb-bb59-f858a897d05d] - fired ABORT_TASK event to abort all running tasks",
+            "count": 1
+          },
+          {
+            "first": "05:55:05.700",
+            "text": "- _LogTailProducer - ERROR - error from target server: TIMEOUT",
+            "count": 1
+          }
+        ]
+      },
+      "recovered": false,
+      "resubmit_from_start": {
+        "job_id": "e730cd7a-b811-41f4-92bb-6ce9f1ce3391",
+        "seconds": 18.2,
+        "status": "FINISHED:COMPLETED",
+        "model_error": 3.218626540846259e-07,
+        "model_right": true
+      },
+      "resume_from_checkpoint": {
+        "job_id": "cce2b1d4-2431-4bec-b522-949a2578fd83",
+        "seconds": 13.1,
+        "status": "FINISHED:COMPLETED",
+        "model_error": 3.336311966695149e-07,
+        "model_right": true
+      },
+      "status_after_follow_ups": "RUNNING",
+      "abort_response": "InternalError: server internal error: Job 7c143afd-b866-4efb-bb59-f858a897d05d is not running.",
+      "status_after_abort": "RUNNING",
+      "list_jobs_entry": {
+        "job_id": "7c143afd-b866-4efb-bb59-f858a897d05d",
+        "job_name": "crash-bench",
+        "status": "RUNNING",
+        "submit_time": "2026-11-05T05:54:49.084685+05:30",
+        "duration": "0:03:42.611253",
+        "study": "default"
+      },
+      "delete_response": "JobNotDone: job 7c143afd-b866-4efb-bb59-f858a897d05d is still running",
+      "left_running_after_cleanup": 0
+    }
+  ]
+}

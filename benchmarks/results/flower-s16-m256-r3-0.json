@@ -1,0 +1,59 @@
+{
+  "framework": "flower",
+  "version": "1.43.0",
+  "sites": 16,
+  "model_mib": 256,
+  "rounds": 3,
+  "total_seconds": 51.09,
+  "memory": {
+    "server": {
+      "peak_total_mib": 10541.8,
+      "peak_each_mib": 10541.8
+    },
+    "sites": {
+      "peak_total_mib": 29984.6,
+      "peak_each_mib": 2385.7
+    }
+  },
+  "tls": false,
+  "masked": false,
+  "startup_seconds": 2.81,
+  "submit_seconds": 0.41,
+  "check_seconds": 0.174,
+  "strategy_seconds": 47.66,
+  "after_strategy_seconds": 1.87,
+  "superlink_elapsed_seconds": 49.25,
+  "network_bytes": {
+    "inbound-bytes": 12885536815,
+    "outbound-bytes": 12885744900,
+    "total-bytes": 25771281715
+  },
+  "nominal_bytes": 25769803776,
+  "idle_rss_mib": {
+    "server": 257.6,
+    "sites": 4053.1
+  },
+  "process_counts": {
+    "server": {
+      "flower-superlink": 1,
+      "flower-superexec": 1,
+      "flwr-serverapp": 1
+    },
+    "site_0": {
+      "flower-supernode": 1,
+      "flower-superexec": 1,
+      "flwr-clientapp": 3
+    }
+  },
+  "model_error": 5.265163234291492e-07,
+  "notes": [
+    "total_seconds starts just before `flwr run` and ends when `flwr run --stream` exits, less check_seconds. It includes CLI start-up, the FAB build and upload, and the log stream's 0.5 s poll. SuperLink and SuperNode start-up is excluded and given as startup_seconds.",
+    "Waits before the timer until every SuperNode is online and every SuperExec is connected.",
+    "strategy_seconds is FedAvg alone, timed in the ServerApp. after_strategy_seconds runs from FedAvg returning to the CLI exiting. superlink_elapsed_seconds is running to finished as the SuperLink records it.",
+    "Stock polling stays in the numbers: SuperNode 3 s when idle, SuperExec 1 s, ServerApp 1 s. One ClientApp process starts per message, so per site per round.",
+    "SuperLink ran with --disable-runtime-dependency-installation, so no `uv sync` per run. State and objects are in memory, the SuperLink default.",
+    "Telemetry and the update check were off. Both apps read common.py through PYTHONPATH.",
+    "common.py's tensors are random and each site's update differs in every coordinate, so Flower's content-addressed chunks find nothing to deduplicate. network_bytes should be close to nominal_bytes.",
+    "Memory is summed RSS per process tree, so pages shared between processes count more than once. The `flwr run` CLI process is in neither group."
+  ]
+}

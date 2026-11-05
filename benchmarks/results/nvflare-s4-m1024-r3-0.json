@@ -1,0 +1,48 @@
+{
+  "framework": "nvflare",
+  "version": "2.10.0dev0+170.g3083649b3",
+  "sites": 4,
+  "model_mib": 1024,
+  "rounds": 3,
+  "total_seconds": 30.86,
+  "memory": {
+    "server": {
+      "peak_total_mib": 13516.0,
+      "peak_each_mib": 13516.0
+    },
+    "sites": {
+      "peak_total_mib": 22424.2,
+      "peak_each_mib": 5881.9
+    }
+  },
+  "idle_rss_mib": {
+    "server": 92.0,
+    "sites": 344.3
+  },
+  "model_error": 2.5811853654467143e-07,
+  "tls": true,
+  "masked": false,
+  "connection_security": [
+    "mtls"
+  ],
+  "transport": "http",
+  "fedavg_seconds": 21.801,
+  "model_load_seconds": 0.479,
+  "job_status": "FINISHED:COMPLETED",
+  "settings": {
+    "execution_mode": "in_process",
+    "server_expected_format": "numpy",
+    "params_transfer_type": "FULL",
+    "enable_tensor_disk_offload": false,
+    "np_download_chunk_size": 2097152,
+    "streaming_idle_timeout": 600.0
+  },
+  "notes": [
+    "POC deployment from nvflare poc prepare and start; job from FedAvgRecipe, submitted through the FLARE API",
+    "total_seconds runs from before submit to the terminal job status, polled every 0.2s, so it includes job scheduling, deployment and teardown; fedavg_seconds is the Start to Finished span in the server job log",
+    "POC start-up, result download and the model check are not timed",
+    "the server job process builds the initial model through the persistor, inside total_seconds and fedavg_seconds; model_load_seconds is that step",
+    "site job processes reach the server parent over mTLS; each job process to its own parent is local plain TCP",
+    "the custom persistor stands in for NPModelPersistor, which holds a single array"
+  ]
+}

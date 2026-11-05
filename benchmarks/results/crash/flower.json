@@ -1,0 +1,3749 @@
+{
+  "framework": "flower",
+  "version": "1.43.0",
+  "sites": 4,
+  "model_mib": 32,
+  "rounds": 4,
+  "observe_seconds": 180,
+  "commands": {
+    "superlink": "flower-superlink --insecure --host 127.0.0.1 --port PORT --disable-runtime-dependency-installation [--database ROOT/state.db]",
+    "superexec_with_isolation_process": "flower-superexec --insecure --runtime-api-address 127.0.0.1:PORT",
+    "supernode": "flower-supernode --insecure --superlink 127.0.0.1:PORT --host 127.0.0.1 --port NODE_PORT --node-config site=I",
+    "submit": "flwr run APP bench --run-config 'sites=4 mib=32 rounds=4 result-file=\"...\"' --stream",
+    "run_status": "flwr ls bench --run-id RUN_ID --format json",
+    "all_runs": "flwr ls bench --format json",
+    "nodes": "flwr supernode ls bench --format json",
+    "logs": "flwr log RUN_ID bench --show"
+  },
+  "notes": [
+    "SIGKILL in round 2: at least one SuperNode had received its round 2 message, see at_kill.",
+    "The killed SuperLink is reaped at once, as init or a shell would, so its pid is gone.",
+    "Restart is outage_seconds after the kill, with the same flags, port and database file.",
+    "With process isolation, kill `tree` also kills and restarts the separate SuperExec.",
+    "Watching stops early only once the run is finished and every SuperNode is online.",
+    "Resubmit is a new `flwr run` of the same app after watching, to the same federation. If SuperNodes have exited it waits 30 s, then restarts them with the same flags.",
+    "No Flower code changed. Stock FedAvg, with no checkpointing added to the app.",
+    "Merged from one crash.py invocation per group of trials, see each trial's command.",
+    "Two earlier trials are not in this file. sqlite, superlink kill, 2 s outage, subprocess: running from +8.8 s, finished:failed 'No heartbeat received from the task' at +61.0 s. sqlite, superlink kill, 2 s outage, process isolation: finished:completed at +20.2 s, right model. Same outcomes as the matching trials below apart from the status race."
+  ],
+  "trials": [
+    {
+      "database": "memory",
+      "kill": "superlink",
+      "load_average": 1.75927734375,
+      "nodes_before_kill": {
+        "online": 4
+      },
+      "run_id": "156778549517780493",
+      "at_kill": {
+        "processes": {
+          "flower-superexec": 5,
+          "flower-superlink": 1,
+          "flower-supernode": 4,
+          "flwr": 1,
+          "flwr-clientapp": 4,
+          "flwr-serverapp": 1
+        },
+        "killed": [
+          "flower-superlink"
+        ],
+        "rounds_logged": [
+          1,
+          2
+        ],
+        "rounds_aggregated": 1,
+        "received_by_site": [
+          2,
+          2,
+          2,
+          2
+        ],
+        "replied_by_site": [
+          1,
+          1,
+          1,
+          1
+        ]
+      },
+      "before_restart": {
+        "seconds_after_kill": 2.0,
+        "processes": {
+          "flower-superexec": 4,
+          "flower-supernode": 4,
+          "flwr-serverapp": 1
+        },
+        "flwr_run_exit_code": 1
+      },
+      "watched_seconds_after_restart": 184.8,
+      "timeline": [
+        {
+          "seconds_after_kill": 2.8,
+          "run": {
+            "status": "ERROR",
+            "text": "Using SuperLink: bench (127.0.0.1:56603)\n Displaying information for run ID 156778549517780493...\n\nConnection to the SuperLink is unavailable. Please check your network connection and 'address' in the SuperLink connection configuration."
+          },
+          "nodes": {},
+          "node_ids_kept": false,
+          "processes": {
+            "flower-superexec": 5,
+            "flower-superlink": 1,
+            "flower-supernode": 4,
+            "flwr-serverapp": 1
+          },
+          "superlink_alive": true,
+          "supernodes_alive": 4
+        },
+        {
+          "seconds_after_kill": 8.5,
+          "run": {
+            "status": "ERROR",
+            "text": "Using SuperLink: bench (127.0.0.1:56603)\n Displaying information for run ID 156778549517780493...\n\n[code: 16] Run ID not found."
+          },
+          "nodes": {},
+          "node_ids_kept": false,
+          "processes": {
+            "flower-superexec": 5,
+            "flower-superlink": 1
+          },
+          "superlink_alive": true,
+          "supernodes_alive": 0
+        },
+        {
+          "seconds_after_kill": 14.3,
+          "run": {
+            "status": "ERROR",
+            "text": "Using SuperLink: bench (127.0.0.1:56603)\n Displaying information for run ID 156778549517780493...\n\n[code: 16] Run ID not found."
+          },
+          "nodes": {},
+          "node_ids_kept": false,
+          "processes": {
+            "flower-superexec": 2,
+            "flower-superlink": 1
+          },
+          "superlink_alive": true,
+          "supernodes_alive": 0
+        },
+        {
+          "seconds_after_kill": 20.0,
+          "run": {
+            "status": "ERROR",
+            "text": "Using SuperLink: bench (127.0.0.1:56603)\n Displaying information for run ID 156778549517780493...\n\n[code: 16] Run ID not found."
+          },
+          "nodes": {},
+          "node_ids_kept": false,
+          "processes": {
+            "flower-superexec": 1,
+            "flower-superlink": 1
+          },
+          "superlink_alive": true,
+          "supernodes_alive": 0
+        }
+      ],
+      "after_watching": {
+        "flwr_ls_run": {
+          "success": false,
+          "error-message": "Using SuperLink: bench (127.0.0.1:56603)\n Displaying information for run ID 156778549517780493...\n\n[code: 16] Run ID not found."
+        },
+        "flwr_ls_all_run_ids": [],
+        "flwr_supernode_ls": {},
+        "flwr_log_show": {
+          "exit_code": 1,
+          "rounds": [],
+          "rounds_aggregated": 0,
+          "error": "INFO :      Printing logstream for run_id `156778549517780493`\n\u256d\u2500 Error \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u256e\n\u2502 [code: 16] Run ID not found.                                                 \u2502\n\u2570\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500"
+        },
+        "model": "no final model written",
+        "supernode_exit_codes": [
+          0,
+          0,
+          0,
+          0
+        ]
+      },
+      "flwr_run": {
+        "exit_code": 1,
+        "exit_seen_seconds_after_kill": 2.8,
+        "still_running_after_watching": false,
+        "output_after_kill": [
+          "\u256d\u2500 Error \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u256e",
+          "\u2502 Connection to the SuperLink is unavailable. Please check your network        \u2502",
+          "\u2502 connection and 'address' in the SuperLink connection configuration.          \u2502",
+          "\u2570\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u256f"
+        ]
+      },
+      "after_kill_counts": {
+        "superlink_tasks_started": 0,
+        "clientapps_started_by_site": [
+          1,
+          1,
+          1,
+          1
+        ],
+        "messages_received_by_site": [
+          0,
+          0,
+          0,
+          0
+        ],
+        "replies_sent_by_site": [
+          0,
+          0,
+          0,
+          0
+        ]
+      },
+      "logs_after_kill": {
+        "site-0": [
+          "INFO :      Start `flwr-clientapp` process",
+          "INFO :",
+          "INFO :",
+          "INFO :      [RUN 156778549517780493]",
+          "INFO :      Sending: train message (ID: 28b4da503923542232dcdddf6ff0b3447468d95cfd304e8a0d1a54d7e9b3d2ee)",
+          "WARNING :   Connection attempt failed, retrying in 0.51 seconds",
+          "WARNING :   Connection attempt failed, retrying in 0.88 seconds",
+          "WARNING :   Connection attempt failed, retrying in 0.85 seconds",
+          "INFO :      SuperNode terminated gracefully.",
+          "INFO:     Shutting down",
+          "INFO:     Waiting for application shutdown.",
+          "INFO :      FastAPI lifespan: shutdown",
+          "INFO:     Application shutdown complete.",
+          "INFO:     Finished server process [5977]",
+          "WARNING :   Connection attempt failed, retrying in 0.22 seconds",
+          "WARNING :   Connection attempt failed, retrying in 1.41 seconds",
+          "WARNING :   Connection attempt failed, retrying in 1.78 seconds",
+          "WARNING :   Connection attempt failed, retrying in 1.51 seconds",
+          "INFO :      SuperExec terminated gracefully."
+        ],
+        "superlink": [
+          "INFO :      SuperExec terminated gracefully.",
+          "WARNING :   Option `--insecure` was set. Starting insecure HTTP server with unencrypted communication (TLS disabled). Proceed only if you understand the risks.",
+          "WARNING :   SuperNode authentication is disabled. The SuperLink will accept connections from any SuperNode.",
+          "INFO :      Starting Flower SuperLink",
+          "INFO :      Starting the SuperLink Runtime HTTP API on 127.0.0.1:56603.",
+          "INFO :      Starting the SuperLink Control HTTP API on 127.0.0.1:56603.",
+          "INFO :      Starting the SuperLink Fleet HTTP API on 127.0.0.1:56603.",
+          "2026-11-05T00:14:09.835Z INFO [uvicorn.error] Started server process [6098]",
+          "2026-11-05T00:14:09.835Z INFO [uvicorn.error] Waiting for application startup.",
+          "INFO :      FastAPI lifespan: startup",
+          "INFO :      SuperLinkLifespan: start",
+          "2026-11-05T00:14:09.838Z INFO [uvicorn.error] Application startup complete.",
+          "... 24 lines ...",
+          "ERROR :     [/v1/control/list-runs][ApiError:16] Run 156778549517780493 not found while listing runs for <id:none>.",
+          "ERROR :     [/v1/control/list-runs][ApiError:16] Run 156778549517780493 not found while listing runs for <id:none>.",
+          "ERROR :     [/v1/control/list-runs][ApiError:16] Run 156778549517780493 not found while listing runs for <id:none>.",
+          "ERROR :     [/v1/control/list-runs][ApiError:16] Run 156778549517780493 not found while listing runs for <id:none>.",
+          "ERROR :     [/v1/control/list-runs][ApiError:16] Run 156778549517780493 not found while listing runs for <id:none>.",
+          "ERROR :     [/v1/control/list-runs][ApiError:16] Run 156778549517780493 not found while listing runs for <id:none>.",
+          "ERROR :     [/v1/control/list-runs][ApiError:16] Run 156778549517780493 not found while listing runs for <id:none>.",
+          "ERROR :     [/v1/control/list-runs][ApiError:16] Run 156778549517780493 not found while listing runs for <id:none>.",
+          "ERROR :     [/v1/control/list-runs][ApiError:16] Run 156778549517780493 not found while listing runs for <id:none>.",
+          "ERROR :     [/v1/control/list-runs][ApiError:16] Run 156778549517780493 not found while listing runs for <id:none>.",
+          "ERROR :     [/v1/control/stream-logs][ApiError:16] Run 156778549517780493 not found while streaming logs.",
+          "ERROR :     [/v1/control/list-runs][ApiError:16] Run 156778549517780493 not found while listing runs for <id:none>."
+        ]
+      },
+      "resubmit": {
+        "before_restarting_supernodes": {
+          "seconds": 30.1,
+          "run": {
+            "status": "running",
+            "text": "N/A"
+          },
+          "nodes": {},
+          "last_output": "INFO :      Waiting for nodes to connect: 0 connected (minimum required: 4).",
+          "supernodes_restarted": 4
+        },
+        "finished_in_time": true,
+        "seconds": 52.5,
+        "exit_code": 0,
+        "status": {
+          "status": "finished:completed",
+          "text": "N/A"
+        },
+        "rounds_logged": [
+          1,
+          2,
+          3,
+          4
+        ],
+        "model": "right, largest error 3.55e-07",
+        "nodes": {
+          "online": 4
+        },
+        "supernodes_alive": 4,
+        "output_tail": []
+      },
+      "isolation": "subprocess",
+      "outage_seconds": 2,
+      "command": "python benchmarks/flower/crash.py --out ..."
+    },
+    {
+      "database": "memory",
+      "kill": "tree",
+      "load_average": 3.05810546875,
+      "nodes_before_kill": {
+        "online": 4
+      },
+      "run_id": "1528303617532008448",
+      "at_kill": {
+        "processes": {
+          "flower-superexec": 5,
+          "flower-superlink": 1,
+          "flower-supernode": 4,
+          "flwr": 1,
+          "flwr-clientapp": 4,
+          "flwr-serverapp": 1
+        },
+        "killed": [
+          "flower-superlink",
+          "flower-superexec",
+          "flwr-serverapp"
+        ],
+        "rounds_logged": [
+          1,
+          2
+        ],
+        "rounds_aggregated": 1,
+        "received_by_site": [
+          2,
+          2,
+          2,
+          2
+        ],
+        "replied_by_site": [
+          1,
+          1,
+          1,
+          1
+        ]
+      },
+      "before_restart": {
+        "seconds_after_kill": 2.0,
+        "processes": {
+          "flower-superexec": 4,
+          "flower-supernode": 4
+        },
+        "flwr_run_exit_code": 1
+      },
+      "watched_seconds_after_restart": 180.3,
+      "timeline": [
+        {
+          "seconds_after_kill": 2.9,
+          "run": {
+            "status": "ERROR",
+            "text": "Using SuperLink: bench (127.0.0.1:57191)\n Displaying information for run ID 1528303617532008448...\n\nConnection to the SuperLink is unavailable. Please check your network connection and 'address' in the SuperLink connection configuration."
+          },
+          "nodes": {},
+          "node_ids_kept": false,
+          "processes": {
+            "flower-superexec": 5,
+            "flower-superlink": 1,
+            "flower-supernode": 3
+          },
+          "superlink_alive": true,
+          "supernodes_alive": 3
+        },
+        {
+          "seconds_after_kill": 8.7,
+          "run": {
+            "status": "ERROR",
+            "text": "Using SuperLink: bench (127.0.0.1:57191)\n Displaying information for run ID 1528303617532008448...\n\n[code: 16] Run ID not found."
+          },
+          "nodes": {},
+          "node_ids_kept": false,
+          "processes": {
+            "flower-superexec": 4,
+            "flower-superlink": 1
+          },
+          "superlink_alive": true,
+          "supernodes_alive": 0
+        },
+        {
+          "seconds_after_kill": 14.5,
+          "run": {
+            "status": "ERROR",
+            "text": "Using SuperLink: bench (127.0.0.1:57191)\n Displaying information for run ID 1528303617532008448...\n\n[code: 16] Run ID not found."
+          },
+          "nodes": {},
+          "node_ids_kept": false,
+          "processes": {
+            "flower-superexec": 1,
+            "flower-superlink": 1
+          },
+          "superlink_alive": true,
+          "supernodes_alive": 0
+        }
+      ],
+      "after_watching": {
+        "flwr_ls_run": {
+          "success": false,
+          "error-message": "Using SuperLink: bench (127.0.0.1:57191)\n Displaying information for run ID 1528303617532008448...\n\n[code: 16] Run ID not found."
+        },
+        "flwr_ls_all_run_ids": [],
+        "flwr_supernode_ls": {},
+        "flwr_log_show": {
+          "exit_code": 1,
+          "rounds": [],
+          "rounds_aggregated": 0,
+          "error": "INFO :      Printing logstream for run_id `1528303617532008448`\n\u256d\u2500 Error \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u256e\n\u2502 [code: 16] Run ID not found.                                                 \u2502\n\u2570\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500"
+        },
+        "model": "no final model written",
+        "supernode_exit_codes": [
+          0,
+          0,
+          0,
+          0
+        ]
+      },
+      "flwr_run": {
+        "exit_code": 1,
+        "exit_seen_seconds_after_kill": 2.9,
+        "still_running_after_watching": false,
+        "output_after_kill": [
+          "\u256d\u2500 Error \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u256e",
+          "\u2502 Connection to the SuperLink is unavailable. Please check your network        \u2502",
+          "\u2502 connection and 'address' in the SuperLink connection configuration.          \u2502",
+          "\u2570\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u256f"
+        ]
+      },
+      "after_kill_counts": {
+        "superlink_tasks_started": 0,
+        "clientapps_started_by_site": [
+          1,
+          1,
+          1,
+          1
+        ],
+        "messages_received_by_site": [
+          0,
+          0,
+          0,
+          0
+        ],
+        "replies_sent_by_site": [
+          0,
+          0,
+          0,
+          0
+        ]
+      },
+      "logs_after_kill": {
+        "site-0": [
+          "INFO :      Start `flwr-clientapp` process",
+          "INFO :",
+          "INFO :",
+          "INFO :      [RUN 1528303617532008448]",
+          "INFO :      Sending: train message (ID: 54f038d92b9f64a72b58b01a84b137bcaed6dd2d577693c1925feecf172fdbc2)",
+          "WARNING :   Connection attempt failed, retrying in 0.52 seconds",
+          "WARNING :   Connection attempt failed, retrying in 1.40 seconds",
+          "INFO :      SuperNode terminated gracefully.",
+          "INFO:     Shutting down",
+          "INFO:     Waiting for application shutdown.",
+          "INFO :      FastAPI lifespan: shutdown",
+          "INFO:     Application shutdown complete.",
+          "INFO:     Finished server process [7573]",
+          "WARNING :   Connection attempt failed, retrying in 0.33 seconds",
+          "WARNING :   Connection attempt failed, retrying in 0.68 seconds",
+          "WARNING :   Connection attempt failed, retrying in 2.31 seconds",
+          "WARNING :   Connection attempt failed, retrying in 6.33 seconds",
+          "INFO :      SuperExec terminated gracefully."
+        ],
+        "superlink": [
+          "WARNING :   Option `--insecure` was set. Starting insecure HTTP server with unencrypted communication (TLS disabled). Proceed only if you understand the risks.",
+          "WARNING :   SuperNode authentication is disabled. The SuperLink will accept connections from any SuperNode.",
+          "INFO :      Starting Flower SuperLink",
+          "INFO :      Starting the SuperLink Runtime HTTP API on 127.0.0.1:57191.",
+          "INFO :      Starting the SuperLink Control HTTP API on 127.0.0.1:57191.",
+          "INFO :      Starting the SuperLink Fleet HTTP API on 127.0.0.1:57191.",
+          "2026-11-05T00:18:21.049Z INFO [uvicorn.error] Started server process [7696]",
+          "2026-11-05T00:18:21.049Z INFO [uvicorn.error] Waiting for application startup.",
+          "INFO :      FastAPI lifespan: startup",
+          "INFO :      SuperLinkLifespan: start",
+          "2026-11-05T00:18:21.052Z INFO [uvicorn.error] Application startup complete.",
+          "2026-11-05T00:18:21.053Z INFO [uvicorn.error] Uvicorn running on http://127.0.0.1:57191 (Press CTRL+C to quit)",
+          "... 21 lines ...",
+          "ERROR :     [/v1/control/list-runs][ApiError:16] Run 1528303617532008448 not found while listing runs for <id:none>.",
+          "ERROR :     [/v1/control/list-runs][ApiError:16] Run 1528303617532008448 not found while listing runs for <id:none>.",
+          "ERROR :     [/v1/control/list-runs][ApiError:16] Run 1528303617532008448 not found while listing runs for <id:none>.",
+          "ERROR :     [/v1/control/list-runs][ApiError:16] Run 1528303617532008448 not found while listing runs for <id:none>.",
+          "ERROR :     [/v1/control/list-runs][ApiError:16] Run 1528303617532008448 not found while listing runs for <id:none>.",
+          "ERROR :     [/v1/control/list-runs][ApiError:16] Run 1528303617532008448 not found while listing runs for <id:none>.",
+          "ERROR :     [/v1/control/list-runs][ApiError:16] Run 1528303617532008448 not found while listing runs for <id:none>.",
+          "ERROR :     [/v1/control/list-runs][ApiError:16] Run 1528303617532008448 not found while listing runs for <id:none>.",
+          "ERROR :     [/v1/control/list-runs][ApiError:16] Run 1528303617532008448 not found while listing runs for <id:none>.",
+          "ERROR :     [/v1/control/list-runs][ApiError:16] Run 1528303617532008448 not found while listing runs for <id:none>.",
+          "ERROR :     [/v1/control/stream-logs][ApiError:16] Run 1528303617532008448 not found while streaming logs.",
+          "ERROR :     [/v1/control/list-runs][ApiError:16] Run 1528303617532008448 not found while listing runs for <id:none>."
+        ]
+      },
+      "resubmit": {
+        "before_restarting_supernodes": {
+          "seconds": 30.2,
+          "run": {
+            "status": "running",
+            "text": "N/A"
+          },
+          "nodes": {},
+          "last_output": "INFO :      Waiting for nodes to connect: 0 connected (minimum required: 4).",
+          "supernodes_restarted": 4
+        },
+        "finished_in_time": true,
+        "seconds": 52.9,
+        "exit_code": 0,
+        "status": {
+          "status": "finished:completed",
+          "text": "N/A"
+        },
+        "rounds_logged": [
+          1,
+          2,
+          3,
+          4
+        ],
+        "model": "right, largest error 3.47e-07",
+        "nodes": {
+          "online": 4
+        },
+        "supernodes_alive": 4,
+        "output_tail": []
+      },
+      "isolation": "subprocess",
+      "outage_seconds": 2,
+      "command": "python benchmarks/flower/crash.py --out ..."
+    },
+    {
+      "database": "sqlite",
+      "kill": "superlink",
+      "load_average": 2.806640625,
+      "nodes_before_kill": {
+        "online": 4
+      },
+      "run_id": "3927768575266083474",
+      "at_kill": {
+        "processes": {
+          "flower-superexec": 5,
+          "flower-superlink": 1,
+          "flower-supernode": 4,
+          "flwr": 1,
+          "flwr-clientapp": 1,
+          "flwr-serverapp": 1
+        },
+        "killed": [
+          "flower-superlink"
+        ],
+        "rounds_logged": [
+          1,
+          2
+        ],
+        "rounds_aggregated": 1,
+        "received_by_site": [
+          1,
+          1,
+          1,
+          2
+        ],
+        "replied_by_site": [
+          1,
+          1,
+          1,
+          1
+        ]
+      },
+      "before_restart": {
+        "seconds_after_kill": 2.0,
+        "processes": {
+          "flower-superexec": 4,
+          "flower-supernode": 4,
+          "flwr-clientapp": 1,
+          "flwr-serverapp": 1
+        },
+        "flwr_run_exit_code": 1
+      },
+      "watched_seconds_after_restart": 6.6,
+      "timeline": [
+        {
+          "seconds_after_kill": 2.8,
+          "run": {
+            "status": "ERROR",
+            "text": "Using SuperLink: bench (127.0.0.1:58267)\n Displaying information for run ID 3927768575266083474...\n\nConnection to the SuperLink is unavailable. Please check your network connection and 'address' in the SuperLink connection configuration."
+          },
+          "nodes": {
+            "online": 4
+          },
+          "node_ids_kept": true,
+          "processes": {
+            "flower-superexec": 5,
+            "flower-superlink": 1,
+            "flower-supernode": 4,
+            "flwr-clientapp": 1,
+            "flwr-serverapp": 1
+          },
+          "superlink_alive": true,
+          "supernodes_alive": 4
+        },
+        {
+          "seconds_after_kill": 8.6,
+          "run": {
+            "status": "finished:failed",
+            "text": "Task failed with unknown error."
+          },
+          "nodes": {
+            "online": 4
+          },
+          "node_ids_kept": true,
+          "processes": {
+            "flower-superexec": 5,
+            "flower-superlink": 1,
+            "flower-supernode": 4,
+            "flwr-clientapp": 1
+          },
+          "superlink_alive": true,
+          "supernodes_alive": 4
+        }
+      ],
+      "after_watching": {
+        "flwr_ls_run": {
+          "success": true,
+          "runs": [
+            {
+              "run-id": "3927768575266083474",
+              "federation-id": "@none/default",
+              "fab-id": "fedtally-bench/fedavg-bench",
+              "fab-name": "fedavg-bench",
+              "fab-version": "1.0.0",
+              "fab-hash": "a3b7161f0181639ecb05340f1ae261138d9990f09b7d0950271667420658bc5f",
+              "status": "finished:failed",
+              "status-details": "Task failed with unknown error.",
+              "elapsed": 10.407162,
+              "pending-at": "2026-11-05 00:22:18Z",
+              "starting-at": "2026-11-05 00:22:19Z",
+              "running-at": "2026-11-05 00:22:19Z",
+              "finished-at": "2026-11-05 00:22:30Z",
+              "network-traffic": {
+                "inbound-bytes": 167800939,
+                "outbound-bytes": 201365914,
+                "total-bytes": 369166853
+              },
+              "compute-time": {
+                "serverapp-seconds": 10.407162,
+                "clientapp-seconds": 0.43892335891723633,
+                "total-seconds": 10.846085358917236
+              }
+            }
+          ]
+        },
+        "flwr_ls_all_run_ids": [
+          "3927768575266083474"
+        ],
+        "flwr_supernode_ls": {
+          "online": 4
+        },
+        "flwr_log_show": {
+          "exit_code": 0,
+          "rounds": [
+            1,
+            2
+          ],
+          "rounds_aggregated": 1,
+          "error": "INFO :      Printing logstream for run_id `3927768575266083474`"
+        },
+        "model": "no final model written",
+        "supernode_exit_codes": [
+          null,
+          null,
+          null,
+          null
+        ]
+      },
+      "flwr_run": {
+        "exit_code": 1,
+        "exit_seen_seconds_after_kill": 2.8,
+        "still_running_after_watching": false,
+        "output_after_kill": [
+          "\u256d\u2500 Error \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u256e",
+          "\u2502 Connection to the SuperLink is unavailable. Please check your network        \u2502",
+          "\u2502 connection and 'address' in the SuperLink connection configuration.          \u2502",
+          "\u2570\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u256f"
+        ]
+      },
+      "after_kill_counts": {
+        "superlink_tasks_started": 0,
+        "clientapps_started_by_site": [
+          0,
+          0,
+          1,
+          1
+        ],
+        "messages_received_by_site": [
+          0,
+          0,
+          0,
+          0
+        ],
+        "replies_sent_by_site": [
+          0,
+          0,
+          0,
+          1
+        ]
+      },
+      "logs_after_kill": {
+        "site-0": [
+          "WARNING :   Connection attempt failed, retrying in 0.81 seconds",
+          "WARNING :   Connection attempt failed, retrying in 0.82 seconds",
+          "WARNING :   Connection attempt failed, retrying in 3.30 seconds",
+          "INFO :      Connection successful after 4.95 seconds and 4 tries."
+        ],
+        "superlink": [
+          "INFO :      SuperExec terminated gracefully.",
+          "WARNING :   Option `--insecure` was set. Starting insecure HTTP server with unencrypted communication (TLS disabled). Proceed only if you understand the risks.",
+          "WARNING :   SuperNode authentication is disabled. The SuperLink will accept connections from any SuperNode.",
+          "INFO :      Starting Flower SuperLink",
+          "INFO :      Starting the SuperLink Runtime HTTP API on 127.0.0.1:58267.",
+          "INFO :      Starting the SuperLink Control HTTP API on 127.0.0.1:58267.",
+          "INFO :      Starting the SuperLink Fleet HTTP API on 127.0.0.1:58267.",
+          "2026-11-05T00:22:28.228Z INFO [uvicorn.error] Started server process [9436]",
+          "2026-11-05T00:22:28.228Z INFO [uvicorn.error] Waiting for application startup.",
+          "INFO :      FastAPI lifespan: startup",
+          "INFO :      SuperLinkLifespan: start",
+          "2026-11-05T00:22:28.230Z INFO [uvicorn.error] Application startup complete.",
+          "2026-11-05T00:22:28.231Z INFO [uvicorn.error] Uvicorn running on http://127.0.0.1:58267 (Press CTRL+C to quit)",
+          "INFO :      Starting Flower SuperExec",
+          "INFO :      Finished task 6612247473337761270 of run 3927768575266083474",
+          "ERROR :     [/v1/fleet/pull-object][ApiError:2007] SuperNode 12561289636270762571, run_id=3927768575266083474, object_id=9af5ab65c04eb338d1ed19a4f6878f8ff60dca53f376f5e3adbf8a6111a94dba, exception: Run is finished.",
+          "ERROR :     [/v1/fleet/confirm-message-received][ApiError:2007] SuperNode 12561289636270762571, exception: Run is finished."
+        ]
+      },
+      "resubmit": {
+        "before_restarting_supernodes": null,
+        "finished_in_time": true,
+        "seconds": 23.2,
+        "exit_code": 0,
+        "status": {
+          "status": "finished:completed",
+          "text": "N/A"
+        },
+        "rounds_logged": [
+          1,
+          2,
+          3,
+          4
+        ],
+        "model": "right, largest error 3.34e-07",
+        "nodes": {
+          "online": 4
+        },
+        "supernodes_alive": 4,
+        "output_tail": []
+      },
+      "database_bytes": 134852608,
+      "isolation": "subprocess",
+      "outage_seconds": 2,
+      "command": "python benchmarks/flower/crash.py --out ..."
+    },
+    {
+      "database": "sqlite",
+      "kill": "tree",
+      "load_average": 2.0771484375,
+      "nodes_before_kill": {
+        "online": 4
+      },
+      "run_id": "9644088920694999195",
+      "at_kill": {
+        "processes": {
+          "flower-superexec": 5,
+          "flower-superlink": 1,
+          "flower-supernode": 4,
+          "flwr": 1,
+          "flwr-clientapp": 2,
+          "flwr-serverapp": 1
+        },
+        "killed": [
+          "flower-superlink",
+          "flower-superexec",
+          "flwr-serverapp"
+        ],
+        "rounds_logged": [
+          1,
+          2
+        ],
+        "rounds_aggregated": 1,
+        "received_by_site": [
+          2,
+          1,
+          1,
+          1
+        ],
+        "replied_by_site": [
+          1,
+          1,
+          1,
+          1
+        ]
+      },
+      "before_restart": {
+        "seconds_after_kill": 2.0,
+        "processes": {
+          "flower-superexec": 4,
+          "flower-supernode": 4,
+          "flwr-clientapp": 2
+        },
+        "flwr_run_exit_code": 1
+      },
+      "watched_seconds_after_restart": 58.4,
+      "timeline": [
+        {
+          "seconds_after_kill": 2.8,
+          "run": {
+            "status": "ERROR",
+            "text": "Using SuperLink: bench (127.0.0.1:58452)\n Displaying information for run ID 9644088920694999195...\n\nConnection to the SuperLink is unavailable. Please check your network connection and 'address' in the SuperLink connection configuration."
+          },
+          "nodes": {
+            "online": 4
+          },
+          "node_ids_kept": true,
+          "processes": {
+            "flower-superexec": 5,
+            "flower-superlink": 1,
+            "flower-supernode": 4,
+            "flwr-clientapp": 2
+          },
+          "superlink_alive": true,
+          "supernodes_alive": 4
+        },
+        {
+          "seconds_after_kill": 8.6,
+          "run": {
+            "status": "running",
+            "text": "N/A"
+          },
+          "nodes": {
+            "online": 4
+          },
+          "node_ids_kept": true,
+          "processes": {
+            "flower-superexec": 5,
+            "flower-superlink": 1,
+            "flower-supernode": 4,
+            "flwr-clientapp": 2
+          },
+          "superlink_alive": true,
+          "supernodes_alive": 4
+        },
+        {
+          "seconds_after_kill": 20.1,
+          "run": {
+            "status": "running",
+            "text": "N/A"
+          },
+          "nodes": {
+            "online": 4
+          },
+          "node_ids_kept": true,
+          "processes": {
+            "flower-superexec": 5,
+            "flower-superlink": 1,
+            "flower-supernode": 4
+          },
+          "superlink_alive": true,
+          "supernodes_alive": 4
+        },
+        {
+          "seconds_after_kill": 60.4,
+          "run": {
+            "status": "finished:failed",
+            "text": "No heartbeat received from the task"
+          },
+          "nodes": {
+            "online": 4
+          },
+          "node_ids_kept": true,
+          "processes": {
+            "flower-superexec": 5,
+            "flower-superlink": 1,
+            "flower-supernode": 4
+          },
+          "superlink_alive": true,
+          "supernodes_alive": 4
+        }
+      ],
+      "after_watching": {
+        "flwr_ls_run": {
+          "success": true,
+          "runs": [
+            {
+              "run-id": "9644088920694999195",
+              "federation-id": "@none/default",
+              "fab-id": "fedtally-bench/fedavg-bench",
+              "fab-name": "fedavg-bench",
+              "fab-version": "1.0.0",
+              "fab-hash": "a3b7161f0181639ecb05340f1ae261138d9990f09b7d0950271667420658bc5f",
+              "status": "finished:failed",
+              "status-details": "No heartbeat received from the task",
+              "elapsed": 60.0,
+              "pending-at": "2026-11-05 00:23:02Z",
+              "starting-at": "2026-11-05 00:23:03Z",
+              "running-at": "2026-11-05 00:23:03Z",
+              "finished-at": "2026-11-05 00:24:03Z",
+              "network-traffic": {
+                "inbound-bytes": 268481375,
+                "outbound-bytes": 272685218,
+                "total-bytes": 541166593
+              },
+              "compute-time": {
+                "serverapp-seconds": 60.0,
+                "clientapp-seconds": 31.593300342559814,
+                "total-seconds": 91.59330034255981
+              }
+            }
+          ]
+        },
+        "flwr_ls_all_run_ids": [
+          "9644088920694999195"
+        ],
+        "flwr_supernode_ls": {
+          "online": 4
+        },
+        "flwr_log_show": {
+          "exit_code": 0,
+          "rounds": [
+            1,
+            2
+          ],
+          "rounds_aggregated": 1,
+          "error": "INFO :      Printing logstream for run_id `9644088920694999195`"
+        },
+        "model": "no final model written",
+        "supernode_exit_codes": [
+          null,
+          null,
+          null,
+          null
+        ]
+      },
+      "flwr_run": {
+        "exit_code": 1,
+        "exit_seen_seconds_after_kill": 2.8,
+        "still_running_after_watching": false,
+        "output_after_kill": [
+          "\u256d\u2500 Error \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u256e",
+          "\u2502 Connection to the SuperLink is unavailable. Please check your network        \u2502",
+          "\u2502 connection and 'address' in the SuperLink connection configuration.          \u2502",
+          "\u2570\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u256f"
+        ]
+      },
+      "after_kill_counts": {
+        "superlink_tasks_started": 0,
+        "clientapps_started_by_site": [
+          1,
+          1,
+          1,
+          1
+        ],
+        "messages_received_by_site": [
+          0,
+          1,
+          1,
+          1
+        ],
+        "replies_sent_by_site": [
+          1,
+          1,
+          1,
+          1
+        ]
+      },
+      "logs_after_kill": {
+        "site-0": [
+          "INFO :      Start `flwr-clientapp` process",
+          "INFO :",
+          "INFO :",
+          "INFO :      [RUN 9644088920694999195]",
+          "INFO :      Sending: train message (ID: fa2e1ce280cbc7fcfcba4bbe05b2f46b072c0be6064624ab87a88607354cbac3)",
+          "WARNING :   Connection attempt failed, retrying in 0.43 seconds",
+          "WARNING :   Connection attempt failed, retrying in 0.62 seconds",
+          "WARNING :   Connection attempt failed, retrying in 3.30 seconds",
+          "INFO :      Connection successful after 4.37 seconds and 4 tries.",
+          "INFO :      Sent successfully"
+        ],
+        "superlink": [
+          "WARNING :   Option `--insecure` was set. Starting insecure HTTP server with unencrypted communication (TLS disabled). Proceed only if you understand the risks.",
+          "WARNING :   SuperNode authentication is disabled. The SuperLink will accept connections from any SuperNode.",
+          "INFO :      Starting Flower SuperLink",
+          "INFO :      Starting the SuperLink Runtime HTTP API on 127.0.0.1:58452.",
+          "INFO :      Starting the SuperLink Control HTTP API on 127.0.0.1:58452.",
+          "INFO :      Starting the SuperLink Fleet HTTP API on 127.0.0.1:58452.",
+          "2026-11-05T00:23:11.925Z INFO [uvicorn.error] Started server process [9774]",
+          "2026-11-05T00:23:11.925Z INFO [uvicorn.error] Waiting for application startup.",
+          "INFO :      FastAPI lifespan: startup",
+          "INFO :      SuperLinkLifespan: start",
+          "2026-11-05T00:23:11.927Z INFO [uvicorn.error] Application startup complete.",
+          "2026-11-05T00:23:11.928Z INFO [uvicorn.error] Uvicorn running on http://127.0.0.1:58452 (Press CTRL+C to quit)",
+          "INFO :      Starting Flower SuperExec"
+        ]
+      },
+      "resubmit": {
+        "before_restarting_supernodes": null,
+        "finished_in_time": true,
+        "seconds": 23.4,
+        "exit_code": 0,
+        "status": {
+          "status": "finished:completed",
+          "text": "N/A"
+        },
+        "rounds_logged": [
+          1,
+          2,
+          3,
+          4
+        ],
+        "model": "right, largest error 3.61e-07",
+        "nodes": {
+          "online": 4
+        },
+        "supernodes_alive": 4,
+        "output_tail": []
+      },
+      "database_bytes": 134848512,
+      "isolation": "subprocess",
+      "outage_seconds": 2,
+      "command": "python benchmarks/flower/crash.py --out ..."
+    },
+    {
+      "database": "sqlite",
+      "kill": "superlink",
+      "load_average": 2.32763671875,
+      "nodes_before_kill": {
+        "online": 4
+      },
+      "run_id": "7254962223840946039",
+      "at_kill": {
+        "processes": {
+          "flower-superexec": 5,
+          "flower-superlink": 1,
+          "flower-supernode": 4,
+          "flwr": 1,
+          "flwr-clientapp": 1,
+          "flwr-serverapp": 1
+        },
+        "killed": [
+          "flower-superlink"
+        ],
+        "rounds_logged": [
+          1,
+          2
+        ],
+        "rounds_aggregated": 1,
+        "received_by_site": [
+          2,
+          1,
+          1,
+          1
+        ],
+        "replied_by_site": [
+          1,
+          1,
+          1,
+          1
+        ]
+      },
+      "before_restart": {
+        "seconds_after_kill": 0.0,
+        "processes": {
+          "flower-superexec": 5,
+          "flower-supernode": 4,
+          "flwr": 1,
+          "flwr-clientapp": 1,
+          "flwr-serverapp": 1
+        },
+        "flwr_run_exit_code": null
+      },
+      "watched_seconds_after_restart": 6.7,
+      "timeline": [
+        {
+          "seconds_after_kill": 0.9,
+          "run": {
+            "status": "ERROR",
+            "text": "Using SuperLink: bench (127.0.0.1:58718)\n Displaying information for run ID 7254962223840946039...\n\nConnection to the SuperLink is unavailable. Please check your network connection and 'address' in the SuperLink connection configuration."
+          },
+          "nodes": {
+            "online": 4
+          },
+          "node_ids_kept": true,
+          "processes": {
+            "flower-superexec": 5,
+            "flower-superlink": 1,
+            "flower-supernode": 4,
+            "flwr-serverapp": 1
+          },
+          "superlink_alive": true,
+          "supernodes_alive": 4
+        },
+        {
+          "seconds_after_kill": 6.7,
+          "run": {
+            "status": "finished:failed",
+            "text": "Task failed with unknown error."
+          },
+          "nodes": {
+            "online": 4
+          },
+          "node_ids_kept": true,
+          "processes": {
+            "flower-superexec": 5,
+            "flower-superlink": 1,
+            "flower-supernode": 4
+          },
+          "superlink_alive": true,
+          "supernodes_alive": 4
+        }
+      ],
+      "after_watching": {
+        "flwr_ls_run": {
+          "success": true,
+          "runs": [
+            {
+              "run-id": "7254962223840946039",
+              "federation-id": "@none/default",
+              "fab-id": "fedtally-bench/fedavg-bench",
+              "fab-name": "fedavg-bench",
+              "fab-version": "1.0.0",
+              "fab-hash": "a3b7161f0181639ecb05340f1ae261138d9990f09b7d0950271667420658bc5f",
+              "status": "finished:failed",
+              "status-details": "Task failed with unknown error.",
+              "elapsed": 8.167168,
+              "pending-at": "2026-11-05 00:24:38Z",
+              "starting-at": "2026-11-05 00:24:39Z",
+              "running-at": "2026-11-05 00:24:39Z",
+              "finished-at": "2026-11-05 00:24:47Z",
+              "network-traffic": {
+                "inbound-bytes": 234921214,
+                "outbound-bytes": 268489450,
+                "total-bytes": 503410664
+              },
+              "compute-time": {
+                "serverapp-seconds": 8.167168,
+                "clientapp-seconds": 2.756089687347412,
+                "total-seconds": 10.923257687347412
+              }
+            }
+          ]
+        },
+        "flwr_ls_all_run_ids": [
+          "7254962223840946039"
+        ],
+        "flwr_supernode_ls": {
+          "online": 4
+        },
+        "flwr_log_show": {
+          "exit_code": 0,
+          "rounds": [
+            1,
+            2
+          ],
+          "rounds_aggregated": 1,
+          "error": "INFO :      Printing logstream for run_id `7254962223840946039`"
+        },
+        "model": "no final model written",
+        "supernode_exit_codes": [
+          null,
+          null,
+          null,
+          null
+        ]
+      },
+      "flwr_run": {
+        "exit_code": 1,
+        "exit_seen_seconds_after_kill": 0.9,
+        "still_running_after_watching": false,
+        "output_after_kill": [
+          "\u256d\u2500 Error \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u256e",
+          "\u2502 Connection to the SuperLink is unavailable. Please check your network        \u2502",
+          "\u2502 connection and 'address' in the SuperLink connection configuration.          \u2502",
+          "\u2570\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u256f"
+        ]
+      },
+      "after_kill_counts": {
+        "superlink_tasks_started": 0,
+        "clientapps_started_by_site": [
+          1,
+          1,
+          1,
+          1
+        ],
+        "messages_received_by_site": [
+          0,
+          1,
+          1,
+          1
+        ],
+        "replies_sent_by_site": [
+          1,
+          1,
+          1,
+          1
+        ]
+      },
+      "logs_after_kill": {
+        "site-0": [
+          "INFO :      Start `flwr-clientapp` process",
+          "INFO :",
+          "INFO :",
+          "INFO :      [RUN 7254962223840946039]",
+          "INFO :      Sending: train message (ID: 1fbe98d4c9c53533e0f5915640ab54ae9fd91f20575db54ee86031625461b403)",
+          "INFO :      Sent successfully"
+        ],
+        "superlink": [
+          "WARNING :   Connection attempt failed, retrying in 0.21 seconds",
+          "INFO :      SuperExec terminated gracefully.",
+          "WARNING :   Option `--insecure` was set. Starting insecure HTTP server with unencrypted communication (TLS disabled). Proceed only if you understand the risks.",
+          "WARNING :   SuperNode authentication is disabled. The SuperLink will accept connections from any SuperNode.",
+          "INFO :      Starting Flower SuperLink",
+          "INFO :      Starting the SuperLink Runtime HTTP API on 127.0.0.1:58718.",
+          "INFO :      Starting the SuperLink Control HTTP API on 127.0.0.1:58718.",
+          "INFO :      Starting the SuperLink Fleet HTTP API on 127.0.0.1:58718.",
+          "2026-11-05T00:24:45.670Z INFO [uvicorn.error] Started server process [10356]",
+          "2026-11-05T00:24:45.670Z INFO [uvicorn.error] Waiting for application startup.",
+          "INFO :      FastAPI lifespan: startup",
+          "INFO :      SuperLinkLifespan: start",
+          "2026-11-05T00:24:45.673Z INFO [uvicorn.error] Application startup complete.",
+          "2026-11-05T00:24:45.674Z INFO [uvicorn.error] Uvicorn running on http://127.0.0.1:58718 (Press CTRL+C to quit)",
+          "INFO :      Starting Flower SuperExec",
+          "INFO :      Finished task 8276956596493781154 of run 7254962223840946039"
+        ]
+      },
+      "resubmit": {
+        "before_restarting_supernodes": null,
+        "finished_in_time": true,
+        "seconds": 21.8,
+        "exit_code": 0,
+        "status": {
+          "status": "finished:completed",
+          "text": "N/A"
+        },
+        "rounds_logged": [
+          1,
+          2,
+          3,
+          4
+        ],
+        "model": "right, largest error 3.67e-07",
+        "nodes": {
+          "online": 4
+        },
+        "supernodes_alive": 4,
+        "output_tail": []
+      },
+      "database_bytes": 134848512,
+      "isolation": "subprocess",
+      "outage_seconds": 0.0,
+      "command": "python benchmarks/flower/crash.py --trial sqlite:superlink --outage 0 --out ..."
+    },
+    {
+      "database": "sqlite",
+      "kill": "superlink",
+      "load_average": 3.05029296875,
+      "nodes_before_kill": {
+        "online": 4
+      },
+      "run_id": "8934283589907058757",
+      "at_kill": {
+        "processes": {
+          "flower-superexec": 5,
+          "flower-superlink": 1,
+          "flower-supernode": 4,
+          "flwr": 1,
+          "flwr-serverapp": 1
+        },
+        "killed": [
+          "flower-superlink"
+        ],
+        "rounds_logged": [
+          1,
+          2
+        ],
+        "rounds_aggregated": 1,
+        "received_by_site": [
+          1,
+          1,
+          2,
+          1
+        ],
+        "replied_by_site": [
+          1,
+          1,
+          1,
+          1
+        ]
+      },
+      "before_restart": {
+        "seconds_after_kill": 10.0,
+        "processes": {
+          "flower-superexec": 4,
+          "flower-supernode": 4
+        },
+        "flwr_run_exit_code": 1
+      },
+      "watched_seconds_after_restart": 47.1,
+      "timeline": [
+        {
+          "seconds_after_kill": 10.8,
+          "run": {
+            "status": "ERROR",
+            "text": "Using SuperLink: bench (127.0.0.1:59171)\n Displaying information for run ID 8934283589907058757...\n\nConnection to the SuperLink is unavailable. Please check your network connection and 'address' in the SuperLink connection configuration."
+          },
+          "nodes": {
+            "online": 4
+          },
+          "node_ids_kept": true,
+          "processes": {
+            "flower-superexec": 5,
+            "flower-superlink": 1,
+            "flower-supernode": 4
+          },
+          "superlink_alive": true,
+          "supernodes_alive": 4
+        },
+        {
+          "seconds_after_kill": 16.7,
+          "run": {
+            "status": "running",
+            "text": "N/A"
+          },
+          "nodes": {
+            "online": 4
+          },
+          "node_ids_kept": true,
+          "processes": {
+            "flower-superexec": 5,
+            "flower-superlink": 1,
+            "flower-supernode": 4
+          },
+          "superlink_alive": true,
+          "supernodes_alive": 4
+        },
+        {
+          "seconds_after_kill": 57.2,
+          "run": {
+            "status": "finished:failed",
+            "text": "No heartbeat received from the task"
+          },
+          "nodes": {
+            "online": 4
+          },
+          "node_ids_kept": true,
+          "processes": {
+            "flower-superexec": 5,
+            "flower-superlink": 1,
+            "flower-supernode": 4
+          },
+          "superlink_alive": true,
+          "supernodes_alive": 4
+        }
+      ],
+      "after_watching": {
+        "flwr_ls_run": {
+          "success": true,
+          "runs": [
+            {
+              "run-id": "8934283589907058757",
+              "federation-id": "@none/default",
+              "fab-id": "fedtally-bench/fedavg-bench",
+              "fab-name": "fedavg-bench",
+              "fab-version": "1.0.0",
+              "fab-hash": "a3b7161f0181639ecb05340f1ae261138d9990f09b7d0950271667420658bc5f",
+              "status": "finished:failed",
+              "status-details": "No heartbeat received from the task",
+              "elapsed": 60.0,
+              "pending-at": "2026-11-05 00:27:44Z",
+              "starting-at": "2026-11-05 00:27:44Z",
+              "running-at": "2026-11-05 00:27:44Z",
+              "finished-at": "2026-11-05 00:28:44Z",
+              "network-traffic": {
+                "inbound-bytes": 268481449,
+                "outbound-bytes": 268490898,
+                "total-bytes": 536972347
+              },
+              "compute-time": {
+                "serverapp-seconds": 60.0,
+                "clientapp-seconds": 0.6740529537200928,
+                "total-seconds": 60.67405295372009
+              }
+            }
+          ]
+        },
+        "flwr_ls_all_run_ids": [
+          "8934283589907058757"
+        ],
+        "flwr_supernode_ls": {
+          "online": 4
+        },
+        "flwr_log_show": {
+          "exit_code": 0,
+          "rounds": [
+            1,
+            2
+          ],
+          "rounds_aggregated": 1,
+          "error": "INFO :      Printing logstream for run_id `8934283589907058757`"
+        },
+        "model": "no final model written",
+        "supernode_exit_codes": [
+          null,
+          null,
+          null,
+          null
+        ]
+      },
+      "flwr_run": {
+        "exit_code": 1,
+        "exit_seen_seconds_after_kill": 10.8,
+        "still_running_after_watching": false,
+        "output_after_kill": [
+          "\u256d\u2500 Error \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u256e",
+          "\u2502 Connection to the SuperLink is unavailable. Please check your network        \u2502",
+          "\u2502 connection and 'address' in the SuperLink connection configuration.          \u2502",
+          "\u2570\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u256f"
+        ]
+      },
+      "after_kill_counts": {
+        "superlink_tasks_started": 0,
+        "clientapps_started_by_site": [
+          1,
+          1,
+          1,
+          1
+        ],
+        "messages_received_by_site": [
+          1,
+          1,
+          0,
+          1
+        ],
+        "replies_sent_by_site": [
+          1,
+          1,
+          1,
+          1
+        ]
+      },
+      "logs_after_kill": {
+        "site-0": [
+          "WARNING :   Connection attempt failed, retrying in 0.78 seconds",
+          "WARNING :   Connection attempt failed, retrying in 0.41 seconds",
+          "WARNING :   Connection attempt failed, retrying in 2.40 seconds",
+          "WARNING :   Connection attempt failed, retrying in 7.78 seconds",
+          "INFO :      Connection successful after 11.39 seconds and 5 tries.",
+          "INFO :",
+          "INFO :      [RUN 8934283589907058757]",
+          "INFO :      Receiving: train message (ID: e344a267bd9b37ed1caedc2046c9807c04a19ec324cdef43ec75e9509ba8416a)",
+          "INFO :      Received successfully",
+          "INFO :      Start `flwr-clientapp` process",
+          "INFO :",
+          "INFO :",
+          "INFO :      [RUN 8934283589907058757]",
+          "INFO :      Sending: train message (ID: 49ec60da8977d56502f9c872c176ea1a9c61fc3fa5a3aa6cffd8f277153deea9)",
+          "INFO :      Sent successfully"
+        ],
+        "superlink": [
+          "INFO :      SuperExec terminated gracefully.",
+          "WARNING :   Option `--insecure` was set. Starting insecure HTTP server with unencrypted communication (TLS disabled). Proceed only if you understand the risks.",
+          "WARNING :   SuperNode authentication is disabled. The SuperLink will accept connections from any SuperNode.",
+          "INFO :      Starting Flower SuperLink",
+          "INFO :      Starting the SuperLink Runtime HTTP API on 127.0.0.1:59171.",
+          "INFO :      Starting the SuperLink Control HTTP API on 127.0.0.1:59171.",
+          "INFO :      Starting the SuperLink Fleet HTTP API on 127.0.0.1:59171.",
+          "2026-11-05T00:28:01.129Z INFO [uvicorn.error] Started server process [11528]",
+          "2026-11-05T00:28:01.129Z INFO [uvicorn.error] Waiting for application startup.",
+          "INFO :      FastAPI lifespan: startup",
+          "INFO :      SuperLinkLifespan: start",
+          "2026-11-05T00:28:01.131Z INFO [uvicorn.error] Application startup complete.",
+          "2026-11-05T00:28:01.132Z INFO [uvicorn.error] Uvicorn running on http://127.0.0.1:59171 (Press CTRL+C to quit)",
+          "INFO :      Starting Flower SuperExec"
+        ],
+        "superexec": []
+      },
+      "resubmit": {
+        "before_restarting_supernodes": null,
+        "finished_in_time": true,
+        "seconds": 21.8,
+        "exit_code": 0,
+        "status": {
+          "status": "finished:completed",
+          "text": "N/A"
+        },
+        "rounds_logged": [
+          1,
+          2,
+          3,
+          4
+        ],
+        "model": "right, largest error 2.87e-07",
+        "nodes": {
+          "online": 4
+        },
+        "supernodes_alive": 4,
+        "output_tail": []
+      },
+      "database_bytes": 134860800,
+      "isolation": "subprocess",
+      "outage_seconds": 10.0,
+      "command": "python benchmarks/flower/crash.py --trial sqlite:superlink --outage 10 --out ..."
+    },
+    {
+      "database": "sqlite",
+      "kill": "superlink",
+      "isolation": "process",
+      "outage_seconds": 2,
+      "load_average": 2.1904296875,
+      "nodes_before_kill": {
+        "online": 4
+      },
+      "run_id": "1716254609244916672",
+      "at_kill": {
+        "processes": {
+          "flower-superexec": 5,
+          "flower-superlink": 1,
+          "flower-supernode": 4,
+          "flwr": 1,
+          "flwr-clientapp": 2,
+          "flwr-serverapp": 1
+        },
+        "killed": [
+          "flower-superlink"
+        ],
+        "rounds_logged": [
+          1,
+          2
+        ],
+        "rounds_aggregated": 1,
+        "received_by_site": [
+          2,
+          2,
+          1,
+          1
+        ],
+        "replied_by_site": [
+          1,
+          1,
+          1,
+          1
+        ]
+      },
+      "before_restart": {
+        "seconds_after_kill": 2.0,
+        "processes": {
+          "flower-superexec": 5,
+          "flower-supernode": 4,
+          "flwr-serverapp": 1
+        },
+        "flwr_run_exit_code": 1
+      },
+      "watched_seconds_after_restart": 24.1,
+      "timeline": [
+        {
+          "seconds_after_kill": 2.8,
+          "run": {
+            "status": "ERROR",
+            "text": "Using SuperLink: bench (127.0.0.1:59421)\n Displaying information for run ID 1716254609244916672...\n\nConnection to the SuperLink is unavailable. Please check your network connection and 'address' in the SuperLink connection configuration."
+          },
+          "nodes": {
+            "online": 4
+          },
+          "node_ids_kept": true,
+          "processes": {
+            "flower-superexec": 5,
+            "flower-superlink": 1,
+            "flower-supernode": 4,
+            "flwr-serverapp": 1
+          },
+          "superlink_alive": true,
+          "supernodes_alive": 4
+        },
+        {
+          "seconds_after_kill": 8.6,
+          "run": {
+            "status": "running",
+            "text": "N/A"
+          },
+          "nodes": {
+            "online": 4
+          },
+          "node_ids_kept": true,
+          "processes": {
+            "flower-superexec": 5,
+            "flower-superlink": 1,
+            "flower-supernode": 4,
+            "flwr-serverapp": 1
+          },
+          "superlink_alive": true,
+          "supernodes_alive": 4
+        },
+        {
+          "seconds_after_kill": 14.4,
+          "run": {
+            "status": "running",
+            "text": "N/A"
+          },
+          "nodes": {
+            "online": 4
+          },
+          "node_ids_kept": true,
+          "processes": {
+            "flower-superexec": 5,
+            "flower-superlink": 1,
+            "flower-supernode": 4,
+            "flwr-clientapp": 1,
+            "flwr-serverapp": 1
+          },
+          "superlink_alive": true,
+          "supernodes_alive": 4
+        },
+        {
+          "seconds_after_kill": 20.3,
+          "run": {
+            "status": "running",
+            "text": "N/A"
+          },
+          "nodes": {
+            "online": 4
+          },
+          "node_ids_kept": true,
+          "processes": {
+            "flower-superexec": 5,
+            "flower-superlink": 1,
+            "flower-supernode": 4,
+            "flwr-serverapp": 1
+          },
+          "superlink_alive": true,
+          "supernodes_alive": 4
+        },
+        {
+          "seconds_after_kill": 26.1,
+          "run": {
+            "status": "finished:completed",
+            "text": "N/A"
+          },
+          "nodes": {
+            "online": 4
+          },
+          "node_ids_kept": true,
+          "processes": {
+            "flower-superexec": 5,
+            "flower-superlink": 1,
+            "flower-supernode": 4
+          },
+          "superlink_alive": true,
+          "supernodes_alive": 4
+        }
+      ],
+      "after_watching": {
+        "flwr_ls_run": {
+          "success": true,
+          "runs": [
+            {
+              "run-id": "1716254609244916672",
+              "federation-id": "@none/default",
+              "fab-id": "fedtally-bench/fedavg-bench",
+              "fab-name": "fedavg-bench",
+              "fab-version": "1.0.0",
+              "fab-hash": "a3b7161f0181639ecb05340f1ae261138d9990f09b7d0950271667420658bc5f",
+              "status": "finished:completed",
+              "status-details": "N/A",
+              "elapsed": 26.543089,
+              "pending-at": "2026-11-05 00:30:24Z",
+              "starting-at": "2026-11-05 00:30:25Z",
+              "running-at": "2026-11-05 00:30:26Z",
+              "finished-at": "2026-11-05 00:30:52Z",
+              "network-traffic": {
+                "inbound-bytes": 536962861,
+                "outbound-bytes": 536981730,
+                "total-bytes": 1073944591
+              },
+              "compute-time": {
+                "serverapp-seconds": 26.543089,
+                "clientapp-seconds": 1.2310850620269775,
+                "total-seconds": 27.774174062026976
+              }
+            }
+          ]
+        },
+        "flwr_ls_all_run_ids": [
+          "1716254609244916672"
+        ],
+        "flwr_supernode_ls": {
+          "online": 4
+        },
+        "flwr_log_show": {
+          "exit_code": 0,
+          "rounds": [
+            1,
+            2,
+            3,
+            4
+          ],
+          "rounds_aggregated": 4,
+          "error": "INFO :      Printing logstream for run_id `1716254609244916672`"
+        },
+        "model": "right, largest error 3.62e-07",
+        "supernode_exit_codes": [
+          null,
+          null,
+          null,
+          null
+        ]
+      },
+      "flwr_run": {
+        "exit_code": 1,
+        "exit_seen_seconds_after_kill": 2.8,
+        "still_running_after_watching": false,
+        "output_after_kill": [
+          "\u256d\u2500 Error \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u256e",
+          "\u2502 Connection to the SuperLink is unavailable. Please check your network        \u2502",
+          "\u2502 connection and 'address' in the SuperLink connection configuration.          \u2502",
+          "\u2570\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u256f"
+        ]
+      },
+      "after_kill_counts": {
+        "superlink_tasks_started": 0,
+        "clientapps_started_by_site": [
+          3,
+          3,
+          3,
+          3
+        ],
+        "messages_received_by_site": [
+          2,
+          2,
+          3,
+          3
+        ],
+        "replies_sent_by_site": [
+          3,
+          3,
+          3,
+          3
+        ]
+      },
+      "logs_after_kill": {
+        "site-0": [
+          "INFO :      Start `flwr-clientapp` process",
+          "INFO :",
+          "INFO :      [RUN 1716254609244916672]",
+          "INFO :      Sending: train message (ID: 45199fc036eba97c30424e3dafc732d5c7dc5e40d386ed47cba3e0a366c7595a)",
+          "WARNING :   Connection attempt failed, retrying in 0.73 seconds",
+          "INFO :",
+          "WARNING :   Connection attempt failed, retrying in 0.88 seconds",
+          "WARNING :   Connection attempt failed, retrying in 3.61 seconds",
+          "INFO :      Connection successful after 5.24 seconds and 4 tries.",
+          "INFO :      Sent successfully",
+          "INFO :",
+          "INFO :      [RUN 1716254609244916672]",
+          "... 6 lines ...",
+          "INFO :",
+          "INFO :      Sent successfully",
+          "INFO :",
+          "INFO :      [RUN 1716254609244916672]",
+          "INFO :      Receiving: train message (ID: 7cb20d0f13634a3d08b5353d6d7501cce0eca4c32e11c1f28ae0fd41e102418b)",
+          "INFO :      Received successfully",
+          "INFO :      Start `flwr-clientapp` process",
+          "INFO :",
+          "INFO :",
+          "INFO :      [RUN 1716254609244916672]",
+          "INFO :      Sending: train message (ID: f42d301905cb0556c83aa6226498e2cdb1ecc9f3dca08710e33b049be0682a71)",
+          "INFO :      Sent successfully"
+        ],
+        "superlink": [
+          "WARNING :   Option `--insecure` was set. Starting insecure HTTP server with unencrypted communication (TLS disabled). Proceed only if you understand the risks.",
+          "WARNING :   SuperNode authentication is disabled. The SuperLink will accept connections from any SuperNode.",
+          "INFO :      Starting Flower SuperLink",
+          "INFO :      Starting the SuperLink Runtime HTTP API on 127.0.0.1:59421.",
+          "INFO :      Starting the SuperLink Control HTTP API on 127.0.0.1:59421.",
+          "INFO :      Starting the SuperLink Fleet HTTP API on 127.0.0.1:59421.",
+          "2026-11-05T00:30:33.476Z INFO [uvicorn.error] Started server process [12171]",
+          "2026-11-05T00:30:33.476Z INFO [uvicorn.error] Waiting for application startup.",
+          "INFO :      FastAPI lifespan: startup",
+          "INFO :      SuperLinkLifespan: start",
+          "2026-11-05T00:30:33.476Z INFO [uvicorn.error] Application startup complete.",
+          "2026-11-05T00:30:33.477Z INFO [uvicorn.error] Uvicorn running on http://127.0.0.1:59421 (Press CTRL+C to quit)",
+          "INFO :      Finished task 18353260640272832314 of run 1716254609244916672"
+        ],
+        "superexec": [
+          "WARNING :   Connection attempt failed, retrying in 0.67 seconds",
+          "WARNING :   Connection attempt failed, retrying in 0.45 seconds",
+          "WARNING :   Connection attempt failed, retrying in 0.95 seconds",
+          "INFO :      Connection successful after 2.09 seconds and 4 tries."
+        ]
+      },
+      "resubmit": {
+        "before_restarting_supernodes": null,
+        "finished_in_time": true,
+        "seconds": 24.4,
+        "exit_code": 0,
+        "status": {
+          "status": "finished:completed",
+          "text": "N/A"
+        },
+        "rounds_logged": [
+          1,
+          2,
+          3,
+          4
+        ],
+        "model": "right, largest error 3.54e-07",
+        "nodes": {
+          "online": 4
+        },
+        "supernodes_alive": 4,
+        "output_tail": []
+      },
+      "database_bytes": 101273600,
+      "command": "python benchmarks/flower/crash.py --trial sqlite:superlink --trial sqlite:superlink --trial sqlite:superlink --isolation process --out ..."
+    },
+    {
+      "database": "sqlite",
+      "kill": "superlink",
+      "isolation": "process",
+      "outage_seconds": 2,
+      "load_average": 3.91015625,
+      "nodes_before_kill": {
+        "online": 4
+      },
+      "run_id": "11425109456101860800",
+      "at_kill": {
+        "processes": {
+          "flower-superexec": 5,
+          "flower-superlink": 1,
+          "flower-supernode": 4,
+          "flwr": 1,
+          "flwr-serverapp": 1
+        },
+        "killed": [
+          "flower-superlink"
+        ],
+        "rounds_logged": [
+          1,
+          2
+        ],
+        "rounds_aggregated": 1,
+        "received_by_site": [
+          1,
+          2,
+          2,
+          2
+        ],
+        "replied_by_site": [
+          1,
+          1,
+          1,
+          1
+        ]
+      },
+      "before_restart": {
+        "seconds_after_kill": 2.0,
+        "processes": {
+          "flower-superexec": 5,
+          "flower-supernode": 4,
+          "flwr-serverapp": 1
+        },
+        "flwr_run_exit_code": 1
+      },
+      "watched_seconds_after_restart": 19.0,
+      "timeline": [
+        {
+          "seconds_after_kill": 3.1,
+          "run": {
+            "status": "ERROR",
+            "text": "Using SuperLink: bench (127.0.0.1:59809)\n Displaying information for run ID 11425109456101860800...\n\nConnection to the SuperLink is unavailable. Please check your network connection and 'address' in the SuperLink connection configuration."
+          },
+          "nodes": {
+            "online": 4
+          },
+          "node_ids_kept": true,
+          "processes": {
+            "flower-superexec": 5,
+            "flower-superlink": 1,
+            "flower-supernode": 4,
+            "flwr-serverapp": 1
+          },
+          "superlink_alive": true,
+          "supernodes_alive": 4
+        },
+        {
+          "seconds_after_kill": 9.1,
+          "run": {
+            "status": "running",
+            "text": "N/A"
+          },
+          "nodes": {
+            "online": 4
+          },
+          "node_ids_kept": true,
+          "processes": {
+            "flower-superexec": 5,
+            "flower-superlink": 1,
+            "flower-supernode": 4,
+            "flwr-serverapp": 1
+          },
+          "superlink_alive": true,
+          "supernodes_alive": 4
+        },
+        {
+          "seconds_after_kill": 21.0,
+          "run": {
+            "status": "finished:completed",
+            "text": "N/A"
+          },
+          "nodes": {
+            "online": 4
+          },
+          "node_ids_kept": true,
+          "processes": {
+            "flower-superexec": 5,
+            "flower-superlink": 1,
+            "flower-supernode": 4
+          },
+          "superlink_alive": true,
+          "supernodes_alive": 4
+        }
+      ],
+      "after_watching": {
+        "flwr_ls_run": {
+          "success": true,
+          "runs": [
+            {
+              "run-id": "11425109456101860800",
+              "federation-id": "@none/default",
+              "fab-id": "fedtally-bench/fedavg-bench",
+              "fab-name": "fedavg-bench",
+              "fab-version": "1.0.0",
+              "fab-hash": "a3b7161f0181639ecb05340f1ae261138d9990f09b7d0950271667420658bc5f",
+              "status": "finished:completed",
+              "status-details": "N/A",
+              "elapsed": 25.305911,
+              "pending-at": "2026-11-05 00:31:26Z",
+              "starting-at": "2026-11-05 00:31:27Z",
+              "running-at": "2026-11-05 00:31:27Z",
+              "finished-at": "2026-11-05 00:31:53Z",
+              "network-traffic": {
+                "inbound-bytes": 536963078,
+                "outbound-bytes": 536982092,
+                "total-bytes": 1073945170
+              },
+              "compute-time": {
+                "serverapp-seconds": 25.305911,
+                "clientapp-seconds": 2.5214712619781494,
+                "total-seconds": 27.827382261978148
+              }
+            }
+          ]
+        },
+        "flwr_ls_all_run_ids": [
+          "11425109456101860800"
+        ],
+        "flwr_supernode_ls": {
+          "online": 4
+        },
+        "flwr_log_show": {
+          "exit_code": 0,
+          "rounds": [
+            1,
+            2,
+            3,
+            4
+          ],
+          "rounds_aggregated": 4,
+          "error": "INFO :      Printing logstream for run_id `11425109456101860800`"
+        },
+        "model": "right, largest error 4.82e-07",
+        "supernode_exit_codes": [
+          null,
+          null,
+          null,
+          null
+        ]
+      },
+      "flwr_run": {
+        "exit_code": 1,
+        "exit_seen_seconds_after_kill": 3.1,
+        "still_running_after_watching": false,
+        "output_after_kill": [
+          "\u256d\u2500 Error \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u256e",
+          "\u2502 Connection to the SuperLink is unavailable. Please check your network        \u2502",
+          "\u2502 connection and 'address' in the SuperLink connection configuration.          \u2502",
+          "\u2570\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u256f"
+        ]
+      },
+      "after_kill_counts": {
+        "superlink_tasks_started": 0,
+        "clientapps_started_by_site": [
+          3,
+          3,
+          3,
+          3
+        ],
+        "messages_received_by_site": [
+          3,
+          2,
+          2,
+          2
+        ],
+        "replies_sent_by_site": [
+          3,
+          3,
+          3,
+          3
+        ]
+      },
+      "logs_after_kill": {
+        "site-0": [
+          "WARNING :   Connection attempt failed, retrying in 0.46 seconds",
+          "WARNING :   Connection attempt failed, retrying in 0.22 seconds",
+          "WARNING :   Connection attempt failed, retrying in 3.16 seconds",
+          "INFO :      Connection successful after 3.84 seconds and 4 tries.",
+          "INFO :",
+          "INFO :      [RUN 11425109456101860800]",
+          "INFO :      Receiving: train message (ID: 51e7e96a45e09c57d40e24d76e19ce3fdbd1f271235dde91ba4a86dca4c8890f)",
+          "INFO :      Received successfully",
+          "INFO :      Start `flwr-clientapp` process",
+          "INFO :",
+          "INFO :",
+          "INFO :      [RUN 11425109456101860800]",
+          "... 10 lines ...",
+          "INFO :      Sending: train message (ID: 99db4c06f14e12a81de2ec8a4be10e4b70e51635f0cebe86b88ad53754d89aec)",
+          "INFO :      Sent successfully",
+          "INFO :",
+          "INFO :      [RUN 11425109456101860800]",
+          "INFO :      Receiving: train message (ID: f99fc85a02df4e25bff167383e2b0cf3b95f6758ea2490cda38195b4e745b874)",
+          "INFO :      Received successfully",
+          "INFO :      Start `flwr-clientapp` process",
+          "INFO :",
+          "INFO :",
+          "INFO :      [RUN 11425109456101860800]",
+          "INFO :      Sending: train message (ID: 0d2f92eb315e4052a5f625a95bb79b86761036c80402e4b64f4f04ac6ad4795a)",
+          "INFO :      Sent successfully"
+        ],
+        "superlink": [
+          "WARNING :   Option `--insecure` was set. Starting insecure HTTP server with unencrypted communication (TLS disabled). Proceed only if you understand the risks.",
+          "WARNING :   SuperNode authentication is disabled. The SuperLink will accept connections from any SuperNode.",
+          "INFO :      Starting Flower SuperLink",
+          "INFO :      Starting the SuperLink Runtime HTTP API on 127.0.0.1:59809.",
+          "INFO :      Starting the SuperLink Control HTTP API on 127.0.0.1:59809.",
+          "INFO :      Starting the SuperLink Fleet HTTP API on 127.0.0.1:59809.",
+          "2026-11-05T00:31:36.627Z INFO [uvicorn.error] Started server process [12797]",
+          "2026-11-05T00:31:36.628Z INFO [uvicorn.error] Waiting for application startup.",
+          "INFO :      FastAPI lifespan: startup",
+          "INFO :      SuperLinkLifespan: start",
+          "2026-11-05T00:31:36.628Z INFO [uvicorn.error] Application startup complete.",
+          "2026-11-05T00:31:36.628Z INFO [uvicorn.error] Uvicorn running on http://127.0.0.1:59809 (Press CTRL+C to quit)",
+          "INFO :      Finished task 11609179458861697184 of run 11425109456101860800"
+        ],
+        "superexec": [
+          "WARNING :   Connection attempt failed, retrying in 0.95 seconds",
+          "WARNING :   Connection attempt failed, retrying in 1.47 seconds",
+          "INFO :      Connection successful after 2.44 seconds and 3 tries."
+        ]
+      },
+      "resubmit": {
+        "before_restarting_supernodes": null,
+        "finished_in_time": true,
+        "seconds": 27.3,
+        "exit_code": 0,
+        "status": {
+          "status": "finished:completed",
+          "text": "N/A"
+        },
+        "rounds_logged": [
+          1,
+          2,
+          3,
+          4
+        ],
+        "model": "right, largest error 3.36e-07",
+        "nodes": {
+          "online": 4
+        },
+        "supernodes_alive": 4,
+        "output_tail": []
+      },
+      "database_bytes": 134848512,
+      "command": "python benchmarks/flower/crash.py --trial sqlite:superlink --trial sqlite:superlink --trial sqlite:superlink --isolation process --out ..."
+    },
+    {
+      "database": "sqlite",
+      "kill": "superlink",
+      "isolation": "process",
+      "outage_seconds": 2,
+      "load_average": 10.5673828125,
+      "nodes_before_kill": {
+        "online": 4
+      },
+      "run_id": "3204686406346916449",
+      "at_kill": {
+        "processes": {
+          "flower-superexec": 5,
+          "flower-superlink": 1,
+          "flower-supernode": 4,
+          "flwr": 1,
+          "flwr-clientapp": 1,
+          "flwr-serverapp": 1
+        },
+        "killed": [
+          "flower-superlink"
+        ],
+        "rounds_logged": [
+          1,
+          2
+        ],
+        "rounds_aggregated": 1,
+        "received_by_site": [
+          1,
+          2,
+          2,
+          1
+        ],
+        "replied_by_site": [
+          1,
+          1,
+          1,
+          1
+        ]
+      },
+      "before_restart": {
+        "seconds_after_kill": 2.0,
+        "processes": {
+          "flower-superexec": 5,
+          "flower-supernode": 4,
+          "flwr-serverapp": 1
+        },
+        "flwr_run_exit_code": 1
+      },
+      "watched_seconds_after_restart": 19.2,
+      "timeline": [
+        {
+          "seconds_after_kill": 3.0,
+          "run": {
+            "status": "ERROR",
+            "text": "Using SuperLink: bench (127.0.0.1:60053)\n Displaying information for run ID 3204686406346916449...\n\nConnection to the SuperLink is unavailable. Please check your network connection and 'address' in the SuperLink connection configuration."
+          },
+          "nodes": {
+            "online": 4
+          },
+          "node_ids_kept": true,
+          "processes": {
+            "flower-superexec": 5,
+            "flower-superlink": 1,
+            "flower-supernode": 4,
+            "flwr-serverapp": 1
+          },
+          "superlink_alive": true,
+          "supernodes_alive": 4
+        },
+        {
+          "seconds_after_kill": 9.1,
+          "run": {
+            "status": "running",
+            "text": "N/A"
+          },
+          "nodes": {
+            "online": 4
+          },
+          "node_ids_kept": true,
+          "processes": {
+            "flower-superexec": 5,
+            "flower-superlink": 1,
+            "flower-supernode": 4,
+            "flwr-clientapp": 3,
+            "flwr-serverapp": 1
+          },
+          "superlink_alive": true,
+          "supernodes_alive": 4
+        },
+        {
+          "seconds_after_kill": 15.1,
+          "run": {
+            "status": "running",
+            "text": "N/A"
+          },
+          "nodes": {
+            "online": 4
+          },
+          "node_ids_kept": true,
+          "processes": {
+            "flower-superexec": 5,
+            "flower-superlink": 1,
+            "flower-supernode": 4,
+            "flwr-serverapp": 1
+          },
+          "superlink_alive": true,
+          "supernodes_alive": 4
+        },
+        {
+          "seconds_after_kill": 21.2,
+          "run": {
+            "status": "finished:completed",
+            "text": "N/A"
+          },
+          "nodes": {
+            "online": 4
+          },
+          "node_ids_kept": true,
+          "processes": {
+            "flower-superexec": 5,
+            "flower-superlink": 1,
+            "flower-supernode": 4
+          },
+          "superlink_alive": true,
+          "supernodes_alive": 4
+        }
+      ],
+      "after_watching": {
+        "flwr_ls_run": {
+          "success": true,
+          "runs": [
+            {
+              "run-id": "3204686406346916449",
+              "federation-id": "@none/default",
+              "fab-id": "fedtally-bench/fedavg-bench",
+              "fab-name": "fedavg-bench",
+              "fab-version": "1.0.0",
+              "fab-hash": "a3b7161f0181639ecb05340f1ae261138d9990f09b7d0950271667420658bc5f",
+              "status": "finished:completed",
+              "status-details": "N/A",
+              "elapsed": 26.252368,
+              "pending-at": "2026-11-05 00:32:29Z",
+              "starting-at": "2026-11-05 00:32:30Z",
+              "running-at": "2026-11-05 00:32:30Z",
+              "finished-at": "2026-11-05 00:32:56Z",
+              "network-traffic": {
+                "inbound-bytes": 536962887,
+                "outbound-bytes": 536981810,
+                "total-bytes": 1073944697
+              },
+              "compute-time": {
+                "serverapp-seconds": 26.252368,
+                "clientapp-seconds": 1.6015329360961914,
+                "total-seconds": 27.853900936096192
+              }
+            }
+          ]
+        },
+        "flwr_ls_all_run_ids": [
+          "3204686406346916449"
+        ],
+        "flwr_supernode_ls": {
+          "online": 4
+        },
+        "flwr_log_show": {
+          "exit_code": 0,
+          "rounds": [
+            1,
+            2,
+            3,
+            4
+          ],
+          "rounds_aggregated": 4,
+          "error": "INFO :      Printing logstream for run_id `3204686406346916449`"
+        },
+        "model": "right, largest error 3.45e-07",
+        "supernode_exit_codes": [
+          null,
+          null,
+          null,
+          null
+        ]
+      },
+      "flwr_run": {
+        "exit_code": 1,
+        "exit_seen_seconds_after_kill": 3.0,
+        "still_running_after_watching": false,
+        "output_after_kill": [
+          "\u256d\u2500 Error \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u256e",
+          "\u2502 Connection to the SuperLink is unavailable. Please check your network        \u2502",
+          "\u2502 connection and 'address' in the SuperLink connection configuration.          \u2502",
+          "\u2570\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u256f"
+        ]
+      },
+      "after_kill_counts": {
+        "superlink_tasks_started": 0,
+        "clientapps_started_by_site": [
+          3,
+          3,
+          3,
+          3
+        ],
+        "messages_received_by_site": [
+          3,
+          2,
+          2,
+          3
+        ],
+        "replies_sent_by_site": [
+          3,
+          3,
+          3,
+          3
+        ]
+      },
+      "logs_after_kill": {
+        "site-0": [
+          "WARNING :   Connection attempt failed, retrying in 0.11 seconds",
+          "WARNING :   Connection attempt failed, retrying in 1.43 seconds",
+          "WARNING :   Connection attempt failed, retrying in 1.48 seconds",
+          "INFO :      Connection successful after 3.04 seconds and 4 tries.",
+          "INFO :",
+          "INFO :      [RUN 3204686406346916449]",
+          "INFO :      Receiving: train message (ID: d68ecd4180dcca08ef36011c1213019245df79a020e2318cf0521267ffdd5458)",
+          "INFO :      Received successfully",
+          "INFO :      Start `flwr-clientapp` process",
+          "INFO :",
+          "INFO :",
+          "INFO :      [RUN 3204686406346916449]",
+          "... 10 lines ...",
+          "INFO :      Sending: train message (ID: 8c128045166bf3d5e57f78f045cf145ed2641dfe6f21515514f37b7d72f5f040)",
+          "INFO :      Sent successfully",
+          "INFO :",
+          "INFO :      [RUN 3204686406346916449]",
+          "INFO :      Receiving: train message (ID: 3480fa2e2f4e8755b2dc74f0beebf5a456e580d4d18bea8f32ea3215f9b745e4)",
+          "INFO :      Received successfully",
+          "INFO :      Start `flwr-clientapp` process",
+          "INFO :",
+          "INFO :",
+          "INFO :      [RUN 3204686406346916449]",
+          "INFO :      Sending: train message (ID: 0ad1ee2828519d936485529ab0319398debd54e924aaaa91a3d850ba2f571a98)",
+          "INFO :      Sent successfully"
+        ],
+        "superlink": [
+          "WARNING :   Option `--insecure` was set. Starting insecure HTTP server with unencrypted communication (TLS disabled). Proceed only if you understand the risks.",
+          "WARNING :   SuperNode authentication is disabled. The SuperLink will accept connections from any SuperNode.",
+          "INFO :      Starting Flower SuperLink",
+          "INFO :      Starting the SuperLink Runtime HTTP API on 127.0.0.1:60053.",
+          "INFO :      Starting the SuperLink Control HTTP API on 127.0.0.1:60053.",
+          "INFO :      Starting the SuperLink Fleet HTTP API on 127.0.0.1:60053.",
+          "2026-11-05T00:32:41.063Z INFO [uvicorn.error] Started server process [20773]",
+          "2026-11-05T00:32:41.063Z INFO [uvicorn.error] Waiting for application startup.",
+          "INFO :      FastAPI lifespan: startup",
+          "INFO :      SuperLinkLifespan: start",
+          "2026-11-05T00:32:41.064Z INFO [uvicorn.error] Application startup complete.",
+          "2026-11-05T00:32:41.067Z INFO [uvicorn.error] Uvicorn running on http://127.0.0.1:60053 (Press CTRL+C to quit)",
+          "INFO :      Finished task 7451050573942598355 of run 3204686406346916449"
+        ],
+        "superexec": [
+          "WARNING :   Connection attempt failed, retrying in 0.18 seconds",
+          "WARNING :   Connection attempt failed, retrying in 0.63 seconds",
+          "WARNING :   Connection attempt failed, retrying in 0.27 seconds",
+          "WARNING :   Connection attempt failed, retrying in 4.15 seconds",
+          "INFO :      Connection successful after 5.25 seconds and 5 tries."
+        ]
+      },
+      "resubmit": {
+        "before_restarting_supernodes": null,
+        "finished_in_time": true,
+        "seconds": 22.6,
+        "exit_code": 0,
+        "status": {
+          "status": "finished:completed",
+          "text": "N/A"
+        },
+        "rounds_logged": [
+          1,
+          2,
+          3,
+          4
+        ],
+        "model": "right, largest error 3.06e-07",
+        "nodes": {
+          "online": 4
+        },
+        "supernodes_alive": 4,
+        "output_tail": []
+      },
+      "database_bytes": 134868992,
+      "command": "python benchmarks/flower/crash.py --trial sqlite:superlink --trial sqlite:superlink --trial sqlite:superlink --isolation process --out ..."
+    },
+    {
+      "database": "sqlite",
+      "kill": "superlink",
+      "isolation": "process",
+      "outage_seconds": 30.0,
+      "load_average": 12.57568359375,
+      "nodes_before_kill": {
+        "online": 4
+      },
+      "run_id": "14458311964929228548",
+      "at_kill": {
+        "processes": {
+          "flower-superexec": 5,
+          "flower-superlink": 1,
+          "flower-supernode": 4,
+          "flwr": 1,
+          "flwr-serverapp": 1
+        },
+        "killed": [
+          "flower-superlink"
+        ],
+        "rounds_logged": [
+          1,
+          2
+        ],
+        "rounds_aggregated": 1,
+        "received_by_site": [
+          1,
+          1,
+          1,
+          2
+        ],
+        "replied_by_site": [
+          1,
+          1,
+          1,
+          1
+        ]
+      },
+      "before_restart": {
+        "seconds_after_kill": 30.0,
+        "processes": {
+          "flower-superexec": 5,
+          "flower-supernode": 4,
+          "flwr-clientapp": 1,
+          "flwr-serverapp": 1
+        },
+        "flwr_run_exit_code": 1
+      },
+      "watched_seconds_after_restart": 44.1,
+      "timeline": [
+        {
+          "seconds_after_kill": 31.1,
+          "run": {
+            "status": "ERROR",
+            "text": "Using SuperLink: bench (127.0.0.1:60284)\n Displaying information for run ID 14458311964929228548...\n\nConnection to the SuperLink is unavailable. Please check your network connection and 'address' in the SuperLink connection configuration."
+          },
+          "nodes": {
+            "online": 4
+          },
+          "node_ids_kept": true,
+          "processes": {
+            "flower-superexec": 5,
+            "flower-superlink": 1,
+            "flower-supernode": 4,
+            "flwr-clientapp": 1,
+            "flwr-serverapp": 1
+          },
+          "superlink_alive": true,
+          "supernodes_alive": 4
+        },
+        {
+          "seconds_after_kill": 37.1,
+          "run": {
+            "status": "running",
+            "text": "N/A"
+          },
+          "nodes": {
+            "online": 4
+          },
+          "node_ids_kept": true,
+          "processes": {
+            "flower-superexec": 5,
+            "flower-superlink": 1,
+            "flower-supernode": 4,
+            "flwr-clientapp": 1,
+            "flwr-serverapp": 1
+          },
+          "superlink_alive": true,
+          "supernodes_alive": 4
+        },
+        {
+          "seconds_after_kill": 55.4,
+          "run": {
+            "status": "running",
+            "text": "N/A"
+          },
+          "nodes": {
+            "online": 4
+          },
+          "node_ids_kept": true,
+          "processes": {
+            "flower-superexec": 5,
+            "flower-superlink": 1,
+            "flower-supernode": 4,
+            "flwr-serverapp": 1
+          },
+          "superlink_alive": true,
+          "supernodes_alive": 4
+        },
+        {
+          "seconds_after_kill": 74.1,
+          "run": {
+            "status": "finished:completed",
+            "text": "N/A"
+          },
+          "nodes": {
+            "online": 4
+          },
+          "node_ids_kept": true,
+          "processes": {
+            "flower-superexec": 5,
+            "flower-superlink": 1,
+            "flower-supernode": 4
+          },
+          "superlink_alive": true,
+          "supernodes_alive": 4
+        }
+      ],
+      "after_watching": {
+        "flwr_ls_run": {
+          "success": true,
+          "runs": [
+            {
+              "run-id": "14458311964929228548",
+              "federation-id": "@none/default",
+              "fab-id": "fedtally-bench/fedavg-bench",
+              "fab-name": "fedavg-bench",
+              "fab-version": "1.0.0",
+              "fab-hash": "a3b7161f0181639ecb05340f1ae261138d9990f09b7d0950271667420658bc5f",
+              "status": "finished:completed",
+              "status-details": "N/A",
+              "elapsed": 78.889967,
+              "pending-at": "2026-11-05 00:33:29Z",
+              "starting-at": "2026-11-05 00:33:29Z",
+              "running-at": "2026-11-05 00:33:30Z",
+              "finished-at": "2026-11-05 00:34:49Z",
+              "network-traffic": {
+                "inbound-bytes": 536963120,
+                "outbound-bytes": 536982192,
+                "total-bytes": 1073945312
+              },
+              "compute-time": {
+                "serverapp-seconds": 78.889967,
+                "clientapp-seconds": 56.34240221977234,
+                "total-seconds": 135.23236921977235
+              }
+            }
+          ]
+        },
+        "flwr_ls_all_run_ids": [
+          "14458311964929228548"
+        ],
+        "flwr_supernode_ls": {
+          "online": 4
+        },
+        "flwr_log_show": {
+          "exit_code": 0,
+          "rounds": [
+            1,
+            2,
+            3,
+            4
+          ],
+          "rounds_aggregated": 4,
+          "error": "INFO :      Printing logstream for run_id `14458311964929228548`"
+        },
+        "model": "right, largest error 3.55e-07",
+        "supernode_exit_codes": [
+          null,
+          null,
+          null,
+          null
+        ]
+      },
+      "flwr_run": {
+        "exit_code": 1,
+        "exit_seen_seconds_after_kill": 31.1,
+        "still_running_after_watching": false,
+        "output_after_kill": [
+          "\u256d\u2500 Error \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u256e",
+          "\u2502 Connection to the SuperLink is unavailable. Please check your network        \u2502",
+          "\u2502 connection and 'address' in the SuperLink connection configuration.          \u2502",
+          "\u2570\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u256f"
+        ]
+      },
+      "after_kill_counts": {
+        "superlink_tasks_started": 0,
+        "clientapps_started_by_site": [
+          3,
+          3,
+          3,
+          3
+        ],
+        "messages_received_by_site": [
+          3,
+          3,
+          3,
+          2
+        ],
+        "replies_sent_by_site": [
+          3,
+          3,
+          3,
+          3
+        ]
+      },
+      "logs_after_kill": {
+        "site-0": [
+          "WARNING :   Connection attempt failed, retrying in 0.55 seconds",
+          "WARNING :   Connection attempt failed, retrying in 0.28 seconds",
+          "WARNING :   Connection attempt failed, retrying in 1.14 seconds",
+          "WARNING :   Connection attempt failed, retrying in 3.09 seconds",
+          "WARNING :   Connection attempt failed, retrying in 3.05 seconds",
+          "WARNING :   Connection attempt failed, retrying in 18.45 seconds",
+          "WARNING :   Connection attempt failed, retrying in 13.66 seconds",
+          "INFO :      Connection successful after 40.24 seconds and 8 tries.",
+          "INFO :",
+          "INFO :      [RUN 14458311964929228548]",
+          "INFO :      Receiving: train message (ID: ec995ab56f3ab90e6f00111da8fae5cfbcedc5890b509f1d03883cb53a0d4d70)",
+          "INFO :      Received successfully",
+          "... 14 lines ...",
+          "INFO :",
+          "INFO :      Sent successfully",
+          "INFO :",
+          "INFO :      [RUN 14458311964929228548]",
+          "INFO :      Receiving: train message (ID: 5a3bdecbc5e047ffc26ff4b7d0441658c95baf83bf1e37534a1e481215353779)",
+          "INFO :      Received successfully",
+          "INFO :      Start `flwr-clientapp` process",
+          "INFO :",
+          "INFO :",
+          "INFO :      [RUN 14458311964929228548]",
+          "INFO :      Sending: train message (ID: a1e32f9ea7c78893882c64360ec81a3e9f99cfce7dbfb860b1537fcbbb08b2d3)",
+          "INFO :      Sent successfully"
+        ],
+        "superlink": [
+          "WARNING :   Option `--insecure` was set. Starting insecure HTTP server with unencrypted communication (TLS disabled). Proceed only if you understand the risks.",
+          "WARNING :   SuperNode authentication is disabled. The SuperLink will accept connections from any SuperNode.",
+          "INFO :      Starting Flower SuperLink",
+          "INFO :      Starting the SuperLink Runtime HTTP API on 127.0.0.1:60284.",
+          "INFO :      Starting the SuperLink Control HTTP API on 127.0.0.1:60284.",
+          "INFO :      Starting the SuperLink Fleet HTTP API on 127.0.0.1:60284.",
+          "2026-11-05T00:34:09.633Z INFO [uvicorn.error] Started server process [21859]",
+          "2026-11-05T00:34:09.648Z INFO [uvicorn.error] Waiting for application startup.",
+          "INFO :      FastAPI lifespan: startup",
+          "INFO :      SuperLinkLifespan: start",
+          "2026-11-05T00:34:09.648Z INFO [uvicorn.error] Application startup complete.",
+          "2026-11-05T00:34:09.671Z INFO [uvicorn.error] Uvicorn running on http://127.0.0.1:60284 (Press CTRL+C to quit)",
+          "INFO :      Finished task 4791266249793975159 of run 14458311964929228548"
+        ],
+        "superexec": [
+          "WARNING :   Connection attempt failed, retrying in 0.36 seconds",
+          "WARNING :   Connection attempt failed, retrying in 1.70 seconds",
+          "WARNING :   Connection attempt failed, retrying in 1.48 seconds",
+          "WARNING :   Connection attempt failed, retrying in 5.55 seconds",
+          "WARNING :   Connection attempt failed, retrying in 14.29 seconds",
+          "WARNING :   Connection attempt failed, retrying in 18.16 seconds",
+          "INFO :      Connection successful after 41.57 seconds and 7 tries."
+        ]
+      },
+      "resubmit": {
+        "before_restarting_supernodes": null,
+        "finished_in_time": true,
+        "seconds": 25.6,
+        "exit_code": 0,
+        "status": {
+          "status": "finished:completed",
+          "text": "N/A"
+        },
+        "rounds_logged": [
+          1,
+          2,
+          3,
+          4
+        ],
+        "model": "right, largest error 3.30e-07",
+        "nodes": {
+          "online": 4
+        },
+        "supernodes_alive": 4,
+        "output_tail": []
+      },
+      "database_bytes": 134856704,
+      "command": "python benchmarks/flower/crash.py --trial sqlite:superlink --outage 30 --isolation process --out ..."
+    },
+    {
+      "database": "sqlite",
+      "kill": "superlink",
+      "isolation": "process",
+      "outage_seconds": 90.0,
+      "load_average": 19.57373046875,
+      "nodes_before_kill": {
+        "online": 4
+      },
+      "run_id": "12002557122139349419",
+      "at_kill": {
+        "processes": {
+          "flower-superexec": 5,
+          "flower-superlink": 1,
+          "flower-supernode": 4,
+          "flwr": 1,
+          "flwr-clientapp": 2,
+          "flwr-serverapp": 1
+        },
+        "killed": [
+          "flower-superlink"
+        ],
+        "rounds_logged": [
+          1,
+          2
+        ],
+        "rounds_aggregated": 1,
+        "received_by_site": [
+          2,
+          2,
+          1,
+          1
+        ],
+        "replied_by_site": [
+          1,
+          1,
+          1,
+          1
+        ]
+      },
+      "before_restart": {
+        "seconds_after_kill": 90.0,
+        "processes": {
+          "flower-superexec": 5,
+          "flower-supernode": 4,
+          "flwr-serverapp": 1
+        },
+        "flwr_run_exit_code": 1
+      },
+      "watched_seconds_after_restart": 13.0,
+      "timeline": [
+        {
+          "seconds_after_kill": 91.0,
+          "run": {
+            "status": "ERROR",
+            "text": "Using SuperLink: bench (127.0.0.1:60597)\n Displaying information for run ID 12002557122139349419...\n\nConnection to the SuperLink is unavailable. Please check your network connection and 'address' in the SuperLink connection configuration."
+          },
+          "nodes": {
+            "offline": 4
+          },
+          "node_ids_kept": true,
+          "processes": {
+            "flower-superexec": 5,
+            "flower-superlink": 1,
+            "flower-supernode": 4,
+            "flwr-serverapp": 1
+          },
+          "superlink_alive": true,
+          "supernodes_alive": 4
+        },
+        {
+          "seconds_after_kill": 97.0,
+          "run": {
+            "status": "finished:failed",
+            "text": "No heartbeat received from the task"
+          },
+          "nodes": {
+            "online": 2,
+            "offline": 2
+          },
+          "node_ids_kept": true,
+          "processes": {
+            "flower-superexec": 5,
+            "flower-superlink": 1,
+            "flower-supernode": 4
+          },
+          "superlink_alive": true,
+          "supernodes_alive": 4
+        },
+        {
+          "seconds_after_kill": 103.0,
+          "run": {
+            "status": "finished:failed",
+            "text": "No heartbeat received from the task"
+          },
+          "nodes": {
+            "online": 4
+          },
+          "node_ids_kept": true,
+          "processes": {
+            "flower-superexec": 5,
+            "flower-superlink": 1,
+            "flower-supernode": 4
+          },
+          "superlink_alive": true,
+          "supernodes_alive": 4
+        }
+      ],
+      "after_watching": {
+        "flwr_ls_run": {
+          "success": true,
+          "runs": [
+            {
+              "run-id": "12002557122139349419",
+              "federation-id": "@none/default",
+              "fab-id": "fedtally-bench/fedavg-bench",
+              "fab-name": "fedavg-bench",
+              "fab-version": "1.0.0",
+              "fab-hash": "a3b7161f0181639ecb05340f1ae261138d9990f09b7d0950271667420658bc5f",
+              "status": "finished:failed",
+              "status-details": "No heartbeat received from the task",
+              "elapsed": 60.0,
+              "pending-at": "2026-11-05 00:35:25Z",
+              "starting-at": "2026-11-05 00:35:26Z",
+              "running-at": "2026-11-05 00:35:26Z",
+              "finished-at": "2026-11-05 00:36:26Z",
+              "network-traffic": {
+                "inbound-bytes": 134240848,
+                "outbound-bytes": 268485672,
+                "total-bytes": 402726520
+              },
+              "compute-time": {
+                "serverapp-seconds": 60.0,
+                "clientapp-seconds": 0.44564223289489746,
+                "total-seconds": 60.4456422328949
+              }
+            }
+          ]
+        },
+        "flwr_ls_all_run_ids": [
+          "12002557122139349419"
+        ],
+        "flwr_supernode_ls": {
+          "online": 4
+        },
+        "flwr_log_show": {
+          "exit_code": 0,
+          "rounds": [
+            1,
+            2
+          ],
+          "rounds_aggregated": 1,
+          "error": "INFO :      Printing logstream for run_id `12002557122139349419`"
+        },
+        "model": "no final model written",
+        "supernode_exit_codes": [
+          null,
+          null,
+          null,
+          null
+        ]
+      },
+      "flwr_run": {
+        "exit_code": 1,
+        "exit_seen_seconds_after_kill": 91.0,
+        "still_running_after_watching": false,
+        "output_after_kill": [
+          "\u256d\u2500 Error \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u256e",
+          "\u2502 Connection to the SuperLink is unavailable. Please check your network        \u2502",
+          "\u2502 connection and 'address' in the SuperLink connection configuration.          \u2502",
+          "\u2570\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u256f"
+        ]
+      },
+      "after_kill_counts": {
+        "superlink_tasks_started": 0,
+        "clientapps_started_by_site": [
+          1,
+          1,
+          1,
+          1
+        ],
+        "messages_received_by_site": [
+          0,
+          0,
+          1,
+          1
+        ],
+        "replies_sent_by_site": [
+          1,
+          0,
+          0,
+          0
+        ]
+      },
+      "logs_after_kill": {
+        "site-0": [
+          "INFO :      Start `flwr-clientapp` process",
+          "INFO :",
+          "INFO :",
+          "INFO :      [RUN 12002557122139349419]",
+          "INFO :      Sending: train message (ID: 11eba778ae6d80aa911f66496781c76db57d831a1aa374e47234543ece0cbb31)",
+          "WARNING :   Connection attempt failed, retrying in 0.80 seconds",
+          "WARNING :   Connection attempt failed, retrying in 0.14 seconds",
+          "WARNING :   Connection attempt failed, retrying in 1.35 seconds",
+          "WARNING :   Connection attempt failed, retrying in 7.95 seconds",
+          "WARNING :   Connection attempt failed, retrying in 13.27 seconds",
+          "WARNING :   Connection attempt failed, retrying in 14.95 seconds",
+          "WARNING :   Connection attempt failed, retrying in 4.13 seconds",
+          "WARNING :   Connection attempt failed, retrying in 7.83 seconds",
+          "WARNING :   Connection attempt failed, retrying in 13.30 seconds",
+          "WARNING :   Connection attempt failed, retrying in 6.91 seconds",
+          "WARNING :   Connection attempt failed, retrying in 17.05 seconds",
+          "WARNING :   Connection attempt failed, retrying in 6.13 seconds",
+          "INFO :      Connection successful after 93.86 seconds and 13 tries.",
+          "INFO :      Sent successfully"
+        ],
+        "superlink": [
+          "WARNING :   Option `--insecure` was set. Starting insecure HTTP server with unencrypted communication (TLS disabled). Proceed only if you understand the risks.",
+          "WARNING :   SuperNode authentication is disabled. The SuperLink will accept connections from any SuperNode.",
+          "INFO :      Starting Flower SuperLink",
+          "INFO :      Starting the SuperLink Runtime HTTP API on 127.0.0.1:60597.",
+          "INFO :      Starting the SuperLink Control HTTP API on 127.0.0.1:60597.",
+          "INFO :      Starting the SuperLink Fleet HTTP API on 127.0.0.1:60597.",
+          "2026-11-05T00:37:03.519Z INFO [uvicorn.error] Started server process [26932]",
+          "2026-11-05T00:37:03.519Z INFO [uvicorn.error] Waiting for application startup.",
+          "INFO :      FastAPI lifespan: startup",
+          "INFO :      SuperLinkLifespan: start",
+          "2026-11-05T00:37:03.520Z INFO [uvicorn.error] Application startup complete.",
+          "2026-11-05T00:37:03.520Z INFO [uvicorn.error] Uvicorn running on http://127.0.0.1:60597 (Press CTRL+C to quit)",
+          "ERROR :     [/v1/runtime/send-task-heartbeat][ApiError:1008] Runtime task-token authentication failed.",
+          "ERROR :     [/v1/runtime/push-task-output][ApiError:1008] Runtime task-token authentication failed.",
+          "ERROR :     [/v1/fleet/confirm-message-received][ApiError:2007] SuperNode 10481366872546446965, exception: Run is finished.",
+          "ERROR :     [/v1/fleet/confirm-message-received][ApiError:2007] SuperNode 17530881493731392479, exception: Run is finished."
+        ],
+        "superexec": [
+          "WARNING :   Connection attempt failed, retrying in 0.47 seconds",
+          "WARNING :   Connection attempt failed, retrying in 1.17 seconds",
+          "WARNING :   Connection attempt failed, retrying in 2.01 seconds",
+          "WARNING :   Connection attempt failed, retrying in 1.77 seconds",
+          "WARNING :   Connection attempt failed, retrying in 16.00 seconds",
+          "WARNING :   Connection attempt failed, retrying in 12.23 seconds",
+          "WARNING :   Connection attempt failed, retrying in 17.55 seconds",
+          "WARNING :   Connection attempt failed, retrying in 13.48 seconds",
+          "WARNING :   Connection attempt failed, retrying in 14.24 seconds",
+          "WARNING :   Connection attempt failed, retrying in 4.73 seconds",
+          "WARNING :   Connection attempt failed, retrying in 16.37 seconds",
+          "INFO :      Connection successful after 100.08 seconds and 12 tries."
+        ]
+      },
+      "resubmit": {
+        "before_restarting_supernodes": null,
+        "finished_in_time": false,
+        "seconds": 240.1,
+        "exit_code": null,
+        "status": {
+          "status": "running",
+          "text": "N/A"
+        },
+        "rounds_logged": [
+          1
+        ],
+        "model": "no final model written",
+        "nodes": {
+          "online": 4
+        },
+        "supernodes_alive": 4,
+        "output_tail": [
+          "INFO :      \t\t\u251c\u2500\u2500 ArrayRecord key: 'arrays'",
+          "INFO :      \t\t\u2514\u2500\u2500 ConfigRecord key: 'config'",
+          "INFO :",
+          "INFO :",
+          "INFO :      [ROUND 1/4]",
+          "INFO :      configure_train: Sampled 4 nodes (out of 4)"
+        ]
+      },
+      "database_bytes": 134848512,
+      "command": "python benchmarks/flower/crash.py --trial sqlite:superlink --outage 90 --isolation process --out ..."
+    },
+    {
+      "database": "sqlite",
+      "kill": "superlink",
+      "isolation": "process",
+      "outage_seconds": 90.0,
+      "load_average": 2.4111328125,
+      "nodes_before_kill": {
+        "online": 4
+      },
+      "run_id": "14505410302926952925",
+      "at_kill": {
+        "processes": {
+          "flower-superexec": 5,
+          "flower-superlink": 1,
+          "flower-supernode": 4,
+          "flwr": 1,
+          "flwr-clientapp": 1,
+          "flwr-serverapp": 1
+        },
+        "killed": [
+          "flower-superlink"
+        ],
+        "rounds_logged": [
+          1,
+          2
+        ],
+        "rounds_aggregated": 1,
+        "received_by_site": [
+          1,
+          1,
+          2,
+          1
+        ],
+        "replied_by_site": [
+          1,
+          1,
+          1,
+          1
+        ]
+      },
+      "before_restart": {
+        "seconds_after_kill": 90.0,
+        "processes": {
+          "flower-superexec": 5,
+          "flower-supernode": 4,
+          "flwr-clientapp": 1,
+          "flwr-serverapp": 1
+        },
+        "flwr_run_exit_code": 1
+      },
+      "watched_seconds_after_restart": 18.1,
+      "timeline": [
+        {
+          "seconds_after_kill": 90.9,
+          "run": {
+            "status": "ERROR",
+            "text": "Using SuperLink: bench (127.0.0.1:61463)\n Displaying information for run ID 14505410302926952925...\n\nConnection to the SuperLink is unavailable. Please check your network connection and 'address' in the SuperLink connection configuration."
+          },
+          "nodes": {
+            "offline": 4
+          },
+          "node_ids_kept": true,
+          "processes": {
+            "flower-superexec": 5,
+            "flower-superlink": 1,
+            "flower-supernode": 4,
+            "flwr-clientapp": 1,
+            "flwr-serverapp": 1
+          },
+          "superlink_alive": true,
+          "supernodes_alive": 4
+        },
+        {
+          "seconds_after_kill": 96.7,
+          "run": {
+            "status": "finished:failed",
+            "text": "No heartbeat received from the task"
+          },
+          "nodes": {
+            "online": 3,
+            "offline": 1
+          },
+          "node_ids_kept": true,
+          "processes": {
+            "flower-superexec": 5,
+            "flower-superlink": 1,
+            "flower-supernode": 4,
+            "flwr-clientapp": 1,
+            "flwr-serverapp": 1
+          },
+          "superlink_alive": true,
+          "supernodes_alive": 4
+        },
+        {
+          "seconds_after_kill": 102.4,
+          "run": {
+            "status": "finished:failed",
+            "text": "No heartbeat received from the task"
+          },
+          "nodes": {
+            "online": 3,
+            "offline": 1
+          },
+          "node_ids_kept": true,
+          "processes": {
+            "flower-superexec": 5,
+            "flower-superlink": 1,
+            "flower-supernode": 4,
+            "flwr-clientapp": 1
+          },
+          "superlink_alive": true,
+          "supernodes_alive": 4
+        },
+        {
+          "seconds_after_kill": 108.1,
+          "run": {
+            "status": "finished:failed",
+            "text": "No heartbeat received from the task"
+          },
+          "nodes": {
+            "online": 4
+          },
+          "node_ids_kept": true,
+          "processes": {
+            "flower-superexec": 5,
+            "flower-superlink": 1,
+            "flower-supernode": 4,
+            "flwr-clientapp": 1
+          },
+          "superlink_alive": true,
+          "supernodes_alive": 4
+        }
+      ],
+      "after_watching": {
+        "flwr_ls_run": {
+          "success": true,
+          "runs": [
+            {
+              "run-id": "14505410302926952925",
+              "federation-id": "@none/default",
+              "fab-id": "fedtally-bench/fedavg-bench",
+              "fab-name": "fedavg-bench",
+              "fab-version": "1.0.0",
+              "fab-hash": "a3b7161f0181639ecb05340f1ae261138d9990f09b7d0950271667420658bc5f",
+              "status": "finished:failed",
+              "status-details": "No heartbeat received from the task",
+              "elapsed": 60.0,
+              "pending-at": "2026-11-05 00:48:26Z",
+              "starting-at": "2026-11-05 00:48:27Z",
+              "running-at": "2026-11-05 00:48:28Z",
+              "finished-at": "2026-11-05 00:49:28Z",
+              "network-traffic": {
+                "inbound-bytes": 134240731,
+                "outbound-bytes": 172001559,
+                "total-bytes": 306242290
+              },
+              "compute-time": {
+                "serverapp-seconds": 60.0,
+                "clientapp-seconds": 0.3173868656158447,
+                "total-seconds": 60.317386865615845
+              }
+            }
+          ]
+        },
+        "flwr_ls_all_run_ids": [
+          "14505410302926952925"
+        ],
+        "flwr_supernode_ls": {
+          "online": 4
+        },
+        "flwr_log_show": {
+          "exit_code": 0,
+          "rounds": [
+            1,
+            2
+          ],
+          "rounds_aggregated": 1,
+          "error": "INFO :      Printing logstream for run_id `14505410302926952925`"
+        },
+        "model": "no final model written",
+        "supernode_exit_codes": [
+          null,
+          null,
+          null,
+          null
+        ]
+      },
+      "flwr_run": {
+        "exit_code": 1,
+        "exit_seen_seconds_after_kill": 90.9,
+        "still_running_after_watching": false,
+        "output_after_kill": [
+          "\u256d\u2500 Error \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u256e",
+          "\u2502 Connection to the SuperLink is unavailable. Please check your network        \u2502",
+          "\u2502 connection and 'address' in the SuperLink connection configuration.          \u2502",
+          "\u2570\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u256f"
+        ]
+      },
+      "after_kill_counts": {
+        "superlink_tasks_started": 0,
+        "clientapps_started_by_site": [
+          0,
+          0,
+          1,
+          1
+        ],
+        "messages_received_by_site": [
+          0,
+          0,
+          0,
+          0
+        ],
+        "replies_sent_by_site": [
+          0,
+          0,
+          1,
+          0
+        ]
+      },
+      "logs_after_kill": {
+        "site-0": [
+          "WARNING :   Connection attempt failed, retrying in 0.79 seconds",
+          "WARNING :   Connection attempt failed, retrying in 1.41 seconds",
+          "WARNING :   Connection attempt failed, retrying in 1.06 seconds",
+          "WARNING :   Connection attempt failed, retrying in 4.97 seconds",
+          "WARNING :   Connection attempt failed, retrying in 4.67 seconds",
+          "WARNING :   Connection attempt failed, retrying in 0.62 seconds",
+          "WARNING :   Connection attempt failed, retrying in 8.02 seconds",
+          "WARNING :   Connection attempt failed, retrying in 14.42 seconds",
+          "WARNING :   Connection attempt failed, retrying in 0.87 seconds",
+          "WARNING :   Connection attempt failed, retrying in 18.94 seconds",
+          "WARNING :   Connection attempt failed, retrying in 9.23 seconds",
+          "WARNING :   Connection attempt failed, retrying in 5.57 seconds",
+          "WARNING :   Connection attempt failed, retrying in 5.35 seconds",
+          "WARNING :   Connection attempt failed, retrying in 2.57 seconds",
+          "WARNING :   Connection attempt failed, retrying in 19.94 seconds",
+          "INFO :      Connection successful after 98.49 seconds and 16 tries."
+        ],
+        "superlink": [
+          "WARNING :   Option `--insecure` was set. Starting insecure HTTP server with unencrypted communication (TLS disabled). Proceed only if you understand the risks.",
+          "WARNING :   SuperNode authentication is disabled. The SuperLink will accept connections from any SuperNode.",
+          "INFO :      Starting Flower SuperLink",
+          "INFO :      Starting the SuperLink Runtime HTTP API on 127.0.0.1:61463.",
+          "INFO :      Starting the SuperLink Control HTTP API on 127.0.0.1:61463.",
+          "INFO :      Starting the SuperLink Fleet HTTP API on 127.0.0.1:61463.",
+          "2026-11-05T00:50:03.468Z INFO [uvicorn.error] Started server process [29552]",
+          "2026-11-05T00:50:03.468Z INFO [uvicorn.error] Waiting for application startup.",
+          "INFO :      FastAPI lifespan: startup",
+          "INFO :      SuperLinkLifespan: start",
+          "2026-11-05T00:50:03.469Z INFO [uvicorn.error] Application startup complete.",
+          "2026-11-05T00:50:03.469Z INFO [uvicorn.error] Uvicorn running on http://127.0.0.1:61463 (Press CTRL+C to quit)",
+          "ERROR :     [/v1/fleet/pull-object][ApiError:2007] SuperNode 2552462779562406563, run_id=14505410302926952925, object_id=3dc4c7335072879caea0581571fabcf65838f5feb8f9b2d3e75935d35eebd1e9, exception: Run is finished.",
+          "ERROR :     [/v1/fleet/confirm-message-received][ApiError:2007] SuperNode 2552462779562406563, exception: Run is finished.",
+          "ERROR :     [/v1/runtime/send-task-heartbeat][ApiError:1008] Runtime task-token authentication failed.",
+          "ERROR :     [/v1/fleet/pull-object][ApiError:2007] SuperNode 2552462779562406563, run_id=14505410302926952925, object_id=24ed092605de719e07887a1f6ec847deb44471bd7e1bc25f3cde15b3bee3eabd, exception: Run is finished.",
+          "ERROR :     [/v1/runtime/push-task-output][ApiError:1008] Runtime task-token authentication failed."
+        ],
+        "superexec": [
+          "WARNING :   Connection attempt failed, retrying in 0.70 seconds",
+          "WARNING :   Connection attempt failed, retrying in 1.17 seconds",
+          "WARNING :   Connection attempt failed, retrying in 3.55 seconds",
+          "WARNING :   Connection attempt failed, retrying in 2.70 seconds",
+          "WARNING :   Connection attempt failed, retrying in 7.97 seconds",
+          "WARNING :   Connection attempt failed, retrying in 18.99 seconds",
+          "WARNING :   Connection attempt failed, retrying in 17.67 seconds",
+          "WARNING :   Connection attempt failed, retrying in 19.26 seconds",
+          "WARNING :   Connection attempt failed, retrying in 7.42 seconds",
+          "WARNING :   Connection attempt failed, retrying in 9.96 seconds",
+          "WARNING :   Connection attempt failed, retrying in 11.06 seconds",
+          "INFO :      Connection successful after 100.50 seconds and 12 tries."
+        ]
+      },
+      "resubmit": {
+        "before_restarting_supernodes": null,
+        "finished_in_time": true,
+        "seconds": 21.4,
+        "exit_code": 0,
+        "status": {
+          "status": "finished:completed",
+          "text": "N/A"
+        },
+        "rounds_logged": [
+          1,
+          2,
+          3,
+          4
+        ],
+        "model": "right, largest error 3.33e-07",
+        "nodes": {
+          "online": 4
+        },
+        "supernodes_alive": 4,
+        "output_tail": []
+      },
+      "database_bytes": 101261312,
+      "command": "python benchmarks/flower/crash.py --trial sqlite:superlink --outage 90 --isolation process --resubmit-timeout 120 --out ..."
+    },
+    {
+      "database": "sqlite",
+      "kill": "tree",
+      "isolation": "process",
+      "outage_seconds": 2,
+      "load_average": 1.7080078125,
+      "nodes_before_kill": {
+        "online": 4
+      },
+      "run_id": "17760383594202948291",
+      "at_kill": {
+        "processes": {
+          "flower-superexec": 5,
+          "flower-superlink": 1,
+          "flower-supernode": 4,
+          "flwr": 1,
+          "flwr-clientapp": 1,
+          "flwr-serverapp": 1
+        },
+        "killed": [
+          "flower-superlink",
+          "flower-superexec",
+          "flwr-serverapp"
+        ],
+        "rounds_logged": [
+          1,
+          2
+        ],
+        "rounds_aggregated": 1,
+        "received_by_site": [
+          1,
+          1,
+          2,
+          1
+        ],
+        "replied_by_site": [
+          1,
+          1,
+          1,
+          1
+        ]
+      },
+      "before_restart": {
+        "seconds_after_kill": 2.0,
+        "processes": {
+          "flower-superexec": 4,
+          "flower-supernode": 4
+        },
+        "flwr_run_exit_code": 1
+      },
+      "watched_seconds_after_restart": 52.9,
+      "timeline": [
+        {
+          "seconds_after_kill": 2.8,
+          "run": {
+            "status": "ERROR",
+            "text": "Using SuperLink: bench (127.0.0.1:60891)\n Displaying information for run ID 17760383594202948291...\n\nConnection to the SuperLink is unavailable. Please check your network connection and 'address' in the SuperLink connection configuration."
+          },
+          "nodes": {
+            "online": 4
+          },
+          "node_ids_kept": true,
+          "processes": {
+            "flower-superexec": 5,
+            "flower-superlink": 1,
+            "flower-supernode": 4
+          },
+          "superlink_alive": true,
+          "supernodes_alive": 4
+        },
+        {
+          "seconds_after_kill": 8.7,
+          "run": {
+            "status": "running",
+            "text": "N/A"
+          },
+          "nodes": {
+            "online": 4
+          },
+          "node_ids_kept": true,
+          "processes": {
+            "flower-superexec": 5,
+            "flower-superlink": 1,
+            "flower-supernode": 4
+          },
+          "superlink_alive": true,
+          "supernodes_alive": 4
+        },
+        {
+          "seconds_after_kill": 54.9,
+          "run": {
+            "status": "finished:failed",
+            "text": "No heartbeat received from the task"
+          },
+          "nodes": {
+            "online": 4
+          },
+          "node_ids_kept": true,
+          "processes": {
+            "flower-superexec": 5,
+            "flower-superlink": 1,
+            "flower-supernode": 4
+          },
+          "superlink_alive": true,
+          "supernodes_alive": 4
+        }
+      ],
+      "after_watching": {
+        "flwr_ls_run": {
+          "success": true,
+          "runs": [
+            {
+              "run-id": "17760383594202948291",
+              "federation-id": "@none/default",
+              "fab-id": "fedtally-bench/fedavg-bench",
+              "fab-name": "fedavg-bench",
+              "fab-version": "1.0.0",
+              "fab-hash": "a3b7161f0181639ecb05340f1ae261138d9990f09b7d0950271667420658bc5f",
+              "status": "finished:failed",
+              "status-details": "No heartbeat received from the task",
+              "elapsed": 60.0,
+              "pending-at": "2026-11-05 00:41:22Z",
+              "starting-at": "2026-11-05 00:41:23Z",
+              "running-at": "2026-11-05 00:41:23Z",
+              "finished-at": "2026-11-05 00:42:23Z",
+              "network-traffic": {
+                "inbound-bytes": 268481354,
+                "outbound-bytes": 268490716,
+                "total-bytes": 536972070
+              },
+              "compute-time": {
+                "serverapp-seconds": 60.0,
+                "clientapp-seconds": 0.6631972789764404,
+                "total-seconds": 60.66319727897644
+              }
+            }
+          ]
+        },
+        "flwr_ls_all_run_ids": [
+          "17760383594202948291"
+        ],
+        "flwr_supernode_ls": {
+          "online": 4
+        },
+        "flwr_log_show": {
+          "exit_code": 0,
+          "rounds": [
+            1,
+            2
+          ],
+          "rounds_aggregated": 1,
+          "error": "INFO :      Printing logstream for run_id `17760383594202948291`"
+        },
+        "model": "no final model written",
+        "supernode_exit_codes": [
+          null,
+          null,
+          null,
+          null
+        ]
+      },
+      "flwr_run": {
+        "exit_code": 1,
+        "exit_seen_seconds_after_kill": 2.8,
+        "still_running_after_watching": false,
+        "output_after_kill": [
+          "\u256d\u2500 Error \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u256e",
+          "\u2502 Connection to the SuperLink is unavailable. Please check your network        \u2502",
+          "\u2502 connection and 'address' in the SuperLink connection configuration.          \u2502",
+          "\u2570\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u256f"
+        ]
+      },
+      "after_kill_counts": {
+        "superlink_tasks_started": 0,
+        "clientapps_started_by_site": [
+          1,
+          1,
+          1,
+          1
+        ],
+        "messages_received_by_site": [
+          1,
+          1,
+          0,
+          1
+        ],
+        "replies_sent_by_site": [
+          1,
+          1,
+          1,
+          1
+        ]
+      },
+      "logs_after_kill": {
+        "site-0": [
+          "WARNING :   Connection attempt failed, retrying in 0.40 seconds",
+          "WARNING :   Connection attempt failed, retrying in 0.06 seconds",
+          "WARNING :   Connection attempt failed, retrying in 0.98 seconds",
+          "WARNING :   Connection attempt failed, retrying in 1.51 seconds",
+          "INFO :      Connection successful after 2.98 seconds and 5 tries.",
+          "INFO :",
+          "INFO :      [RUN 17760383594202948291]",
+          "INFO :      Receiving: train message (ID: 11e1c490810ff31c93e41c46a081fba21cd86133fc241501a1a52a4fedc4fb1b)",
+          "INFO :      Received successfully",
+          "INFO :      Start `flwr-clientapp` process",
+          "INFO :",
+          "INFO :",
+          "INFO :      [RUN 17760383594202948291]",
+          "INFO :      Sending: train message (ID: 2c0cf8092250024e32fe9b5730de57e2d2848d7070889a2158b466f6d974bcfa)",
+          "INFO :      Sent successfully"
+        ],
+        "superlink": [
+          "WARNING :   Option `--insecure` was set. Starting insecure HTTP server with unencrypted communication (TLS disabled). Proceed only if you understand the risks.",
+          "WARNING :   SuperNode authentication is disabled. The SuperLink will accept connections from any SuperNode.",
+          "INFO :      Starting Flower SuperLink",
+          "INFO :      Starting the SuperLink Runtime HTTP API on 127.0.0.1:60891.",
+          "INFO :      Starting the SuperLink Control HTTP API on 127.0.0.1:60891.",
+          "INFO :      Starting the SuperLink Fleet HTTP API on 127.0.0.1:60891.",
+          "2026-11-05T00:41:32.053Z INFO [uvicorn.error] Started server process [28864]",
+          "2026-11-05T00:41:32.053Z INFO [uvicorn.error] Waiting for application startup.",
+          "INFO :      FastAPI lifespan: startup",
+          "INFO :      SuperLinkLifespan: start",
+          "2026-11-05T00:41:32.053Z INFO [uvicorn.error] Application startup complete.",
+          "2026-11-05T00:41:32.054Z INFO [uvicorn.error] Uvicorn running on http://127.0.0.1:60891 (Press CTRL+C to quit)"
+        ],
+        "superexec": [
+          "INFO :      Starting Flower SuperExec",
+          "WARNING :   Connection attempt failed, retrying in 0.27 seconds",
+          "INFO :      Connection successful after 0.27 seconds and 2 tries."
+        ]
+      },
+      "resubmit": {
+        "before_restarting_supernodes": null,
+        "finished_in_time": true,
+        "seconds": 22.4,
+        "exit_code": 0,
+        "status": {
+          "status": "finished:completed",
+          "text": "N/A"
+        },
+        "rounds_logged": [
+          1,
+          2,
+          3,
+          4
+        ],
+        "model": "right, largest error 3.40e-07",
+        "nodes": {
+          "online": 4
+        },
+        "supernodes_alive": 4,
+        "output_tail": []
+      },
+      "database_bytes": 134860800,
+      "command": "python benchmarks/flower/crash.py --trial sqlite:tree --isolation process --out ..."
+    },
+    {
+      "database": "memory",
+      "kill": "superlink",
+      "isolation": "process",
+      "outage_seconds": 2,
+      "load_average": 1.33642578125,
+      "nodes_before_kill": {
+        "online": 4
+      },
+      "run_id": "1189848125460974429",
+      "at_kill": {
+        "processes": {
+          "flower-superexec": 5,
+          "flower-superlink": 1,
+          "flower-supernode": 4,
+          "flwr": 1,
+          "flwr-clientapp": 4,
+          "flwr-serverapp": 1
+        },
+        "killed": [
+          "flower-superlink"
+        ],
+        "rounds_logged": [
+          1,
+          2
+        ],
+        "rounds_aggregated": 1,
+        "received_by_site": [
+          2,
+          2,
+          2,
+          2
+        ],
+        "replied_by_site": [
+          1,
+          1,
+          1,
+          1
+        ]
+      },
+      "before_restart": {
+        "seconds_after_kill": 2.0,
+        "processes": {
+          "flower-superexec": 5,
+          "flower-supernode": 4,
+          "flwr-serverapp": 1
+        },
+        "flwr_run_exit_code": 1
+      },
+      "watched_seconds_after_restart": 185.1,
+      "timeline": [
+        {
+          "seconds_after_kill": 2.9,
+          "run": {
+            "status": "ERROR",
+            "text": "Using SuperLink: bench (127.0.0.1:61117)\n Displaying information for run ID 1189848125460974429...\n\nConnection to the SuperLink is unavailable. Please check your network connection and 'address' in the SuperLink connection configuration."
+          },
+          "nodes": {},
+          "node_ids_kept": false,
+          "processes": {
+            "flower-superexec": 5,
+            "flower-superlink": 1,
+            "flower-supernode": 4,
+            "flwr-serverapp": 1
+          },
+          "superlink_alive": true,
+          "supernodes_alive": 4
+        },
+        {
+          "seconds_after_kill": 8.7,
+          "run": {
+            "status": "ERROR",
+            "text": "Using SuperLink: bench (127.0.0.1:61117)\n Displaying information for run ID 1189848125460974429...\n\n[code: 16] Run ID not found."
+          },
+          "nodes": {},
+          "node_ids_kept": false,
+          "processes": {
+            "flower-superexec": 5,
+            "flower-superlink": 1,
+            "flwr-serverapp": 1
+          },
+          "superlink_alive": true,
+          "supernodes_alive": 0
+        },
+        {
+          "seconds_after_kill": 14.4,
+          "run": {
+            "status": "ERROR",
+            "text": "Using SuperLink: bench (127.0.0.1:61117)\n Displaying information for run ID 1189848125460974429...\n\n[code: 16] Run ID not found."
+          },
+          "nodes": {},
+          "node_ids_kept": false,
+          "processes": {
+            "flower-superexec": 2,
+            "flower-superlink": 1
+          },
+          "superlink_alive": true,
+          "supernodes_alive": 0
+        },
+        {
+          "seconds_after_kill": 31.8,
+          "run": {
+            "status": "ERROR",
+            "text": "Using SuperLink: bench (127.0.0.1:61117)\n Displaying information for run ID 1189848125460974429...\n\n[code: 16] Run ID not found."
+          },
+          "nodes": {},
+          "node_ids_kept": false,
+          "processes": {
+            "flower-superexec": 1,
+            "flower-superlink": 1
+          },
+          "superlink_alive": true,
+          "supernodes_alive": 0
+        }
+      ],
+      "after_watching": {
+        "flwr_ls_run": {
+          "success": false,
+          "error-message": "Using SuperLink: bench (127.0.0.1:61117)\n Displaying information for run ID 1189848125460974429...\n\n[code: 16] Run ID not found."
+        },
+        "flwr_ls_all_run_ids": [],
+        "flwr_supernode_ls": {},
+        "flwr_log_show": {
+          "exit_code": 1,
+          "rounds": [],
+          "rounds_aggregated": 0,
+          "error": "INFO :      Printing logstream for run_id `1189848125460974429`\n\u256d\u2500 Error \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u256e\n\u2502 [code: 16] Run ID not found.                                                 \u2502\n\u2570\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500"
+        },
+        "model": "no final model written",
+        "supernode_exit_codes": [
+          0,
+          0,
+          0,
+          0
+        ]
+      },
+      "flwr_run": {
+        "exit_code": 1,
+        "exit_seen_seconds_after_kill": 2.8,
+        "still_running_after_watching": false,
+        "output_after_kill": [
+          "\u256d\u2500 Error \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u256e",
+          "\u2502 Connection to the SuperLink is unavailable. Please check your network        \u2502",
+          "\u2502 connection and 'address' in the SuperLink connection configuration.          \u2502",
+          "\u2570\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u256f"
+        ]
+      },
+      "after_kill_counts": {
+        "superlink_tasks_started": 0,
+        "clientapps_started_by_site": [
+          1,
+          1,
+          1,
+          1
+        ],
+        "messages_received_by_site": [
+          0,
+          0,
+          0,
+          0
+        ],
+        "replies_sent_by_site": [
+          0,
+          0,
+          0,
+          0
+        ]
+      },
+      "logs_after_kill": {
+        "site-0": [
+          "INFO :      Start `flwr-clientapp` process",
+          "INFO :",
+          "INFO :      [RUN 1189848125460974429]",
+          "INFO :      Sending: train message (ID: b5ad0a15f09ca030ad4b5e9c27025202c59d5af81d7382c992622e5d8697deef)",
+          "WARNING :   Connection attempt failed, retrying in 0.11 seconds",
+          "INFO :",
+          "WARNING :   Connection attempt failed, retrying in 1.82 seconds",
+          "WARNING :   Connection attempt failed, retrying in 0.86 seconds",
+          "INFO :      SuperNode terminated gracefully.",
+          "INFO:     Shutting down",
+          "INFO:     Waiting for application shutdown.",
+          "INFO :      FastAPI lifespan: shutdown",
+          "INFO:     Application shutdown complete.",
+          "INFO:     Finished server process [29054]",
+          "WARNING :   Connection attempt failed, retrying in 0.02 seconds",
+          "WARNING :   Connection attempt failed, retrying in 0.34 seconds",
+          "WARNING :   Connection attempt failed, retrying in 0.58 seconds",
+          "WARNING :   Connection attempt failed, retrying in 2.77 seconds",
+          "WARNING :   Connection attempt failed, retrying in 3.25 seconds",
+          "INFO :      SuperExec terminated gracefully."
+        ],
+        "superlink": [
+          "WARNING :   Option `--insecure` was set. Starting insecure HTTP server with unencrypted communication (TLS disabled). Proceed only if you understand the risks.",
+          "WARNING :   SuperNode authentication is disabled. The SuperLink will accept connections from any SuperNode.",
+          "INFO :      Starting Flower SuperLink",
+          "INFO :      Starting the SuperLink Runtime HTTP API on 127.0.0.1:61117.",
+          "INFO :      Starting the SuperLink Control HTTP API on 127.0.0.1:61117.",
+          "INFO :      Starting the SuperLink Fleet HTTP API on 127.0.0.1:61117.",
+          "2026-11-05T00:43:03.373Z INFO [uvicorn.error] Started server process [29139]",
+          "2026-11-05T00:43:03.373Z INFO [uvicorn.error] Waiting for application startup.",
+          "INFO :      FastAPI lifespan: startup",
+          "INFO :      SuperLinkLifespan: start",
+          "2026-11-05T00:43:03.373Z INFO [uvicorn.error] Application startup complete.",
+          "2026-11-05T00:43:03.374Z INFO [uvicorn.error] Uvicorn running on http://127.0.0.1:61117 (Press CTRL+C to quit)",
+          "... 23 lines ...",
+          "ERROR :     [/v1/control/list-runs][ApiError:16] Run 1189848125460974429 not found while listing runs for <id:none>.",
+          "ERROR :     [/v1/control/list-runs][ApiError:16] Run 1189848125460974429 not found while listing runs for <id:none>.",
+          "ERROR :     [/v1/control/list-runs][ApiError:16] Run 1189848125460974429 not found while listing runs for <id:none>.",
+          "ERROR :     [/v1/control/list-runs][ApiError:16] Run 1189848125460974429 not found while listing runs for <id:none>.",
+          "ERROR :     [/v1/control/list-runs][ApiError:16] Run 1189848125460974429 not found while listing runs for <id:none>.",
+          "ERROR :     [/v1/control/list-runs][ApiError:16] Run 1189848125460974429 not found while listing runs for <id:none>.",
+          "ERROR :     [/v1/control/list-runs][ApiError:16] Run 1189848125460974429 not found while listing runs for <id:none>.",
+          "ERROR :     [/v1/control/list-runs][ApiError:16] Run 1189848125460974429 not found while listing runs for <id:none>.",
+          "ERROR :     [/v1/control/list-runs][ApiError:16] Run 1189848125460974429 not found while listing runs for <id:none>.",
+          "ERROR :     [/v1/control/list-runs][ApiError:16] Run 1189848125460974429 not found while listing runs for <id:none>.",
+          "ERROR :     [/v1/control/stream-logs][ApiError:16] Run 1189848125460974429 not found while streaming logs.",
+          "ERROR :     [/v1/control/list-runs][ApiError:16] Run 1189848125460974429 not found while listing runs for <id:none>."
+        ],
+        "superexec": [
+          "WARNING :   Connection attempt failed, retrying in 0.89 seconds",
+          "WARNING :   Connection attempt failed, retrying in 1.38 seconds",
+          "WARNING :   Connection attempt failed, retrying in 2.82 seconds",
+          "INFO :      Connection successful after 5.09 seconds and 4 tries."
+        ]
+      },
+      "resubmit": {
+        "before_restarting_supernodes": {
+          "seconds": 30.1,
+          "run": {
+            "status": "running",
+            "text": "N/A"
+          },
+          "nodes": {},
+          "last_output": "INFO :      Waiting for nodes to connect: 0 connected (minimum required: 4).",
+          "supernodes_restarted": 4
+        },
+        "finished_in_time": true,
+        "seconds": 52.3,
+        "exit_code": 0,
+        "status": {
+          "status": "finished:completed",
+          "text": "N/A"
+        },
+        "rounds_logged": [
+          1,
+          2,
+          3,
+          4
+        ],
+        "model": "right, largest error 3.33e-07",
+        "nodes": {
+          "online": 4
+        },
+        "supernodes_alive": 4,
+        "output_tail": []
+      },
+      "command": "python benchmarks/flower/crash.py --trial memory:superlink --isolation process --out ..."
+    }
+  ]
+}
