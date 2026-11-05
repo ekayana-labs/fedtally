@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/fedtally-core", "crates/fedtally-node", "crates/fedtally-cli"]
+members = ["crates/fedtally-core", "crates/fedtally-node", "crates/fedtally-cli", "crates/fedtally-py"]
 default-members = ["crates/fedtally-core", "crates/fedtally-node", "crates/fedtally-cli"]
 
 [workspace.package]

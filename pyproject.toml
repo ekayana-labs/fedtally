@@ -1,0 +1,24 @@
+[build-system]
+requires = ["maturin>=1.8,<2"]
+build-backend = "maturin"
+
+[project]
+name = "fedtally"
+description = "Federated averaging that every party can check"
+requires-python = ">=3.11"
+license = "Apache-2.0"
+dependencies = ["numpy>=1.26"]
+dynamic = ["version"]
+
+[project.optional-dependencies]
+dev = ["pytest", "safetensors", "nbclient", "ipykernel", "matplotlib"]
+
+[tool.maturin]
+manifest-path = "crates/fedtally-py/Cargo.toml"
+python-source = "python"
+module-name = "fedtally._native"
+features = ["pyo3/extension-module"]
+strip = true
+
+[tool.pytest.ini_options]
+testpaths = ["python/tests"]
