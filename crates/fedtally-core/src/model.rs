@@ -3,6 +3,7 @@
 //! A model file is a plain safetensors file with tensors in layout order, so
 //! the same model always has the same bytes and the same digest.
 
+use std::cell::RefCell;
 use std::fs::{File, OpenOptions};
 use std::io::{self, Read};
 use std::os::unix::fs::FileExt;
@@ -204,25 +205,48 @@ impl ModelFile {
                 .sum::<u64>()
     }
 
-    fn read_run(&self, run: &Run, out: &mut [f64]) -> io::Result<()> {
-        let spec = &self.layout.tensors[run.tensor];
-        let at = self.tensor_start(run.tensor) + run.tensor_offset * spec.dtype.width();
-        let mut bytes = vec![0u8; run.len as usize * spec.dtype.width() as usize];
-        self.file.read_exact_at(&mut bytes, at)?;
-        match spec.dtype {
-            Dtype::F32 => {
-                for (o, b) in out.iter_mut().zip(bytes.as_chunks::<4>().0) {
-                    *o = f32::from_le_bytes(*b) as f64;
-                }
-            }
-            Dtype::F64 => {
-                for (o, b) in out.iter_mut().zip(bytes.as_chunks::<8>().0) {
-                    *o = f64::from_le_bytes(*b);
-                }
-            }
-        }
-        Ok(())
+    fn run_start(&self, run: &Run) -> u64 {
+        let width = self.layout.tensors[run.tensor].dtype.width();
+        self.tensor_start(run.tensor) + run.tensor_offset * width
     }
+
+    /// Reads a run as it is stored and says how to read the bytes.
+    fn read_bytes(&self, run: &Run, bytes: &mut Vec<u8>) -> io::Result<Dtype> {
+        let dtype = self.layout.tensors[run.tensor].dtype;
+        bytes.resize(run.len as usize * dtype.width() as usize, 0);
+        self.file.read_exact_at(bytes, self.run_start(run))?;
+        Ok(dtype)
+    }
+
+    fn read_run(&self, run: &Run, out: &mut [f64]) -> io::Result<()> {
+        SCRATCH.with_borrow_mut(|Scratch { bytes, .. }| {
+            match self.read_bytes(run, bytes)? {
+                Dtype::F32 => {
+                    for (o, b) in out.iter_mut().zip(bytes.as_chunks::<4>().0) {
+                        *o = f32::from_le_bytes(*b) as f64;
+                    }
+                }
+                Dtype::F64 => {
+                    for (o, b) in out.iter_mut().zip(bytes.as_chunks::<8>().0) {
+                        *o = f64::from_le_bytes(*b);
+                    }
+                }
+            }
+            Ok(())
+        })
+    }
+}
+
+/// Buffers a worker thread keeps from one chunk to the next.
+#[derive(Default)]
+struct Scratch {
+    bytes: Vec<u8>,
+    values: Vec<u64>,
+}
+
+thread_local! {
+    static SCRATCH: RefCell<Scratch> = RefCell::default();
+    static DELTAS: RefCell<Vec<f64>> = const { RefCell::new(Vec::new()) };
 }
 
 /// Borrowed tensor data from whoever trained.
@@ -245,6 +269,19 @@ impl TensorView<'_> {
         match self {
             TensorView::F32(v) => v[i] as f64,
             TensorView::F64(v) => v[i],
+        }
+    }
+
+    /// Replaces each value in `base` with this tensor's, from `first` on, minus it.
+    fn subtract(&self, first: usize, base: &mut [f64]) {
+        fn each<L: Copy + Into<f64>>(local: &[L], base: &mut [f64]) {
+            for (b, l) in base.iter_mut().zip(local) {
+                *b = (*l).into() - *b;
+            }
+        }
+        match self {
+            TensorView::F32(v) => each(&v[first..first + base.len()], base),
+            TensorView::F64(v) => each(&v[first..first + base.len()], base),
         }
     }
 }
@@ -281,23 +318,23 @@ fn check_views(layout: &Layout, local: &[TensorView<'_>]) -> Result<(), ModelErr
     Ok(())
 }
 
-/// Calls `each` with local - base for the model coordinates in `start..end`.
+/// Calls `each` with local - base for the model coordinates in `start..end`,
+/// in order, one run of a tensor at a time.
 fn for_deltas(
     base: &ModelFile,
     local: &[TensorView<'_>],
     (start, end): (u64, u64),
-    mut each: impl FnMut(f64),
+    mut each: impl FnMut(&[f64]),
 ) -> io::Result<()> {
-    let mut base_values = Vec::new();
-    for run in base.layout.runs(start, end) {
-        base_values.resize(run.len as usize, 0.0);
-        base.read_run(&run, &mut base_values)?;
-        let view = local[run.tensor];
-        for (k, b) in base_values.iter().enumerate() {
-            each(view.get(run.tensor_offset as usize + k) - b);
+    DELTAS.with_borrow_mut(|deltas| {
+        for run in base.layout.runs(start, end) {
+            deltas.resize(run.len as usize, 0.0);
+            base.read_run(&run, deltas)?;
+            local[run.tensor].subtract(run.tensor_offset as usize, deltas);
+            each(deltas);
         }
-    }
-    Ok(())
+        Ok(())
+    })
 }
 
 /// The pad coordinates that fall in a chunk, then the masks over all of it.
@@ -328,9 +365,11 @@ pub fn encode_update(req: &EncodeRequest<'_>) -> Result<Encoded, ModelError> {
     let clipped = std::sync::atomic::AtomicU64::new(0);
     let manifest = vector::build(req.out, shape, |chunk, buf, _| {
         let (mut n, mut count) = (0usize, 0);
-        for_deltas(&base, req.local, shape.range(chunk), |delta| {
-            buf[n] = req.encoding.encode(delta, req.weight, &mut count).value();
-            n += 1;
+        for_deltas(&base, req.local, shape.range(chunk), |deltas| {
+            for (slot, delta) in buf[n..n + deltas.len()].iter_mut().zip(deltas) {
+                *slot = req.encoding.encode(*delta, req.weight, &mut count).value();
+            }
+            n += deltas.len();
         })?;
         finish_chunk(shape, plain, chunk, n, buf, &req.pad, req.seeds);
         clipped.fetch_add(count, std::sync::atomic::Ordering::Relaxed);
@@ -374,9 +413,11 @@ pub fn encode_private(req: &PrivateRequest<'_>) -> Result<Encoded, ModelError> {
         .into_par_iter()
         .map(|chunk| {
             let mut sum = 0.0;
-            for_deltas(&base, req.local, shape.range(chunk), |delta| {
-                if delta.is_finite() {
-                    sum += delta * delta;
+            for_deltas(&base, req.local, shape.range(chunk), |deltas| {
+                for delta in deltas {
+                    if delta.is_finite() {
+                        sum += delta * delta;
+                    }
                 }
             })?;
             Ok(sum)
@@ -398,18 +439,20 @@ pub fn encode_private(req: &PrivateRequest<'_>) -> Result<Encoded, ModelError> {
             let mut noise = ChaCha20Rng::from_seed(noise_seed);
             noise.set_stream(chunk);
             let (mut n, mut sum) = (0usize, 0u128);
-            for_deltas(&base, req.local, shape.range(chunk), |delta| {
-                let exact = if delta.is_finite() {
-                    delta * factor
-                } else {
-                    0.0
-                };
-                let floor = exact.floor();
-                let up = ((rounding.next_u64() >> 11) as f64) < (exact - floor) * TWO_53;
-                let rounded = floor as i64 + i64::from(up);
-                sum += u128::from(rounded.unsigned_abs()).pow(2);
-                buf[n] = Fp::from_i64(rounded + sampler.sample(&mut noise)).value();
-                n += 1;
+            for_deltas(&base, req.local, shape.range(chunk), |deltas| {
+                for delta in deltas {
+                    let exact = if delta.is_finite() {
+                        delta * factor
+                    } else {
+                        0.0
+                    };
+                    let floor = exact.floor();
+                    let up = ((rounding.next_u64() >> 11) as f64) < (exact - floor) * TWO_53;
+                    let rounded = floor as i64 + i64::from(up);
+                    sum += u128::from(rounded.unsigned_abs()).pow(2);
+                    buf[n] = Fp::from_i64(rounded + sampler.sample(&mut noise)).value();
+                    n += 1;
+                }
             })?;
             finish_chunk(shape, plain, chunk, n, buf, &req.pad, req.seeds);
             *squares.lock().unwrap_or_else(PoisonError::into_inner) += sum;
@@ -445,29 +488,33 @@ pub fn apply_aggregate(
         .open(out)?;
     let header = layout.header();
     target.write_all_at(&header, 0)?;
+    let step = |v: &u64| encoding.decode(Fp::new(*v), total_weight);
     let result: io::Result<()> = (0..shape.chunks()).into_par_iter().try_for_each(|chunk| {
-        let (start, end) = shape.range(chunk);
-        let mut values = Vec::new();
-        vector::read_chunk(&aggregate, shape, chunk, &mut values)?;
-        let mut consumed = 0usize;
-        let mut base_values = Vec::new();
-        for run in layout.runs(start, end) {
-            base_values.resize(run.len as usize, 0.0);
-            base.read_run(&run, &mut base_values)?;
-            let spec = &layout.tensors[run.tensor];
-            let mut bytes = Vec::with_capacity(run.len as usize * spec.dtype.width() as usize);
-            for (k, b) in base_values.iter().enumerate() {
-                let next = b + encoding.decode(Fp::new(values[consumed + k]), total_weight);
-                match spec.dtype {
-                    Dtype::F32 => bytes.extend_from_slice(&(next as f32).to_le_bytes()),
-                    Dtype::F64 => bytes.extend_from_slice(&next.to_le_bytes()),
+        SCRATCH.with_borrow_mut(|Scratch { bytes, values }| {
+            let (start, end) = shape.range(chunk);
+            vector::read_chunk(&aggregate, shape, chunk, values)?;
+            let mut rest = values.as_slice();
+            for run in layout.runs(start, end) {
+                let (steps, after) = rest.split_at(run.len as usize);
+                rest = after;
+                // The base is advanced where it was read, then written out.
+                match base.read_bytes(&run, bytes)? {
+                    Dtype::F32 => {
+                        for (b, v) in bytes.as_chunks_mut::<4>().0.iter_mut().zip(steps) {
+                            let next = f32::from_le_bytes(*b) as f64 + step(v);
+                            *b = (next as f32).to_le_bytes();
+                        }
+                    }
+                    Dtype::F64 => {
+                        for (b, v) in bytes.as_chunks_mut::<8>().0.iter_mut().zip(steps) {
+                            *b = (f64::from_le_bytes(*b) + step(v)).to_le_bytes();
+                        }
+                    }
                 }
+                target.write_all_at(bytes, base.run_start(&run))?;
             }
-            consumed += run.len as usize;
-            let at = base.tensor_start(run.tensor) + run.tensor_offset * spec.dtype.width();
-            target.write_all_at(&bytes, at)?;
-        }
-        Ok(())
+            Ok(())
+        })
     });
     result?;
     target.sync_data()?;
@@ -478,12 +525,13 @@ pub fn apply_aggregate(
 pub fn in_range(path: &Path, shape: Shape, plain: u64, bound: u64) -> io::Result<bool> {
     let file = File::open(path)?;
     let chunk_ok = |chunk: u64| -> io::Result<bool> {
-        let mut buf = Vec::new();
-        vector::read_chunk(&file, shape, chunk, &mut buf)?;
-        let start = shape.range(chunk).0;
-        Ok(buf.iter().enumerate().all(|(i, v)| {
-            start + i as u64 >= plain || Fp::new(*v).centered().unsigned_abs() <= bound
-        }))
+        SCRATCH.with_borrow_mut(|Scratch { values, .. }| {
+            vector::read_chunk(&file, shape, chunk, values)?;
+            let start = shape.range(chunk).0;
+            Ok(values.iter().enumerate().all(|(i, v)| {
+                start + i as u64 >= plain || Fp::new(*v).centered().unsigned_abs() <= bound
+            }))
+        })
     };
     (0..shape.chunks())
         .into_par_iter()
