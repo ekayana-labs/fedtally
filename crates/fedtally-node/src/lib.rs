@@ -2,6 +2,7 @@
 //! else, so a restarted process picks up from what the log says.
 
 mod follower;
+pub mod helper;
 pub mod net;
 pub mod wire;
 
