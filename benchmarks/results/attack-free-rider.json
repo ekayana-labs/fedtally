@@ -1,0 +1,187 @@
+{
+ "attack": "free_riding",
+ "task": "prs",
+ "sites": 8,
+ "rounds": 5,
+ "noise_norm": 1.0,
+ "privacy": {
+  "epsilon": 8.0,
+  "delta": 0.04419417382415922,
+  "clip": 0.2
+ },
+ "measured": [
+  {
+   "behaviour": "none",
+   "free_riders": 0,
+   "auc_no_privacy": {
+    "mean": 0.8026669890771103,
+    "std": 0.024507413285405604,
+    "values": [
+     0.8308682566707525,
+     0.7865341925098602,
+     0.7905985180507183
+    ]
+   },
+   "share_paid_to_each_free_rider": null,
+   "share_paid_to_each_honest_site": 0.125,
+   "auc_private": {
+    "mean": 0.73793838101822,
+    "std": 0.020490750507523418,
+    "values": [
+     0.7609001483791887,
+     0.7314010574018127,
+     0.7215139372736588
+    ]
+   }
+  },
+  {
+   "behaviour": "unchanged",
+   "free_riders": 1,
+   "auc_no_privacy": {
+    "mean": 0.8022096520468027,
+    "std": 0.023674898228577088,
+    "values": [
+     0.8294893680280714,
+     0.7870323845077836,
+     0.7901072036045529
+    ]
+   },
+   "share_paid_to_each_free_rider": 0.125,
+   "share_paid_to_each_honest_site": 0.125,
+   "auc_private": {
+    "mean": 0.7279349287628828,
+    "std": 0.014049784059940817,
+    "values": [
+     0.7413053441752052,
+     0.7132923077893705,
+     0.7292071343240726
+    ]
+   }
+  },
+  {
+   "behaviour": "unchanged",
+   "free_riders": 2,
+   "auc_no_privacy": {
+    "mean": 0.8001472437886165,
+    "std": 0.02391112480659441,
+    "values": [
+     0.8276895200536297,
+     0.7847000528160128,
+     0.7880521584962066
+    ]
+   },
+   "share_paid_to_each_free_rider": 0.125,
+   "share_paid_to_each_honest_site": 0.125,
+   "auc_private": {
+    "mean": 0.7100027490233094,
+    "std": 0.01912895764378251,
+    "values": [
+     0.7290188741693991,
+     0.6907629209958973,
+     0.7102264519046317
+    ]
+   }
+  },
+  {
+   "behaviour": "unchanged",
+   "free_riders": 4,
+   "auc_no_privacy": {
+    "mean": 0.7956114649916861,
+    "std": 0.027288710255206114,
+    "values": [
+     0.8269209775636082,
+     0.7768810747427698,
+     0.7830323426686805
+    ]
+   },
+   "share_paid_to_each_free_rider": 0.125,
+   "share_paid_to_each_honest_site": 0.125,
+   "auc_private": {
+    "mean": 0.6804681829895743,
+    "std": 0.012158588972128489,
+    "values": [
+     0.6929497726628875,
+     0.6686606363878894,
+     0.6797941399179458
+    ]
+   }
+  },
+  {
+   "behaviour": "noise",
+   "free_riders": 1,
+   "auc_no_privacy": {
+    "mean": 0.8018720129482452,
+    "std": 0.02345983374556914,
+    "values": [
+     0.8289279393244119,
+     0.7871836897663117,
+     0.7895044097540118
+    ]
+   },
+   "share_paid_to_each_free_rider": 0.125,
+   "share_paid_to_each_honest_site": 0.125,
+   "auc_private": {
+    "mean": 0.7211266190587927,
+    "std": 0.016420563977599868,
+    "values": [
+     0.7394306614794723,
+     0.716259040010383,
+     0.707690155686523
+    ]
+   }
+  },
+  {
+   "behaviour": "noise",
+   "free_riders": 2,
+   "auc_no_privacy": {
+    "mean": 0.7988612790537499,
+    "std": 0.022525942864079787,
+    "values": [
+     0.824813151613238,
+     0.7843709666952678,
+     0.7873997188527438
+    ]
+   },
+   "share_paid_to_each_free_rider": 0.125,
+   "share_paid_to_each_honest_site": 0.125,
+   "auc_private": {
+    "mean": 0.70964539424874,
+    "std": 0.007319587750088365,
+    "values": [
+     0.7179756478616848,
+     0.704242721124242,
+     0.7067178137602931
+    ]
+   }
+  },
+  {
+   "behaviour": "noise",
+   "free_riders": 4,
+   "auc_no_privacy": {
+    "mean": 0.7896370240166375,
+    "std": 0.026894911288864405,
+    "values": [
+     0.8201060813028198,
+     0.7692002204572821,
+     0.7796047702898107
+    ]
+   },
+   "share_paid_to_each_free_rider": 0.125,
+   "share_paid_to_each_honest_site": 0.125,
+   "auc_private": {
+    "mean": 0.6615918845326281,
+    "std": 0.014298885205668991,
+    "values": [
+     0.6768631124848886,
+     0.6485202503442955,
+     0.6593922907687002
+    ]
+   }
+  }
+ ],
+ "payment": "analytical: the ledger's equal share per sealed round, applied to the cohorts in the verified log. No ledger transaction was sent.",
+ "notes": [
+  "There is no detection. A free rider is paid exactly what an honest site is.",
+  "In a private run the stock client clips the noise rider's update to the plan's clip and adds the same noise for every site."
+ ]
+}

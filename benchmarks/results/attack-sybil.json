@@ -1,0 +1,410 @@
+{
+ "attack": "sybil",
+ "task": "prs",
+ "honest_sites": 12,
+ "rounds": 5,
+ "min_cohort": 9,
+ "measured": {
+  "by_sybils": [
+   {
+    "sybils": 0,
+    "share_of_sites_if_admitted": 0.0,
+    "auc_open": {
+     "mean": 0.8042098680760539,
+     "std": 0.022244410303918643,
+     "values": [
+      0.8294565074465161,
+      0.7956815685546864,
+      0.787491528226959
+     ]
+    },
+    "auc_gated": {
+     "mean": 0.8042098680760539,
+     "std": 0.022244410303918643,
+     "values": [
+      0.8294565074465161,
+      0.7956815685546864,
+      0.787491528226959
+     ]
+    },
+    "sybils_admitted_open": 0,
+    "sybils_admitted_gated": [
+     0,
+     0,
+     0
+    ],
+    "gated_runs": [
+     {
+      "finished": true,
+      "complete": true,
+      "joined": 12,
+      "sybils_admitted": 0,
+      "sybils_refused": 0,
+      "refusals": [],
+      "cohorts": [
+       12,
+       12,
+       12,
+       12,
+       12
+      ]
+     },
+     {
+      "finished": true,
+      "complete": true,
+      "joined": 12,
+      "sybils_admitted": 0,
+      "sybils_refused": 0,
+      "refusals": [],
+      "cohorts": [
+       12,
+       12,
+       12,
+       12,
+       12
+      ]
+     },
+     {
+      "finished": true,
+      "complete": true,
+      "joined": 12,
+      "sybils_admitted": 0,
+      "sybils_refused": 0,
+      "refusals": [],
+      "cohorts": [
+       12,
+       12,
+       12,
+       12,
+       12
+      ]
+     }
+    ]
+   },
+   {
+    "sybils": 2,
+    "share_of_sites_if_admitted": 0.14285714285714285,
+    "auc_open": {
+     "mean": 0.8001327131341666,
+     "std": 0.023131975456885914,
+     "values": [
+      0.8263337694127741,
+      0.7915284919185392,
+      0.7825358780711863
+     ]
+    },
+    "auc_gated": {
+     "mean": 0.8042098680760539,
+     "std": 0.022244410303918643,
+     "values": [
+      0.8294565074465161,
+      0.7956815685546864,
+      0.787491528226959
+     ]
+    },
+    "sybils_admitted_open": 2,
+    "sybils_admitted_gated": [
+     0,
+     0,
+     0
+    ],
+    "gated_runs": [
+     {
+      "finished": true,
+      "complete": false,
+      "joined": 12,
+      "sybils_admitted": 0,
+      "sybils_refused": 2,
+      "refusals": [
+       "refused: the log breaks the rules: site <did> refused: no AffiliationAndRole credential"
+      ],
+      "cohorts": [
+       12,
+       12,
+       12,
+       12,
+       12
+      ]
+     },
+     {
+      "finished": true,
+      "complete": false,
+      "joined": 12,
+      "sybils_admitted": 0,
+      "sybils_refused": 2,
+      "refusals": [
+       "refused: the log breaks the rules: site <did> refused: no AffiliationAndRole credential"
+      ],
+      "cohorts": [
+       12,
+       12,
+       12,
+       12,
+       12
+      ]
+     },
+     {
+      "finished": true,
+      "complete": false,
+      "joined": 12,
+      "sybils_admitted": 0,
+      "sybils_refused": 2,
+      "refusals": [
+       "refused: the log breaks the rules: site <did> refused: no AffiliationAndRole credential"
+      ],
+      "cohorts": [
+       12,
+       12,
+       12,
+       12,
+       12
+      ]
+     }
+    ]
+   },
+   {
+    "sybils": 4,
+    "share_of_sites_if_admitted": 0.25,
+    "auc_open": {
+     "mean": 0.7931426216269367,
+     "std": 0.024190312592346837,
+     "values": [
+      0.8198676675767669,
+      0.7868157338436771,
+      0.7727444634603665
+     ]
+    },
+    "auc_gated": {
+     "mean": 0.8042098680760539,
+     "std": 0.022244410303918643,
+     "values": [
+      0.8294565074465161,
+      0.7956815685546864,
+      0.787491528226959
+     ]
+    },
+    "sybils_admitted_open": 4,
+    "sybils_admitted_gated": [
+     0,
+     0,
+     0
+    ],
+    "gated_runs": [
+     {
+      "finished": true,
+      "complete": false,
+      "joined": 12,
+      "sybils_admitted": 0,
+      "sybils_refused": 4,
+      "refusals": [
+       "refused: the log breaks the rules: site <did> refused: no AffiliationAndRole credential"
+      ],
+      "cohorts": [
+       12,
+       12,
+       12,
+       12,
+       12
+      ]
+     },
+     {
+      "finished": true,
+      "complete": false,
+      "joined": 12,
+      "sybils_admitted": 0,
+      "sybils_refused": 4,
+      "refusals": [
+       "refused: the log breaks the rules: site <did> refused: no AffiliationAndRole credential"
+      ],
+      "cohorts": [
+       12,
+       12,
+       12,
+       12,
+       12
+      ]
+     },
+     {
+      "finished": true,
+      "complete": false,
+      "joined": 12,
+      "sybils_admitted": 0,
+      "sybils_refused": 4,
+      "refusals": [
+       "refused: the log breaks the rules: site <did> refused: no AffiliationAndRole credential"
+      ],
+      "cohorts": [
+       12,
+       12,
+       12,
+       12,
+       12
+      ]
+     }
+    ]
+   },
+   {
+    "sybils": 8,
+    "share_of_sites_if_admitted": 0.4,
+    "auc_open": {
+     "mean": 0.7499794094123734,
+     "std": 0.02936880236144314,
+     "values": [
+      0.7784404227180665,
+      0.7517177660050864,
+      0.7197800395139674
+     ]
+    },
+    "auc_gated": {
+     "mean": 0.8042098680760539,
+     "std": 0.022244410303918643,
+     "values": [
+      0.8294565074465161,
+      0.7956815685546864,
+      0.787491528226959
+     ]
+    },
+    "sybils_admitted_open": 8,
+    "sybils_admitted_gated": [
+     0,
+     0,
+     0
+    ],
+    "gated_runs": [
+     {
+      "finished": true,
+      "complete": false,
+      "joined": 12,
+      "sybils_admitted": 0,
+      "sybils_refused": 8,
+      "refusals": [
+       "refused: the log breaks the rules: site <did> refused: no AffiliationAndRole credential"
+      ],
+      "cohorts": [
+       12,
+       12,
+       12,
+       12,
+       12
+      ]
+     },
+     {
+      "finished": true,
+      "complete": false,
+      "joined": 12,
+      "sybils_admitted": 0,
+      "sybils_refused": 8,
+      "refusals": [
+       "refused: the log breaks the rules: site <did> refused: no AffiliationAndRole credential"
+      ],
+      "cohorts": [
+       12,
+       12,
+       12,
+       12,
+       12
+      ]
+     },
+     {
+      "finished": true,
+      "complete": false,
+      "joined": 12,
+      "sybils_admitted": 0,
+      "sybils_refused": 8,
+      "refusals": [
+       "refused: the log breaks the rules: site <did> refused: no AffiliationAndRole credential"
+      ],
+      "cohorts": [
+       12,
+       12,
+       12,
+       12,
+       12
+      ]
+     }
+    ]
+   }
+  ],
+  "other_wallets": [
+   {
+    "wallet": "self_issued",
+    "sybils": 2,
+    "auc": 0.8294565074465161,
+    "finished": true,
+    "complete": false,
+    "joined": 12,
+    "sybils_admitted": 0,
+    "sybils_refused": 2,
+    "refusals": [
+     "refused: the log breaks the rules: site <did> refused: AffiliationAndRole: <did> is not an accepted issuer"
+    ],
+    "cohorts": [
+     12,
+     12,
+     12,
+     12,
+     12
+    ]
+   },
+   {
+    "wallet": "copied",
+    "sybils": 2,
+    "auc": 0.8294565074465161,
+    "finished": true,
+    "complete": false,
+    "joined": 12,
+    "sybils_admitted": 0,
+    "sybils_refused": 2,
+    "refusals": [
+     "refused: the log breaks the rules: site <did> refused: another site trains on that dataset"
+    ],
+    "cohorts": [
+     12,
+     12,
+     12,
+     12,
+     12
+    ]
+   }
+  ]
+ },
+ "analytical_not_measured": {
+  "statement": "fraction <= B / ((c_id + s) N), the paper's Proposition 1",
+  "identity_cost": 1.0,
+  "stake": 1.0,
+  "note": "The costs are placeholders in arbitrary units. Without gating the cost of a site is zero and the bound is void. The stake is not enforced by a run: nodes do not submit ledger transactions yet.",
+  "rows": [
+   {
+    "budget": 0,
+    "sybils_affordable": 0,
+    "fraction_bound": 0.0
+   },
+   {
+    "budget": 2,
+    "sybils_affordable": 1,
+    "fraction_bound": 0.08333333333333333
+   },
+   {
+    "budget": 4,
+    "sybils_affordable": 2,
+    "fraction_bound": 0.16666666666666666
+   },
+   {
+    "budget": 8,
+    "sybils_affordable": 4,
+    "fraction_bound": 0.3333333333333333
+   },
+   {
+    "budget": 16,
+    "sybils_affordable": 8,
+    "fraction_bound": 0.6666666666666666
+   }
+  ]
+ },
+ "notes": [
+  "Open enrolment means the sponsor lists every applicant and the plan has no admission policy. A plan always names its sites, so an adversary must still get its keys into the plan.",
+  "The fakes claim an honest weight. A non-private plan lets a site state any weight up to max_weight, which poison.py measures.",
+  "min_cohort is three quarters of the honest sites, not of the listed sites, or refused fakes would keep the run from opening.",
+  "A gated run with refused fakes finishes, but its report is not `complete`: a listed site that never joined counts as absent from every round."
+ ]
+}

@@ -1,0 +1,366 @@
+{
+ "attack": "site_level_privacy_audit",
+ "method": "Steinke, Nasr, Jagielski, arXiv:2305.08846v1, Theorem 5.2, equations (7)-(9)",
+ "delta": 1e-05,
+ "clip": 1.0,
+ "rounds": 1,
+ "rows": [
+  {
+   "epsilon": 1.0,
+   "measured": {
+    "canaries": 64,
+    "present": 31,
+    "membership_accuracy": 0.546875,
+    "guess_counts": [
+     {
+      "guesses": 8,
+      "correct": 7,
+      "epsilon_lower_bound": 0.0
+     },
+     {
+      "guesses": 16,
+      "correct": 12,
+      "epsilon_lower_bound": 0.0
+     },
+     {
+      "guesses": 32,
+      "correct": 19,
+      "epsilon_lower_bound": 0.0
+     },
+     {
+      "guesses": 64,
+      "correct": 37,
+      "epsilon_lower_bound": 0.0
+     }
+    ],
+    "epsilon_lower_bound": 0.0,
+    "epsilon_claimed": 0.99999999998301,
+    "delta": 1e-05,
+    "confidence": 0.95,
+    "exceeds_claim": false,
+    "rho_spent": 0.03055659519668552,
+    "plan_privacy_terms": {
+     "clip": 262144,
+     "noise": 17574146762,
+     "colluding": 0,
+     "budget": 33597331725,
+     "epsilon": 1.0,
+     "delta": 1e-05
+    }
+   },
+   "simulated": {
+    "canaries": 2000,
+    "present": 998,
+    "membership_accuracy": 0.5515,
+    "guess_counts": [
+     {
+      "guesses": 250,
+      "correct": 155,
+      "epsilon_lower_bound": 0.18644520485213434
+     },
+     {
+      "guesses": 500,
+      "correct": 313,
+      "epsilon_lower_bound": 0.30245213677517313
+     },
+     {
+      "guesses": 1000,
+      "correct": 591,
+      "epsilon_lower_bound": 0.2210611297914511
+     },
+     {
+      "guesses": 2000,
+      "correct": 1106,
+      "epsilon_lower_bound": 0.11047825275727519
+     }
+    ],
+    "epsilon_lower_bound": 0.30245213677517313,
+    "epsilon_claimed": 1.0000000045904052,
+    "delta": 1e-05,
+    "confidence": 0.95,
+    "exceeds_claim": false,
+    "plan_privacy_terms": {
+     "clip": 262144,
+     "noise": 562509986,
+     "colluding": 0,
+     "budget": 33597331725,
+     "epsilon": 1.0,
+     "delta": 1e-05
+    }
+   },
+   "simulated_without_noise": {
+    "canaries": 2000,
+    "present": 1000,
+    "membership_accuracy": 1.0,
+    "guess_counts": [
+     {
+      "guesses": 250,
+      "correct": 250,
+      "epsilon_lower_bound": 3.9191601655784325
+     },
+     {
+      "guesses": 500,
+      "correct": 500,
+      "epsilon_lower_bound": 4.617933879046177
+     },
+     {
+      "guesses": 1000,
+      "correct": 1000,
+      "epsilon_lower_bound": 5.313888027019857
+     },
+     {
+      "guesses": 2000,
+      "correct": 2000,
+      "epsilon_lower_bound": 6.00843711520065
+     }
+    ],
+    "epsilon_lower_bound": 6.00843711520065,
+    "epsilon_claimed": 1.0000000045904052,
+    "delta": 1e-05,
+    "confidence": 0.95,
+    "exceeds_claim": true
+   }
+  },
+  {
+   "epsilon": 3.0,
+   "measured": {
+    "canaries": 64,
+    "present": 32,
+    "membership_accuracy": 0.640625,
+    "guess_counts": [
+     {
+      "guesses": 8,
+      "correct": 7,
+      "epsilon_lower_bound": 0.0
+     },
+     {
+      "guesses": 16,
+      "correct": 12,
+      "epsilon_lower_bound": 0.0
+     },
+     {
+      "guesses": 32,
+      "correct": 24,
+      "epsilon_lower_bound": 0.1621977985232661
+     },
+     {
+      "guesses": 64,
+      "correct": 40,
+      "epsilon_lower_bound": 0.0
+     }
+    ],
+    "epsilon_lower_bound": 0.1621977985232661,
+    "epsilon_claimed": 2.999999999986663,
+    "delta": 1e-05,
+    "confidence": 0.95,
+    "exceeds_claim": false,
+    "rho_spent": 0.22424916824456886,
+    "plan_privacy_terms": {
+     "clip": 262144,
+     "noise": 2394684862,
+     "colluding": 0,
+     "budget": 246564568005,
+     "epsilon": 3.0,
+     "delta": 1e-05
+    }
+   },
+   "simulated": {
+    "canaries": 2000,
+    "present": 1045,
+    "membership_accuracy": 0.636,
+    "guess_counts": [
+     {
+      "guesses": 250,
+      "correct": 206,
+      "epsilon_lower_bound": 1.1630826687533045
+     },
+     {
+      "guesses": 500,
+      "correct": 385,
+      "epsilon_lower_bound": 0.965445474354965
+     },
+     {
+      "guesses": 1000,
+      "correct": 709,
+      "epsilon_lower_bound": 0.7319757108261911
+     },
+     {
+      "guesses": 2000,
+      "correct": 1271,
+      "epsilon_lower_bound": 0.4503906595755325
+     }
+    ],
+    "epsilon_lower_bound": 1.1630826687533045,
+    "epsilon_claimed": 3.000000008018735,
+    "delta": 1e-05,
+    "confidence": 0.95,
+    "exceeds_claim": false,
+    "plan_privacy_terms": {
+     "clip": 262144,
+     "noise": 76648623,
+     "colluding": 0,
+     "budget": 246564568005,
+     "epsilon": 3.0,
+     "delta": 1e-05
+    }
+   },
+   "simulated_without_noise": {
+    "canaries": 2000,
+    "present": 1034,
+    "membership_accuracy": 1.0,
+    "guess_counts": [
+     {
+      "guesses": 250,
+      "correct": 250,
+      "epsilon_lower_bound": 3.9191601655784325
+     },
+     {
+      "guesses": 500,
+      "correct": 500,
+      "epsilon_lower_bound": 4.617933879046177
+     },
+     {
+      "guesses": 1000,
+      "correct": 1000,
+      "epsilon_lower_bound": 5.313888027019857
+     },
+     {
+      "guesses": 2000,
+      "correct": 1966,
+      "epsilon_lower_bound": 3.668838363588293
+     }
+    ],
+    "epsilon_lower_bound": 5.313888027019857,
+    "epsilon_claimed": 3.000000008018735,
+    "delta": 1e-05,
+    "confidence": 0.95,
+    "exceeds_claim": true
+   }
+  },
+  {
+   "epsilon": 8.0,
+   "measured": {
+    "canaries": 64,
+    "present": 29,
+    "membership_accuracy": 0.828125,
+    "guess_counts": [
+     {
+      "guesses": 8,
+      "correct": 8,
+      "epsilon_lower_bound": 0.3096455702388994
+     },
+     {
+      "guesses": 16,
+      "correct": 16,
+      "epsilon_lower_bound": 1.1505904789764827
+     },
+     {
+      "guesses": 32,
+      "correct": 32,
+      "epsilon_lower_bound": 1.915119658147887
+     },
+     {
+      "guesses": 64,
+      "correct": 53,
+      "epsilon_lower_bound": 0.8298903467830314
+     }
+    ],
+    "epsilon_lower_bound": 1.915119658147887,
+    "epsilon_claimed": 7.999999998760616,
+    "delta": 1e-05,
+    "confidence": 0.95,
+    "exceeds_claim": false,
+    "rho_spent": 1.2297145254415227,
+    "plan_privacy_terms": {
+     "clip": 262144,
+     "noise": 436691669,
+     "colluding": 0,
+     "budget": 1352085419919,
+     "epsilon": 8.0,
+     "delta": 1e-05
+    }
+   },
+   "simulated": {
+    "canaries": 2000,
+    "present": 960,
+    "membership_accuracy": 0.766,
+    "guess_counts": [
+     {
+      "guesses": 250,
+      "correct": 243,
+      "epsilon_lower_bound": 2.6992069326261117
+     },
+     {
+      "guesses": 500,
+      "correct": 483,
+      "epsilon_lower_bound": 2.7931157368966524
+     },
+     {
+      "guesses": 1000,
+      "correct": 902,
+      "epsilon_lower_bound": 1.9789177870252388
+     },
+     {
+      "guesses": 2000,
+      "correct": 1548,
+      "epsilon_lower_bound": 1.1099821251455069
+     }
+    ],
+    "epsilon_lower_bound": 2.7931157368966524,
+    "epsilon_claimed": 7.99999996171656,
+    "delta": 1e-05,
+    "confidence": 0.95,
+    "exceeds_claim": false,
+    "plan_privacy_terms": {
+     "clip": 262144,
+     "noise": 13977545,
+     "colluding": 0,
+     "budget": 1352085419919,
+     "epsilon": 8.0,
+     "delta": 1e-05
+    }
+   },
+   "simulated_without_noise": {
+    "canaries": 2000,
+    "present": 995,
+    "membership_accuracy": 1.0,
+    "guess_counts": [
+     {
+      "guesses": 250,
+      "correct": 250,
+      "epsilon_lower_bound": 3.9191601655784325
+     },
+     {
+      "guesses": 500,
+      "correct": 500,
+      "epsilon_lower_bound": 4.617933879046177
+     },
+     {
+      "guesses": 1000,
+      "correct": 1000,
+      "epsilon_lower_bound": 5.313888027019857
+     },
+     {
+      "guesses": 2000,
+      "correct": 1995,
+      "epsilon_lower_bound": 5.017558855754032
+     }
+    ],
+    "epsilon_lower_bound": 5.313888027019857,
+    "epsilon_claimed": 7.99999996171656,
+    "delta": 1e-05,
+    "confidence": 0.95,
+    "exceeds_claim": false
+   }
+  }
+ ],
+ "lower_bound_exceeds_claim": false,
+ "notes": [
+  "measured: a real federation. simulated: numpy, with clip, grid and noise variance read from a plan the system signed for that many sites. The simulation rounds a Gaussian where the system draws an exact discrete one.",
+  "A canary that is absent still joins and adds noise; only its update is empty. That matches the guarantee, which is about what a site contributed.",
+  "The bound is a lower bound. With m canaries it cannot exceed about log of m over the error budget, so a small real run can only show a small one.",
+  "membership_accuracy is site-level membership inference on the same scores, with the threshold at half the clip; 0.5 is chance.",
+  "The control with the noise left out gives the ceiling of the audit at that many canaries. Where the ceiling is below the claim, the audit could not have contradicted the claim, and passing it says little.",
+  "Membership inference on individuals inside a site was not run. The guarantee is per site."
+ ]
+}

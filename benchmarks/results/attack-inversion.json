@@ -1,0 +1,96 @@
+{
+ "attack": "gradient_inversion",
+ "task": "prs, one gradient step on one record",
+ "sites": 8,
+ "rounds": 5,
+ "delta": 0.04419417382415922,
+ "clip": 0.2,
+ "measured": {
+  "masked": {
+   "vectors": 40,
+   "coordinates": 8040,
+   "byte_histogram": {
+    "bytes": 64960,
+    "chi_square": 282.93990147783245,
+    "dof": 255,
+    "p_value": 0.11045750021117967
+   },
+   "share_negative": 0.4973880597014925,
+   "correlation_with_true_update": 0.006716728176087831,
+   "correlation_noise_floor": 0.011152493418636764,
+   "coordinates_within_one_grid_unit": 0.0,
+   "inversion_relative_error": 1.6955616285752846,
+   "inversion_cosine": 0.0025270502336518326
+  },
+  "plain": {
+   "vectors": 40,
+   "coordinates": 8040,
+   "byte_histogram": {
+    "bytes": 64960,
+    "chi_square": 2723244.9024630548,
+    "dof": 255,
+    "p_value": 0.0
+   },
+   "share_negative": 0.49950248756218907,
+   "correlation_with_true_update": 0.9999999999999848,
+   "correlation_noise_floor": 0.011152493418636764,
+   "coordinates_within_one_grid_unit": 1.0,
+   "inversion_relative_error": 1.2109944934263637e-07,
+   "inversion_cosine": 0.9999999999999942
+  }
+ },
+ "simulated": {
+  "what": "one site's private update with every mask removed: clip, random rounding and Gaussian noise of the plan's variance, in numpy. The plan terms are read from real signed plans. No masks were removed from a real run.",
+  "trials": 500,
+  "clipped_and_rounded_without_noise": {
+   "relative_error_median": 1.5232145237227866e-05,
+   "relative_error_mean": 1.6165074075911392e-05,
+   "cosine_mean": 0.9999999999049018,
+   "cosine_std": 7.725314107211858e-12
+  },
+  "by_epsilon": [
+   {
+    "epsilon": 1.0,
+    "noise_variance_grid_units": 309400014663,
+    "noise_deviation_model_units": 0.2652346480309769,
+    "analytical_rho_per_round_unmasked": 0.2843163196156102,
+    "analytical_epsilon_unmasked_one_round": 1.4048268728690367,
+    "analytical_epsilon_unmasked_whole_run": 4.456761441477549,
+    "relative_error_median": 2.837789947056222,
+    "relative_error_mean": 10.26484573949304,
+    "cosine_mean": 0.05367287010138288,
+    "cosine_std": 0.06944499903181406
+   },
+   {
+    "epsilon": 3.0,
+    "noise_variance_grid_units": 67001855577,
+    "noise_deviation_model_units": 0.12342794725692843,
+    "analytical_rho_per_round_unmasked": 1.3129110037393794,
+    "analytical_epsilon_unmasked_one_round": 4.207461526053115,
+    "analytical_epsilon_unmasked_whole_run": 13.925047667860419,
+    "relative_error_median": 2.7947348948868176,
+    "relative_error_mean": 25.622172579948256,
+    "cosine_mean": 0.11357376230409566,
+    "cosine_std": 0.06579239988336084
+   },
+   {
+    "epsilon": 8.0,
+    "noise_variance_grid_units": 17423959399,
+    "noise_deviation_model_units": 0.0629424315491885,
+    "analytical_rho_per_round_unmasked": 5.048650048108391,
+    "analytical_epsilon_unmasked_one_round": 11.391589704508913,
+    "analytical_epsilon_unmasked_whole_run": 40.76563201371366,
+    "relative_error_median": 2.4021911676462926,
+    "relative_error_mean": 11.847641773888132,
+    "cosine_mean": 0.21749422572832072,
+    "cosine_std": 0.06392119289866541
+   }
+  ]
+ },
+ "notes": [
+  "The inversion is the closed form for a batch of one. It says nothing about larger batches or many local steps, where inversion is harder.",
+  "Relative error compares the recovered genotypes with the record. Cosine compares their direction, which survives the clip.",
+  "In a masked run the aggregator also learns the sum of the cohort's updates. That is the protocol's output and is not attacked here.",
+  "The unmasked epsilons come from the per-site rho the design states, (clip + sqrt(d) + 1)^2 / (2 noise) a round. They are arithmetic."
+ ]
+}
