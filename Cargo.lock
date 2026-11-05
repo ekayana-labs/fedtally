@@ -655,6 +655,19 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9e9de72ce2ad1f90dc62fa25f0f430ef85eb4b0d8fa0be4f30373bc40a21d28e"
 
 [[package]]
+name = "did-bio-core"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b0eb2acddff7fd84f7f4e5a91d505e816140d2604ce52f2109f4685054cd76d7"
+dependencies = [
+ "base64 0.23.1",
+ "bs58",
+ "curve25519-dalek 5.0.0",
+ "serde",
+ "sha2",
+]
+
+[[package]]
 name = "digest"
 version = "0.11.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -806,6 +819,7 @@ dependencies = [
  "blake3",
  "bytemuck",
  "chacha20poly1305",
+ "did-bio-core",
  "getrandom 0.3.4",
  "hex",
  "pq-ucan",

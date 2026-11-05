@@ -5,10 +5,11 @@ use std::path::Path;
 use aws_lc_rs::kem::{Ciphertext, DecapsulationKey, EncapsulationKey, ML_KEM_768};
 use chacha20poly1305::aead::{Aead, KeyInit, Payload};
 use chacha20poly1305::{ChaCha20Poly1305, Key, Nonce as AeadNonce};
+use did_bio_core::{BioDid, Network};
 use pq_ucan::crypto::ed25519::Ed25519Keypair;
 use pq_ucan::crypto::ml_dsa::MlDsaKeypair;
 use pq_ucan::crypto::{Algorithm, CryptoError, PublicKey, Signature, Signer};
-use pq_ucan::did::Did;
+use pq_ucan::did::{Did, ResolveError, Resolver};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use x25519_dalek::{PublicKey as XPublic, StaticSecret};
@@ -35,6 +36,7 @@ impl From<CryptoError> for KeyError {
 #[serde(rename_all = "kebab-case")]
 pub enum SigAlg {
     Ed25519,
+    #[serde(alias = "ml-dsa-65")]
     MlDsa65,
 }
 
@@ -49,6 +51,8 @@ pub struct Identity {
     seed: [u8; 32],
     signing: SigningKey,
     seal: SealKey,
+    /// Set when the party goes by `did:bio` on this network, not `did:key`.
+    network: Option<Network>,
     pub tls: Option<TlsCredentials>,
 }
 
@@ -65,8 +69,23 @@ struct KeyFile {
     seal_x25519: String,
     seal_mlkem: String,
     seal_mlkem_public: String,
+    /// `mainnet`, `devnet`, `testnet` or `localnet`, for a `did:bio` identity.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    did_bio: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     tls: Option<TlsCredentials>,
+}
+
+fn network_name(network: Network) -> &'static str {
+    network.segment().unwrap_or("mainnet")
+}
+
+fn network_named(name: &str) -> Result<Network, KeyError> {
+    match name {
+        "mainnet" => Ok(Network::Mainnet),
+        other => Network::from_segment(other)
+            .ok_or_else(|| KeyError::Format(format!("unknown network {other}"))),
+    }
 }
 
 pub fn random_bytes<const N: usize>() -> [u8; N] {
@@ -87,8 +106,19 @@ impl Identity {
             seed,
             signing,
             seal: SealKey::generate()?,
+            network: None,
             tls: None,
         })
+    }
+
+    /// Goes by `did:bio` on the named network from now on. The identifier
+    /// holds the same Ed25519 key, which is also the party's Solana address.
+    pub fn on_registry(mut self, network: &str) -> Result<Identity, KeyError> {
+        if self.alg != SigAlg::Ed25519 {
+            return Err(KeyError::Format("did:bio needs an Ed25519 key".into()));
+        }
+        self.network = Some(network_named(network)?);
+        Ok(self)
     }
 
     pub fn save(&self, path: &Path) -> Result<(), KeyError> {
@@ -98,6 +128,7 @@ impl Identity {
             seal_x25519: hex::encode(self.seal.x25519.to_bytes()),
             seal_mlkem: hex::encode(self.seal.mlkem_bytes()?),
             seal_mlkem_public: self.seal.public.mlkem.clone(),
+            did_bio: self.network.map(|n| network_name(n).to_owned()),
             tls: self.tls.clone(),
         };
         let text = serde_json::to_vec_pretty(&file).map_err(|e| KeyError::Format(e.to_string()))?;
@@ -110,6 +141,9 @@ impl Identity {
             .map_err(|e| KeyError::Format(e.to_string()))?;
         let seed = decode32(&file.seed)?;
         let x25519 = StaticSecret::from(decode32(&file.seal_x25519)?);
+        if file.did_bio.is_some() && file.alg != SigAlg::Ed25519 {
+            return Err(KeyError::Format("did:bio needs an Ed25519 key".into()));
+        }
         Ok(Identity {
             alg: file.alg,
             seed,
@@ -126,6 +160,7 @@ impl Identity {
                 )
                 .map_err(|_| KeyError::Format("bad ML-KEM key".into()))?,
             },
+            network: file.did_bio.as_deref().map(network_named).transpose()?,
             tls: file.tls,
         })
     }
@@ -163,6 +198,37 @@ impl Signer for Identity {
             SigningKey::Ed25519(k) => k.sign(message),
             SigningKey::MlDsa(k) => k.sign(message),
         }
+    }
+
+    fn did(&self) -> Did {
+        let bio = self.network.and_then(|network| {
+            let subject: [u8; 32] = self.public_key().as_bytes().try_into().ok()?;
+            Did::parse(&BioDid::new(network, subject).to_string()).ok()
+        });
+        bio.unwrap_or_else(|| self.public_key().did())
+    }
+}
+
+/// The key that speaks for a DID: the one inside a `did:key`, or the subject
+/// key of a `did:bio`. Whether a `did:bio` document has since moved on is for
+/// the registry to say, and each party asks it for itself.
+pub fn key_of(did: &Did) -> Result<PublicKey, String> {
+    if did.method() != "bio" {
+        return did.key().map_err(|e| e.to_string());
+    }
+    let bio = BioDid::parse(did.base()).map_err(|e| e.to_string())?;
+    if !bio.is_key_subject() {
+        return Err("an owned did:bio identifier holds no key".into());
+    }
+    PublicKey::new(Algorithm::Ed25519, &bio.subject).map_err(|e| format!("{e:?}"))
+}
+
+/// Resolves the DIDs a run accepts, for checking delegations.
+pub struct Principals;
+
+impl Resolver for Principals {
+    fn resolve(&self, did: &Did) -> Result<PublicKey, ResolveError> {
+        key_of(did).map_err(ResolveError::Failed)
     }
 }
 
@@ -345,7 +411,7 @@ pub fn verify_seal_proof(did: &Did, public: &SealPublic, proof: &str) -> Result<
 
 /// Parses and checks a detached signature against a DID.
 pub fn verify_did(did: &Did, message: &[u8], signature: &[u8]) -> Result<(), String> {
-    let key = did.key().map_err(|e| e.to_string())?;
+    let key = key_of(did)?;
     let signature = Signature::new(key.algorithm(), signature).map_err(|e| format!("{e:?}"))?;
     key.verify(message, &signature)
         .map_err(|e| format!("{e:?}"))
@@ -354,6 +420,54 @@ pub fn verify_did(did: &Did, message: &[u8], signature: &[u8]) -> Result<(), Str
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_did_bio_identity_is_the_same_key_under_another_name() {
+        let dir = tempfile::tempdir().unwrap();
+        let plain = Identity::generate(SigAlg::Ed25519).unwrap();
+        let key_form = plain.did();
+        let bio = plain.on_registry("devnet").unwrap();
+        assert!(
+            bio.did_string().starts_with("did:bio:devnet:"),
+            "{}",
+            bio.did_string()
+        );
+        assert_eq!(key_of(&bio.did()).unwrap(), key_of(&key_form).unwrap());
+
+        let sig = bio.sign(b"m").unwrap();
+        verify_did(&bio.did(), b"m", sig.as_bytes()).unwrap();
+        verify_did(&key_form, b"m", sig.as_bytes()).unwrap();
+        assert!(verify_did(&bio.did(), b"n", sig.as_bytes()).is_err());
+        assert_eq!(
+            Principals.resolve(&bio.did()).unwrap(),
+            key_of(&key_form).unwrap()
+        );
+
+        let path = dir.path().join("k");
+        bio.save(&path).unwrap();
+        assert_eq!(
+            Identity::load(&path).unwrap().did_string(),
+            bio.did_string()
+        );
+        let mainnet = Identity::generate(SigAlg::Ed25519)
+            .unwrap()
+            .on_registry("mainnet")
+            .unwrap();
+        assert_eq!(mainnet.did_string().matches(':').count(), 2);
+    }
+
+    #[test]
+    fn did_bio_needs_a_key_it_can_hold() {
+        let pq = Identity::generate(SigAlg::MlDsa65).unwrap();
+        assert!(pq.on_registry("devnet").is_err());
+        let ed = Identity::generate(SigAlg::Ed25519).unwrap();
+        assert!(ed.on_registry("moonnet").is_err());
+        // An owned identifier is an address off the curve, with no key in it.
+        let owned = did_bio_core::BioDid::owned(Network::Devnet, &[3; 32], 7);
+        let did = Did::parse(&owned.to_string()).unwrap();
+        assert!(key_of(&did).unwrap_err().contains("owned"));
+        assert!(Principals.resolve(&did).is_err());
+    }
 
     #[test]
     fn identities_round_trip_through_a_file() {
