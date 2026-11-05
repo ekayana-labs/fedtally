@@ -1,0 +1,10 @@
+target/
+*.so
+*.dylib
+__pycache__/
+.venv/
+.ipynb_checkpoints/
+.pytest_cache/
+benchmarks/out/
+mutants.out*/
+.DS_Store
