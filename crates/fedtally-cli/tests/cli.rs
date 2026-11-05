@@ -277,7 +277,7 @@ fn an_issuer_signs_credentials_and_revocations_from_the_command_line() {
         .success()
     );
     let (pq_key, _) = key(dir.path(), "pq.key", &["--alg", "ml-dsa-65"]);
-    let refused = fedtally(&[
+    let issued = fedtally(&[
         "issue",
         "--key",
         &pq_key,
@@ -288,5 +288,7 @@ fn an_issuer_signs_credentials_and_revocations_from_the_command_line() {
         "--out",
         &path("x.json"),
     ]);
-    assert!(String::from_utf8_lossy(&refused.stderr).contains("Ed25519"));
+    assert!(issued.status.success(), "{issued:?}");
+    let text = std::fs::read_to_string(path("x.json")).unwrap();
+    assert!(text.contains("mldsa65-jcs-2024"));
 }

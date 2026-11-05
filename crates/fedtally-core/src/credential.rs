@@ -1,14 +1,21 @@
-//! Verifiable credentials: W3C VC Data Model 2.0 documents secured with the
-//! `eddsa-jcs-2022` Data Integrity suite.
+//! Verifiable credentials: W3C VC Data Model 2.0 documents secured with a
+//! Data Integrity proof over the JSON canonical form.
 //!
 //! This reads a strict subset. A credential is JSON in canonical form (RFC
 //! 8785) with whole numbers only. It has one subject with an `id`, an issuer
-//! that is a DID, and a proof made with that DID's own Ed25519 key.
+//! that is a DID, and a proof made with that DID's own key.
+//!
+//! An Ed25519 key signs with `eddsa-jcs-2022`. An ML-DSA key signs with the
+//! suites of the W3C Quantum-Resistant Cryptosuites draft, which is
+//! experimental and names only `mldsa44-jcs-2024`. The two larger parameter
+//! sets follow the same rules under names the draft does not have yet.
 
+use base64::Engine;
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use pq_ucan::crypto::{Algorithm, Signer};
 use pq_ucan::did::Did;
 use serde_json::{Map, Value, json};
-use sha2::{Digest as _, Sha256};
+use sha2::{Digest as _, Sha256, Sha384, Sha512};
 use thiserror::Error;
 
 use crate::keys;
@@ -18,7 +25,69 @@ pub const BASE_CONTEXT: &str = "https://www.w3.org/ns/credentials/v2";
 /// Terms this crate adds live under one vocabulary, stated inline so a
 /// credential needs no document fetched from anywhere.
 pub const TERMS: &str = "urn:fedtally:terms#";
-const SUITE: &str = "eddsa-jcs-2022";
+
+/// How a key signs a document, and how the proof is written down.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Suite {
+    Eddsa,
+    MlDsa44,
+    MlDsa65,
+    MlDsa87,
+}
+
+impl Suite {
+    const ALL: [Suite; 4] = [Suite::Eddsa, Suite::MlDsa44, Suite::MlDsa65, Suite::MlDsa87];
+
+    fn of(algorithm: Algorithm) -> Option<Suite> {
+        Suite::ALL.into_iter().find(|s| s.algorithm() == algorithm)
+    }
+
+    fn named(name: &str) -> Option<Suite> {
+        Suite::ALL.into_iter().find(|s| s.name() == name)
+    }
+
+    fn algorithm(self) -> Algorithm {
+        match self {
+            Suite::Eddsa => Algorithm::Ed25519,
+            Suite::MlDsa44 => Algorithm::MlDsa44,
+            Suite::MlDsa65 => Algorithm::MlDsa65,
+            Suite::MlDsa87 => Algorithm::MlDsa87,
+        }
+    }
+
+    fn name(self) -> &'static str {
+        match self {
+            Suite::Eddsa => "eddsa-jcs-2022",
+            Suite::MlDsa44 => "mldsa44-jcs-2024",
+            Suite::MlDsa65 => "mldsa65-jcs-2024",
+            Suite::MlDsa87 => "mldsa87-jcs-2024",
+        }
+    }
+
+    /// The hash the draft pairs with each security category.
+    fn hash(self, data: &[u8]) -> Vec<u8> {
+        match self {
+            Suite::Eddsa | Suite::MlDsa44 => Sha256::digest(data).to_vec(),
+            Suite::MlDsa65 => Sha384::digest(data).to_vec(),
+            Suite::MlDsa87 => Sha512::digest(data).to_vec(),
+        }
+    }
+
+    /// Multibase: base58btc for Ed25519, base64url without padding for the rest.
+    fn encode(self, signature: &[u8]) -> String {
+        match self {
+            Suite::Eddsa => format!("z{}", bs58::encode(signature).into_string()),
+            _ => format!("u{}", URL_SAFE_NO_PAD.encode(signature)),
+        }
+    }
+
+    fn decode(self, value: &str) -> Option<Vec<u8>> {
+        match self {
+            Suite::Eddsa => bs58::decode(value.strip_prefix('z')?).into_vec().ok(),
+            _ => URL_SAFE_NO_PAD.decode(value.strip_prefix('u')?).ok(),
+        }
+    }
+}
 const STATUS_ENTRY: &str = "BitstringStatusListEntry";
 
 #[derive(Debug, Error, PartialEq, Eq)]
@@ -31,7 +100,7 @@ pub enum CredentialError {
     Number,
     #[error("{0}")]
     Shape(&'static str),
-    #[error("only Ed25519 keys can issue credentials")]
+    #[error("no proof suite for that kind of key")]
     Suite,
     #[error("proof: {0}")]
     Proof(String),
@@ -172,23 +241,19 @@ pub fn format_time(seconds: i64) -> String {
     )
 }
 
-fn sha256(data: &[u8]) -> [u8; 32] {
-    Sha256::digest(data).into()
-}
-
-/// What an `eddsa-jcs-2022` proof signs: the hash of the proof's own settings,
-/// then the hash of the document without its proof.
+/// What a proof signs: the hash of the proof's own settings, then the hash of
+/// the document without its proof.
 fn signing_input(
+    suite: Suite,
     document: &Map<String, Value>,
     proof: &Map<String, Value>,
-) -> Result<[u8; 64], CredentialError> {
+) -> Result<Vec<u8>, CredentialError> {
     let mut bare = document.clone();
     bare.remove("proof");
     let mut settings = proof.clone();
     settings.remove("proofValue");
-    let mut input = [0u8; 64];
-    input[..32].copy_from_slice(&sha256(canonical(&Value::Object(settings))?.as_bytes()));
-    input[32..].copy_from_slice(&sha256(canonical(&Value::Object(bare))?.as_bytes()));
+    let mut input = suite.hash(canonical(&Value::Object(settings))?.as_bytes());
+    input.extend(suite.hash(canonical(&Value::Object(bare))?.as_bytes()));
     Ok(input)
 }
 
@@ -205,12 +270,10 @@ pub fn secure(
     mut document: Map<String, Value>,
     created: i64,
 ) -> Result<String, CredentialError> {
-    if signer.public_key().algorithm() != Algorithm::Ed25519 {
-        return Err(CredentialError::Suite);
-    }
+    let suite = Suite::of(signer.public_key().algorithm()).ok_or(CredentialError::Suite)?;
     let mut proof = Map::new();
     proof.insert("type".into(), json!("DataIntegrityProof"));
-    proof.insert("cryptosuite".into(), json!(SUITE));
+    proof.insert("cryptosuite".into(), json!(suite.name()));
     proof.insert("created".into(), json!(format_time(created)));
     proof.insert(
         "verificationMethod".into(),
@@ -220,12 +283,14 @@ pub fn secure(
     if let Some(context) = document.get("@context") {
         proof.insert("@context".into(), context.clone());
     }
-    let input = signing_input(&document, &proof)?;
+    let input = signing_input(suite, &document, &proof)?;
     let signature = signer
         .sign(&input)
         .map_err(|e| CredentialError::Proof(format!("{e:?}")))?;
-    let encoded = bs58::encode(signature.as_bytes()).into_string();
-    proof.insert("proofValue".into(), json!(format!("z{encoded}")));
+    proof.insert(
+        "proofValue".into(),
+        json!(suite.encode(signature.as_bytes())),
+    );
     document.insert("proof".into(), Value::Object(proof));
     canonical(&Value::Object(document))
 }
@@ -250,11 +315,11 @@ pub fn integrity(document: &Value) -> Result<String, CredentialError> {
         .and_then(Value::as_object)
         .ok_or(CredentialError::Shape("needs one proof"))?;
     let wrong = |what: &str| CredentialError::Proof(what.to_owned());
-    if text(proof, "type", "proof needs a type")? != "DataIntegrityProof"
-        || text(proof, "cryptosuite", "proof needs a cryptosuite")? != SUITE
-    {
-        return Err(wrong("not an eddsa-jcs-2022 proof"));
+    if text(proof, "type", "proof needs a type")? != "DataIntegrityProof" {
+        return Err(wrong("not a data integrity proof"));
     }
+    let suite = Suite::named(text(proof, "cryptosuite", "proof needs a cryptosuite")?)
+        .ok_or_else(|| wrong("unknown cryptosuite"))?;
     if text(proof, "proofPurpose", "proof needs a purpose")? != "assertionMethod" {
         return Err(wrong("not an assertion"));
     }
@@ -273,12 +338,16 @@ pub fn integrity(document: &Value) -> Result<String, CredentialError> {
         return Err(wrong("unknown verification method"));
     }
     let value = text(proof, "proofValue", "proof needs a value")?;
-    let signature = value
-        .strip_prefix('z')
-        .and_then(|rest| bs58::decode(rest).into_vec().ok())
-        .ok_or_else(|| wrong("the value is not base58"))?;
+    let signature = suite
+        .decode(value)
+        .ok_or_else(|| wrong("the value is not in the suite's encoding"))?;
     let did = Did::parse(controller).map_err(|e| wrong(&e.to_string()))?;
-    let input = signing_input(document, proof)?;
+    // The suite must be the one for the issuer's key, or a proof could name
+    // a weaker hash than the key calls for.
+    if keys::key_of(&did).map(|k| k.algorithm()).ok() != Some(suite.algorithm()) {
+        return Err(wrong("the cryptosuite does not match the issuer's key"));
+    }
+    let input = signing_input(suite, document, proof)?;
     keys::verify_did(&did, &input, &signature).map_err(|_| wrong("bad signature"))?;
     Ok(controller.to_owned())
 }
@@ -511,7 +580,7 @@ mod tests {
         let unsigned: Value = serde_json::from_str(SPEC_UNSIGNED).unwrap();
         assert_eq!(canonical(&unsigned).unwrap(), SPEC_CANONICAL);
         assert_eq!(
-            hex::encode(sha256(SPEC_CANONICAL.as_bytes())),
+            hex::encode(Sha256::digest(SPEC_CANONICAL.as_bytes())),
             "59b7cb6251b8991add1ce0bc83107e3db9dbbab5bd2c28f687db1a03abc92f19"
         );
         assert_eq!(spec_key().did().as_str(), SPEC_KEY);
@@ -684,12 +753,45 @@ mod tests {
     }
 
     #[test]
-    fn a_post_quantum_key_cannot_issue_yet() {
-        let issuer = Identity::generate(SigAlg::MlDsa65).unwrap();
-        assert_eq!(
-            Credential::issue(&issuer, &draft("did:example:site"), 1),
-            Err(CredentialError::Suite)
-        );
+    fn every_ml_dsa_parameter_set_issues_under_its_own_suite() {
+        use pq_ucan::crypto::ml_dsa::MlDsaKeypair;
+        for (algorithm, suite, signature) in [
+            (Algorithm::MlDsa44, "mldsa44-jcs-2024", 2420),
+            (Algorithm::MlDsa65, "mldsa65-jcs-2024", 3309),
+            (Algorithm::MlDsa87, "mldsa87-jcs-2024", 4627),
+        ] {
+            let issuer = MlDsaKeypair::from_seed(algorithm, &[9; 32]).unwrap();
+            let credential = Credential::issue(&issuer, &draft("did:example:site"), 1).unwrap();
+            let read = Credential::parse(&credential.text).unwrap();
+            assert_eq!(read.issuer, issuer.did().to_string());
+
+            let document: Value = serde_json::from_str(&credential.text).unwrap();
+            assert_eq!(document["proof"]["cryptosuite"], suite);
+            let value = document["proof"]["proofValue"].as_str().unwrap();
+            let bytes = URL_SAFE_NO_PAD.decode(value.strip_prefix('u').unwrap());
+            assert_eq!(bytes.unwrap().len(), signature);
+        }
+    }
+
+    #[test]
+    fn a_proof_must_use_the_suite_of_the_key_that_made_it() {
+        use pq_ucan::crypto::ml_dsa::MlDsaKeypair;
+        let issuer = MlDsaKeypair::from_seed(Algorithm::MlDsa65, &[9; 32]).unwrap();
+        let good = Credential::issue(&issuer, &draft("did:example:site"), 1).unwrap();
+        for other in ["mldsa44-jcs-2024", "mldsa87-jcs-2024", "eddsa-jcs-2022"] {
+            let mut document: Value = serde_json::from_str(&good.text).unwrap();
+            document["proof"]["cryptosuite"] = json!(other);
+            let text = canonical(&document).unwrap();
+            assert!(
+                matches!(Credential::parse(&text), Err(CredentialError::Proof(_))),
+                "{other}"
+            );
+        }
+        let mut document: Value = serde_json::from_str(&good.text).unwrap();
+        let value = document["proof"]["proofValue"].as_str().unwrap().to_owned();
+        document["proof"]["proofValue"] = json!(format!("z{}", &value[1..]));
+        let text = canonical(&document).unwrap();
+        assert!(Credential::parse(&text).is_err());
     }
 
     #[test]
