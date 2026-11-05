@@ -10,6 +10,7 @@ pub mod keys;
 pub mod log;
 pub mod merkle;
 pub mod model;
+pub mod norm;
 pub mod plan;
 pub mod policy;
 pub mod privacy;
