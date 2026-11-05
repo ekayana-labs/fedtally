@@ -69,6 +69,59 @@ impl Fp {
         let (r, carry) = t.overflowing_add(hl * EPSILON);
         Fp::new(if carry { r.wrapping_add(EPSILON) } else { r })
     }
+
+    /// The sum of values[i] * weights[i], for each row of weights, which must be at least
+    /// as long as `values`. The values may be any u64. Products are summed as
+    /// they are and reduced once at the end, so the cost per coordinate is a
+    /// multiplication and an addition.
+    pub fn dot<const N: usize>(values: &[u64], weights: [&[Fp]; N]) -> [Fp; N] {
+        weights.map(|row| {
+            let row = &row[..values.len()];
+            let (values, row) = (values.as_chunks::<LANES>(), row.as_chunks::<LANES>());
+            let mut sums = [Wide::ZERO; LANES];
+            for (v, w) in values.0.iter().zip(row.0) {
+                for lane in 0..LANES {
+                    sums[lane].add(v[lane], w[lane]);
+                }
+            }
+            let mut rest = Wide::ZERO;
+            for (v, w) in values.1.iter().zip(row.1) {
+                rest.add(*v, *w);
+            }
+            sums.iter()
+                .fold(rest.reduce(), |acc, sum| acc + sum.reduce())
+        })
+    }
+}
+
+/// Independent sums in `Fp::dot`, so one carry chain does not hold up the next
+/// multiplication.
+const LANES: usize = 4;
+
+/// 2^128 mod p.
+const TWO_128: Fp = Fp(P - (1 << 32));
+
+/// A sum of 128-bit products, not yet reduced.
+#[derive(Clone, Copy)]
+struct Wide {
+    low: u128,
+    high: u64,
+}
+
+impl Wide {
+    const ZERO: Wide = Wide { low: 0, high: 0 };
+
+    #[inline]
+    fn add(&mut self, v: u64, w: Fp) {
+        let (low, carry) = self.low.overflowing_add(v as u128 * w.0 as u128);
+        self.low = low;
+        self.high += u64::from(carry);
+    }
+
+    #[inline]
+    fn reduce(self) -> Fp {
+        Fp::reduce(self.low) + Fp::new(self.high) * TWO_128
+    }
 }
 
 impl Add for Fp {
@@ -239,6 +292,18 @@ mod tests {
         }
 
         #[test]
+        fn dot_matches_big_int(
+            pairs in proptest::collection::vec((any::<u64>(), any::<u64>()), 0..70)
+        ) {
+            let values: Vec<u64> = pairs.iter().map(|p| p.0).collect();
+            let weights: Vec<Fp> = pairs.iter().map(|p| Fp::new(p.1)).collect();
+            let slow = values.iter().zip(&weights).fold(0u64, |acc, (v, w)| {
+                ((acc as u128 + slow_mul(v % P, w.value()) as u128) % P as u128) as u64
+            });
+            prop_assert_eq!(Fp::dot(&values, [&weights]), [Fp::new(slow)]);
+        }
+
+        #[test]
         fn centered_round_trips(v in -(1i64 << 62)..(1i64 << 62)) {
             prop_assert_eq!(Fp::from_i64(v).centered(), v);
         }
@@ -263,6 +328,19 @@ mod tests {
         let max = Fp::new(P - 1);
         assert_eq!((max * max).value(), 1);
         assert_eq!(max + Fp::ONE, Fp::ZERO);
+    }
+
+    #[test]
+    fn dot_carries_past_128_bits() {
+        let values = vec![u64::MAX; 1000];
+        let weights = vec![Fp::new(P - 1); 1000];
+        let each = slow_mul(u64::MAX % P, P - 1);
+        let sum = (each as u128 * 1000 % P as u128) as u64;
+        assert_eq!(Fp::dot(&values, [&weights, &weights]), [Fp::new(sum); 2]);
+        assert_eq!(
+            TWO_128.value() as u128,
+            (1u128 << 127) % P as u128 * 2 % P as u128
+        );
     }
 
     #[test]
