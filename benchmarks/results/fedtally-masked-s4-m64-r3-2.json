@@ -4,24 +4,24 @@
   "model_mib": 64,
   "rounds": 3,
   "helpers": 1,
-  "total_seconds": 7.45,
+  "total_seconds": 7.38,
   "memory": {
     "aggregator": {
-      "peak_total_mib": 140.9,
-      "peak_each_mib": 140.9
+      "peak_total_mib": 131.0,
+      "peak_each_mib": 131.0
     },
     "helpers": {
-      "peak_total_mib": 28.2,
-      "peak_each_mib": 28.2
+      "peak_total_mib": 28.7,
+      "peak_each_mib": 28.7
     },
     "sites": {
-      "peak_total_mib": 676.7,
-      "peak_each_mib": 173.4
+      "peak_total_mib": 687.9,
+      "peak_each_mib": 211.4
     }
   },
   "aggregator_peak_disk_mib": 1088.1,
-  "log_bytes": 38398,
-  "verify_seconds": 0.043,
+  "log_bytes": 38446,
+  "verify_seconds": 0.047,
   "verified_complete": true,
   "model_error": 2.213990872856897e-07,
   "tls": true,
