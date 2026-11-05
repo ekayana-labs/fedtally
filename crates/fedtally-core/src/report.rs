@@ -1,5 +1,6 @@
 //! What a valid log says, in terms a reader can act on.
 
+use std::collections::BTreeMap;
 use std::io;
 use std::path::Path;
 
@@ -10,6 +11,7 @@ use crate::admission::Admission;
 use crate::log::read_lines;
 use crate::privacy::{self, rho_units};
 use crate::replay::{Fault, Phase, Replay};
+use crate::scoring;
 use crate::vector::Digest;
 
 #[derive(Debug, Error)]
@@ -74,6 +76,23 @@ pub struct RoundReport {
     pub sealed: bool,
     /// The zCDP rho this round spent, in a private run.
     pub rho: Option<f64>,
+    /// The scored groups and their shares of the round's reward.
+    pub groups: Vec<GroupShare>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct GroupShare {
+    pub sites: Vec<String>,
+    /// In millionths. Absent until the round is sealed.
+    pub share: Option<u32>,
+}
+
+/// What a site has earned: its part of each sealed round's reward, with
+/// every round of the plan worth the same and a group's members sharing alike.
+#[derive(Debug, Serialize)]
+pub struct Reward {
+    pub site: String,
+    pub share: f64,
 }
 
 /// What a private run has spent. Rho is what the rules enforce. The epsilons
@@ -110,6 +129,8 @@ pub struct Report {
     pub privacy: Option<PrivacyReport>,
     /// Sites whose credentials stopped meeting the policy during the run.
     pub revoked: Vec<Revoked>,
+    /// Each site's part of the whole reward so far, in a scoring run.
+    pub rewards: Vec<Reward>,
 }
 
 impl Report {
@@ -204,8 +225,28 @@ impl Replay {
                 model: r.outcome.as_ref().map(|o| o.model),
                 sealed: r.seal.is_some(),
                 rho: plan.privacy.map(|_| rho_units(r.cost)),
+                groups: plan
+                    .groups(&r.close_head, r.included.len())
+                    .iter()
+                    .enumerate()
+                    .map(|(g, members)| GroupShare {
+                        sites: members.iter().map(|p| name(&r.included[*p])).collect(),
+                        share: r.seal.as_ref().and_then(|s| s.shares.get(g).copied()),
+                    })
+                    .collect(),
             })
-            .collect();
+            .collect::<Vec<RoundReport>>();
+        let mut earned = BTreeMap::new();
+        for group in rounds.iter().flat_map(|r| &r.groups) {
+            let Some(share) = group.share else { continue };
+            let each = f64::from(share)
+                / f64::from(scoring::WHOLE)
+                / group.sites.len() as f64
+                / f64::from(plan.rounds);
+            for site in &group.sites {
+                *earned.entry(site.clone()).or_insert(0.0) += each;
+            }
+        }
         let privacy = plan.privacy.map(|p| PrivacyReport {
             rho_spent: rho_units(self.spent),
             rho_budget: rho_units(p.budget),
@@ -258,6 +299,10 @@ impl Replay {
                     site: name(site),
                     reason: reason.clone(),
                 })
+                .collect(),
+            rewards: earned
+                .into_iter()
+                .map(|(site, share)| Reward { site, share })
                 .collect(),
         })
     }

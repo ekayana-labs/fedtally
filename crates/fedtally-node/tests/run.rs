@@ -1181,3 +1181,263 @@ async fn a_site_sits_out_when_the_registry_says_an_operator_is_gone() {
     let report = verify_log(&fed.aggregator_dir().join("log.jsonl"), None).unwrap();
     assert_eq!(report.rounds[0].included.len(), 2);
 }
+
+fn bounded_options(sites: usize, rounds: u32) -> Options {
+    let mut options = private_options(sites, rounds);
+    options.bounded = true;
+    options.timeouts.collect_secs = 20;
+    options
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_bounded_run_proves_every_update_short_and_completes() {
+    let dir = tempfile::tempdir().unwrap();
+    let init = initial_model(dir.path());
+    let fed = LocalFederation::create(dir.path(), layout(), &init, &bounded_options(4, 2)).unwrap();
+    assert!(fed.plan.norm().is_some());
+    let trainers: Vec<Box<dyn Trainer>> = (0..4)
+        .map(|_| Box::new(Still { weight: 1 }) as Box<dyn Trainer>)
+        .collect();
+    let (running, results) = run_all(&fed, trainers, None).await;
+    running.aggregator.await.unwrap().unwrap();
+    let summaries: Vec<_> = results.into_iter().map(Result::unwrap).collect();
+    assert!(
+        summaries
+            .iter()
+            .all(|s| s.final_digest == summaries[0].final_digest)
+    );
+    let log = fed.aggregator_dir().join("log.jsonl");
+    let report = verify_log(&log, Some(&summaries[0].final_model)).unwrap();
+    assert!(report.complete(), "{report:?}");
+    assert!(report.rounds.iter().all(|r| r.total_weight == Some(4)));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_site_that_breaks_the_norm_bound_is_left_out_of_the_round() {
+    let dir = tempfile::tempdir().unwrap();
+    let init = initial_model(dir.path());
+    let fed = LocalFederation::create(dir.path(), layout(), &init, &bounded_options(4, 2)).unwrap();
+    let running = start(&fed, None).await;
+
+    // The cheat keeps the plan's noise and clips sixty-four times too far out,
+    // then pushes every weight as far as that lets it.
+    let mut config = fed.site_config(3, &running.addr);
+    let mut terms = fed.plan.privacy.unwrap();
+    terms.clip = 64 * fed.plan.norm().unwrap().enforced();
+    config.cheat = Some(terms);
+    let cheat = tokio::spawn(run_site(config, Fixed::new(1.0e6, 1)));
+    let honest: Vec<_> = (0..3)
+        .map(|i| {
+            tokio::spawn(run_site(
+                fed.site_config(i, &running.addr),
+                Box::new(Still { weight: 1 }),
+            ))
+        })
+        .collect();
+
+    let mut summaries = Vec::new();
+    for site in honest {
+        summaries.push(site.await.unwrap().unwrap());
+    }
+    let _ = cheat.await.unwrap();
+    running.aggregator.await.unwrap().unwrap();
+
+    let log = fed.aggregator_dir().join("log.jsonl");
+    let report = verify_log(&log, Some(&summaries[0].final_model)).unwrap();
+    assert!(report.finished, "{report:?}");
+    for round in &report.rounds {
+        assert_eq!(round.total_weight, Some(3), "{round:?}");
+        assert_eq!(round.excluded, vec![fed.plan.sites[3].clone()]);
+    }
+    // Nothing of the cheat's push reached the model: what moved is noise.
+    let moved = read_weights(&summaries[0].final_model)
+        .iter()
+        .map(|w| (w - 1.0).abs())
+        .fold(0.0, f64::max);
+    assert!(moved < 2.0, "the model moved by {moved}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn without_norm_proofs_the_same_cheat_moves_the_model() {
+    let dir = tempfile::tempdir().unwrap();
+    let init = initial_model(dir.path());
+    let fed = LocalFederation::create(dir.path(), layout(), &init, &private_options(4, 1)).unwrap();
+    let running = start(&fed, None).await;
+    let mut config = fed.site_config(3, &running.addr);
+    let mut terms = fed.plan.privacy.unwrap();
+    terms.clip *= 1 << 12;
+    config.cheat = Some(terms);
+    let cheat = tokio::spawn(run_site(config, Fixed::new(1.0e6, 1)));
+    let honest: Vec<_> = (0..3)
+        .map(|i| {
+            tokio::spawn(run_site(
+                fed.site_config(i, &running.addr),
+                Box::new(Still { weight: 1 }),
+            ))
+        })
+        .collect();
+    let mut summaries = Vec::new();
+    for site in honest {
+        summaries.push(site.await.unwrap().unwrap());
+    }
+    cheat.await.unwrap().unwrap();
+    running.aggregator.await.unwrap().unwrap();
+    let moved = read_weights(&summaries[0].final_model)
+        .iter()
+        .map(|w| (w - 1.0).abs())
+        .fold(0.0, f64::max);
+    assert!(moved > 10.0, "the model moved by {moved}");
+}
+
+/// The aggregator sees the helpers' messages before it settles its own, so it
+/// can write one that makes any proof pass. Only the site that recomputes
+/// that message from the committed vector can tell.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_aggregator_passing_a_long_update_is_caught_by_the_audit() {
+    let dir = tempfile::tempdir().unwrap();
+    let init = initial_model(dir.path());
+    let mut opts = bounded_options(4, 1);
+    opts.timeouts.attest_secs = 3;
+    opts.timeouts.ack_secs = 3;
+    let fed = LocalFederation::create(dir.path(), layout(), &init, &opts).unwrap();
+    let size = fed.plan.norm().unwrap().share_bytes();
+    let hook: Hook = Arc::new(move |stage, round_dir| {
+        if let Stage::BeforeVerdict { .. } = stage {
+            let helper = std::fs::read(round_dir.join("check-0.bin")).unwrap();
+            let path = round_dir.join("screened.bin");
+            let mut own = std::fs::read(&path).unwrap();
+            let cheat = 3 * size..4 * size;
+            for (mine, theirs) in own[cheat.clone()]
+                .as_chunks_mut::<8>()
+                .0
+                .iter_mut()
+                .zip(helper[cheat].as_chunks::<8>().0)
+            {
+                let v = u64::from_le_bytes(*theirs);
+                let negated = -fedtally_core::field::Fp::new(v);
+                mine.copy_from_slice(&negated.value().to_le_bytes());
+            }
+            std::fs::write(path, own).unwrap();
+        }
+    });
+    let running = start(&fed, Some(hook)).await;
+    let mut config = fed.site_config(3, &running.addr);
+    let mut terms = fed.plan.privacy.unwrap();
+    terms.clip = 64 * fed.plan.norm().unwrap().enforced();
+    config.cheat = Some(terms);
+    let cheat = tokio::spawn(run_site(config, Fixed::new(1.0e6, 1)));
+    let honest: Vec<_> = (0..3)
+        .map(|i| {
+            tokio::spawn(run_site(
+                fed.site_config(i, &running.addr),
+                Box::new(Still { weight: 1 }),
+            ))
+        })
+        .collect();
+    let mut results = Vec::new();
+    for site in honest {
+        results.push(site.await.unwrap());
+    }
+    let _ = cheat.await.unwrap();
+    running.aggregator.await.unwrap().unwrap();
+
+    let caught = results
+        .iter()
+        .filter(|r| matches!(r, Err(NodeError::Check(why)) if why.contains("norm proof")))
+        .count();
+    assert_eq!(caught, 1, "one honest site audits the cheat: {results:?}");
+    assert!(results.iter().all(Result::is_err), "{results:?}");
+    let report = verify_log(&fed.aggregator_dir().join("log.jsonl"), None).unwrap();
+    assert!(!report.finished);
+    assert_eq!(report.rounds[0].total_weight, Some(4));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_gated_run_works_with_post_quantum_keys_and_credentials() {
+    let dir = tempfile::tempdir().unwrap();
+    let init = initial_model(dir.path());
+    let mut opts = gated_options(3, 1);
+    opts.sig_alg = fedtally_core::keys::SigAlg::MlDsa65;
+    let fed = LocalFederation::create(dir.path(), layout(), &init, &opts).unwrap();
+    let (running, results) = run_all(&fed, fixed_trainers(3), None).await;
+    running.aggregator.await.unwrap().unwrap();
+    let summaries: Vec<_> = results.into_iter().map(Result::unwrap).collect();
+    let log = fed.aggregator_dir().join("log.jsonl");
+    let report = verify_log(&log, Some(&summaries[0].final_model)).unwrap();
+    assert!(report.complete(), "{report:?}");
+    let text = std::fs::read_to_string(log).unwrap();
+    assert!(text.contains("mldsa65-jcs-2024"));
+    assert!(!text.contains("eddsa-jcs-2022"));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_scoring_run_pays_the_group_that_moved_the_model() {
+    let dir = tempfile::tempdir().unwrap();
+    let init = initial_model(dir.path());
+    let mut opts = options(6, 1, 2);
+    opts.scoring = Some(2);
+    let fed = LocalFederation::create(dir.path(), layout(), &init, &opts).unwrap();
+    // Five sites pull the weights the same way and the last pulls against
+    // them. Whichever pair it lands in agrees less with the other two.
+    let mut trainers: Vec<Box<dyn Trainer>> = (0..5)
+        .map(|_| Fixed::new(2.0, 1) as Box<dyn Trainer>)
+        .collect();
+    trainers.push(Fixed::new(0.0, 1));
+    let (running, results) = run_all(&fed, trainers, None).await;
+    running.aggregator.await.unwrap().unwrap();
+    let summaries: Vec<_> = results.into_iter().map(Result::unwrap).collect();
+    let log = fed.aggregator_dir().join("log.jsonl");
+    let report = verify_log(&log, Some(&summaries[0].final_model)).unwrap();
+    assert!(report.complete(), "{report:?}");
+
+    let against = &fed.plan.sites[5];
+    let round = &report.rounds[0];
+    assert_eq!(round.groups.len(), 3);
+    let (with, without): (Vec<_>, Vec<_>) =
+        round.groups.iter().partition(|g| g.sites.contains(against));
+    assert!(without.iter().all(|g| with[0].share < g.share), "{round:?}");
+    assert_eq!(
+        round.groups.iter().filter_map(|g| g.share).sum::<u32>(),
+        1_000_000
+    );
+    let total: f64 = report.rewards.iter().map(|r| r.share).sum();
+    assert!((total - 1.0).abs() < 1e-9, "{total}");
+    let earned = |site: &String| {
+        report
+            .rewards
+            .iter()
+            .find(|r| &r.site == site)
+            .map_or(0.0, |r| r.share)
+    };
+    assert!(earned(against) < 1.0 / 6.0, "{:?}", report.rewards);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_private_scoring_run_pays_for_its_groups_in_the_budget() {
+    let dir = tempfile::tempdir().unwrap();
+    let init = initial_model(dir.path());
+    let mut opts = private_options(4, 2);
+    opts.scoring = Some(2);
+    let fed = LocalFederation::create(dir.path(), layout(), &init, &opts).unwrap();
+    let trainers: Vec<Box<dyn Trainer>> = (0..4)
+        .map(|_| Box::new(Still { weight: 1 }) as Box<dyn Trainer>)
+        .collect();
+    let (running, results) = run_all(&fed, trainers, None).await;
+    running.aggregator.await.unwrap().unwrap();
+    let summaries: Vec<_> = results.into_iter().map(Result::unwrap).collect();
+    let log = fed.aggregator_dir().join("log.jsonl");
+    let report = verify_log(&log, Some(&summaries[0].final_model)).unwrap();
+    assert!(report.complete(), "{report:?}");
+    let privacy = fed.plan.privacy.unwrap();
+    let pair = privacy.round_cost(fed.plan.layout.coords(), 2).unwrap();
+    assert_eq!(fed.plan.round_cost(4), Some(pair));
+    let spent = report.privacy.unwrap();
+    assert!(spent.rho_spent <= spent.rho_budget);
+    assert!(spent.epsilon_spent > 6.0, "{spent:?}");
+    for round in &report.rounds {
+        assert_eq!(
+            round.groups.iter().filter_map(|g| g.share).sum::<u32>(),
+            1_000_000
+        );
+    }
+}

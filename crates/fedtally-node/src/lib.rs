@@ -27,7 +27,12 @@ const MANIFEST_BYTES_PER_CHUNK: usize = 70;
 /// Largest frame a run can need. Refused frames are never allocated.
 pub fn frame_limit(plan: &Plan) -> usize {
     let manifest = plan.shape().chunks() as usize * MANIFEST_BYTES_PER_CHUNK;
-    (plan.chunk_coords as usize * 8).max(manifest) + FRAME_SLACK
+    let proofs = plan.norm().map_or(0, |params| {
+        params
+            .proof_bytes()
+            .max(params.share_bytes() * plan.sites.len())
+    });
+    (plan.chunk_coords as usize * 8).max(manifest).max(proofs) + FRAME_SLACK
 }
 
 #[derive(Debug, Error)]

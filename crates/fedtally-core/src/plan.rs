@@ -9,8 +9,10 @@ use thiserror::Error;
 use crate::credential::Credential;
 use crate::keys::{SealPublic, key_of, verify_seal_proof};
 use crate::model::{Encoding, Layout};
+use crate::norm::{NormError, Params};
 use crate::policy::Policy;
 use crate::privacy::{Privacy, PrivacyError};
+use crate::scoring::Scoring;
 use crate::vector::{Digest, Shape};
 
 const SUM_BITS_LIMIT: u32 = 62;
@@ -77,6 +79,14 @@ pub struct Plan {
     /// when every site is asked into every round.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sample: Option<u32>,
+    /// Whether each site proves, before a round closes, that its update is
+    /// no longer than the privacy terms allow.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub bounded: bool,
+    /// Split each round's cohort into groups, release each group's sum, and
+    /// score the groups for rewards.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scoring: Option<Scoring>,
 }
 
 #[derive(Debug, Error, PartialEq, Eq)]
@@ -117,6 +127,14 @@ pub enum PlanError {
     Credential(String),
     #[error("a round must invite at least min_cohort sites and no more than there are")]
     Sample,
+    #[error("norm proofs take their bound from the privacy terms, and the plan has none")]
+    BoundedOpen,
+    #[error("norm proofs: {0}")]
+    Bounded(#[from] NormError),
+    #[error("scoring releases group sums, which only a masked run keeps apart")]
+    ScoringUnmasked,
+    #[error("a scored group needs at least two sites and no more than min_cohort")]
+    ScoringGroup,
 }
 
 impl Plan {
@@ -193,7 +211,19 @@ impl Plan {
             if self.max_weight != 1 {
                 return Err(PlanError::PrivacyWeights);
             }
-            privacy.validate(self.layout.coords(), self.sites.len(), self.min_cohort)?;
+            privacy.validate(self.layout.coords(), self.sites.len(), self.fewest())?;
+        }
+        if let Some(scoring) = &self.scoring {
+            if self.helpers.is_empty() {
+                return Err(PlanError::ScoringUnmasked);
+            }
+            if scoring.group < 2 || scoring.group > self.min_cohort {
+                return Err(PlanError::ScoringGroup);
+            }
+        }
+        if self.bounded {
+            let privacy = self.privacy.as_ref().ok_or(PlanError::BoundedOpen)?;
+            Params::new(privacy, self.layout.shape(self.chunk_coords))?;
         }
         if let Some(policy) = &self.admission {
             policy.validate().map_err(PlanError::Policy)?;
@@ -245,12 +275,42 @@ impl Plan {
             || self.site_index(did).is_some()
     }
 
-    /// What a round over `cohort` sites spends, in units of 2^-40 of rho.
-    pub fn round_cost(&self, cohort: usize) -> Option<u64> {
+    /// The fewest sites whose noise can stand behind one released sum: a
+    /// whole cohort, or one group of it in a scoring run.
+    pub fn fewest(&self) -> u32 {
+        self.scoring.map_or(self.min_cohort, |s| s.group)
+    }
+
+    fn cost_over(&self, sites: usize) -> Option<u64> {
         match &self.privacy {
-            Some(privacy) => privacy.round_cost(self.layout.coords(), cohort as u32),
+            Some(privacy) => privacy.round_cost(self.layout.coords(), sites as u32),
             None => Some(0),
         }
+    }
+
+    /// What a round over `cohort` sites spends, in units of 2^-40 of rho. A
+    /// scoring run pays for its smallest group, since a site's data moves
+    /// one group's sum only.
+    pub fn round_cost(&self, cohort: usize) -> Option<u64> {
+        self.cost_over(self.scoring.map_or(cohort, |s| s.smallest(cohort)))
+    }
+
+    /// The most a round can spend, whatever cohort closes it.
+    pub fn dearest_round(&self) -> Option<u64> {
+        self.cost_over(self.fewest() as usize)
+    }
+
+    /// The cohort positions of each scored group, once a round has closed.
+    pub fn groups(&self, close_head: &Digest, cohort: usize) -> Vec<Vec<usize>> {
+        self.scoring
+            .map(|s| s.groups(close_head, cohort))
+            .unwrap_or_default()
+    }
+
+    /// What a norm proof in this run is checked against.
+    pub fn norm(&self) -> Option<Params> {
+        let privacy = self.privacy.as_ref().filter(|_| self.bounded)?;
+        Params::new(privacy, self.layout.shape(self.chunk_coords)).ok()
     }
 
     /// True when the aggregator sees masked vectors only.
@@ -329,6 +389,8 @@ mod tests {
             privacy: None,
             admission: None,
             sample: None,
+            bounded: false,
+            scoring: None,
         }
     }
 

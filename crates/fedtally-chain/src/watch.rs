@@ -58,6 +58,12 @@ impl Vault {
             Object::Upload { round, site } => (round, format!("site-{site}.bin")),
             Object::Mask { round, helper } => (round, format!("mask-{helper}.bin")),
             Object::Aggregate { round } => (round, "aggregate.bin".to_owned()),
+            Object::GroupMask {
+                round,
+                helper,
+                group,
+            } => (round, format!("mask-{helper}-g{group}.bin")),
+            Object::GroupAggregate { round, group } => (round, format!("aggregate-g{group}.bin")),
             Object::Model { round } => (round, "model".to_owned()),
             Object::InitialModel => (0, "model".to_owned()),
         };

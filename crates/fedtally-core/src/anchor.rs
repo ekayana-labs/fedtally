@@ -89,9 +89,15 @@ impl Plan {
             .iter()
             .map(|site| wallet(site))
             .collect::<Result<Vec<_>, _>>()?;
+        if self.scoring.is_some() {
+            // The program charges a round at its cohort and pays equal shares.
+            return Err("a scoring plan cannot be anchored yet".into());
+        }
         let shape = self.shape();
         if !shape.aligned() {
-            return Err("chunks must be 128 * 2^k coordinates for single leaves to be proven".into());
+            return Err(
+                "chunks must be 128 * 2^k coordinates for single leaves to be proven".into(),
+            );
         }
         let narrow = |what: &str, value: usize| {
             u16::try_from(value).map_err(|_| format!("too many {what} for a ledger"))

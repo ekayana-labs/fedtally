@@ -353,6 +353,7 @@ fn run_site_process<'py>(
         give_up_after: Duration::from_secs(give_up_secs),
         standing,
         registry: registry_rpc.map(|url| Arc::new(RpcRegistry { url }) as _),
+        cheat: None,
     };
     let trainer = PyTrainer {
         callable: trainer,

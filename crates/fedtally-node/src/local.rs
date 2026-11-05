@@ -2,6 +2,7 @@
 //! tests, notebooks and benchmarks. A real deployment makes these separately,
 //! each party holding only its own key.
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicI64, Ordering};
@@ -18,6 +19,7 @@ use fedtally_core::pq_ucan::crypto::Signer;
 use fedtally_core::pq_ucan::time::Timestamp;
 use fedtally_core::privacy;
 use fedtally_core::record::{Body, Record, decode_token, encode_token};
+use fedtally_core::scoring::Scoring;
 use fedtally_core::status::StatusList;
 use fedtally_core::vector::Digest;
 use serde::{Deserialize, Serialize};
@@ -55,6 +57,13 @@ pub struct Options {
     pub credentials: bool,
     /// Name every party by `did:bio` on this network, not by `did:key`.
     pub did_bio: Option<String>,
+    /// Have every site prove its update is within the privacy terms.
+    pub bounded: bool,
+    /// Score groups of at least this many sites for rewards.
+    pub scoring: Option<u32>,
+    /// Sites that play dishonest, with how many times past the plan's clip
+    /// each one reaches. For tests and attack benchmarks.
+    pub cheats: BTreeMap<usize, u64>,
 }
 
 /// The options a caller may set from outside, such as from Python. Anything
@@ -82,6 +91,9 @@ struct Overrides {
     sample: Option<u32>,
     credentials: Option<bool>,
     did_bio: Option<String>,
+    bounded: Option<bool>,
+    scoring: Option<u32>,
+    cheats: Option<BTreeMap<usize, u64>>,
 }
 
 /// Three quarters of the sites. The aggregator chooses who is in a round, so
@@ -118,6 +130,9 @@ impl Options {
             sample: None,
             credentials: false,
             did_bio: None,
+            bounded: false,
+            scoring: None,
+            cheats: BTreeMap::new(),
         }
     }
 
@@ -147,6 +162,9 @@ impl Options {
         options.privacy = given.privacy;
         options.sample = given.sample;
         options.did_bio = given.did_bio;
+        set(&mut options.bounded, given.bounded);
+        options.scoring = given.scoring;
+        set(&mut options.cheats, given.cheats);
         Ok(options)
     }
 }
@@ -192,8 +210,8 @@ pub struct Issuers {
 const DATASET_SLOTS_FROM: u64 = 1 << 16;
 
 impl Issuers {
-    fn new(now: i64) -> Result<Issuers, NodeError> {
-        let new = || Identity::generate(SigAlg::Ed25519);
+    fn new(now: i64, alg: SigAlg) -> Result<Issuers, NodeError> {
+        let new = || Identity::generate(alg);
         Ok(Issuers {
             university: new()?,
             board: new()?,
@@ -362,6 +380,7 @@ pub struct LocalFederation {
     pub issuers: Option<Issuers>,
     /// What each site holds for the plan's policy.
     pub standing: Vec<Standing>,
+    cheats: BTreeMap<usize, u64>,
 }
 
 fn to_json(value: &impl Serialize) -> Result<Vec<u8>, NodeError> {
@@ -398,7 +417,11 @@ impl LocalFederation {
         let (encoding, max_weight, privacy) = match &options.privacy {
             Some(request) => {
                 let (encoding, privacy) = request
-                    .terms(layout.coords(), options.rounds, options.min_cohort)
+                    .terms(
+                        layout.coords(),
+                        options.rounds,
+                        options.scoring.unwrap_or(options.min_cohort),
+                    )
                     .map_err(|e| check(&e))?;
                 (encoding, 1, Some(privacy))
             }
@@ -429,7 +452,7 @@ impl LocalFederation {
         let (issuers, standing) = if options.credentials {
             std::fs::create_dir_all(&status_dir)?;
             let now = unix_now();
-            let issuers = Issuers::new(now)?;
+            let issuers = Issuers::new(now, options.sig_alg)?;
             let mut standing = Vec::with_capacity(sites.len());
             for (i, site) in sites.iter().enumerate() {
                 let dataset = Identity::generate(SigAlg::Ed25519)?.did_string();
@@ -481,6 +504,8 @@ impl LocalFederation {
             privacy,
             admission: issuers.as_ref().map(Issuers::policy),
             sample: options.sample,
+            bounded: options.bounded,
+            scoring: options.scoring.map(|group| Scoring { group }),
         };
         edit(&mut plan);
         plan.validate().map_err(|e| check(&e))?;
@@ -533,6 +558,7 @@ impl LocalFederation {
             grants,
             issuers,
             standing,
+            cheats: options.cheats.clone(),
         })
     }
 
@@ -630,6 +656,14 @@ impl LocalFederation {
             give_up_after: Duration::from_secs(60),
             standing: self.standing[site].clone(),
             registry: None,
+            cheat: self
+                .plan
+                .privacy
+                .zip(self.cheats.get(&site))
+                .map(|(mut terms, reach)| {
+                    terms.clip = terms.clip.saturating_mul(*reach);
+                    terms
+                }),
         }
     }
 }

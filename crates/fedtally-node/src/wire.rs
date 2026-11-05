@@ -14,10 +14,40 @@ pub const SILENCE_LIMIT: Duration = Duration::from_secs(45);
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Object {
     InitialModel,
-    Model { round: u32 },
-    Upload { round: u32, site: u32 },
-    Mask { round: u32, helper: u32 },
-    Aggregate { round: u32 },
+    Model {
+        round: u32,
+    },
+    Upload {
+        round: u32,
+        site: u32,
+    },
+    Mask {
+        round: u32,
+        helper: u32,
+    },
+    Aggregate {
+        round: u32,
+    },
+    /// A helper's mask total for one scored group.
+    GroupMask {
+        round: u32,
+        helper: u32,
+        group: u32,
+    },
+    /// The unmasked sum of one scored group.
+    GroupAggregate {
+        round: u32,
+        group: u32,
+    },
+}
+
+/// A small file kept whole: a norm proof share, or one party's messages
+/// about the proofs screened in a round.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum Blob {
+    Proof { round: u32, site: u32 },
+    Check { round: u32, helper: u32 },
+    Screened { round: u32 },
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -110,6 +140,19 @@ pub enum Msg {
     Sealed {
         round: u32,
         site: u32,
+        data: Option<serde_bytes::ByteBuf>,
+    },
+
+    PutBlob {
+        blob: Blob,
+        #[serde(with = "serde_bytes")]
+        data: Vec<u8>,
+    },
+    GetBlob {
+        blob: Blob,
+    },
+    Blob {
+        blob: Blob,
         data: Option<serde_bytes::ByteBuf>,
     },
 }

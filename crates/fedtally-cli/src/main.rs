@@ -17,6 +17,7 @@ use fedtally_core::pq_ucan::time::Timestamp;
 use fedtally_core::privacy::{self, Privacy};
 use fedtally_core::record::{Body, Record, encode_token};
 use fedtally_core::report::verify_log;
+use fedtally_core::scoring::Scoring;
 use fedtally_core::status::StatusList;
 use fedtally_core::vector::Digest;
 use fedtally_node::aggregator::{AggregatorConfig, run_aggregator};
@@ -283,6 +284,10 @@ struct PlanSpec {
     admission: Option<Policy>,
     #[serde(default)]
     sample: Option<u32>,
+    #[serde(default)]
+    bounded: bool,
+    #[serde(default)]
+    scoring: Option<Scoring>,
 }
 
 impl PlanSpec {
@@ -298,7 +303,11 @@ impl PlanSpec {
         if self.encoding.is_some() || self.max_weight.is_some() {
             return Err("a private plan sets its own encoding and weights: leave them out".into());
         }
-        let (encoding, terms) = spec.terms(self.layout.coords(), self.rounds, self.min_cohort)?;
+        let (encoding, terms) = spec.terms(
+            self.layout.coords(),
+            self.rounds,
+            self.scoring.map_or(self.min_cohort, |s| s.group),
+        )?;
         Ok((encoding, 1, Some(terms)))
     }
 }
@@ -431,6 +440,8 @@ async fn run(command: Command) -> Result<ExitCode, Failure> {
                 privacy,
                 admission: spec.admission,
                 sample: spec.sample,
+                bounded: spec.bounded,
+                scoring: spec.scoring,
             };
             plan.validate()?;
             let record = Record::sign(&sponsor, &Body::Plan(Box::new(plan)))?;

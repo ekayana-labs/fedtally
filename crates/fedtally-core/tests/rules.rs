@@ -132,6 +132,8 @@ impl Run {
             privacy: None,
             admission: None,
             sample: None,
+            bounded: false,
+            scoring: None,
         };
         edit(&mut plan);
         let record = Record::sign(&sponsor, &Body::Plan(Box::new(plan.clone()))).unwrap();
@@ -239,6 +241,7 @@ impl Run {
             masked: Digest::of(b"masked"),
             weight,
             sealed: vec![Digest::of(b"sealed")],
+            proof: self.plan.bounded.then(|| Digest::of(b"proof")),
         }
     }
 
@@ -267,10 +270,41 @@ impl Run {
             prev: self.replay.head,
             included: self.included(list),
             sum: Digest::of(b"sum"),
+            shares: self.plan.bounded.then(|| Digest::of(b"own messages")),
         }
     }
 
+    fn screen_body(&self, round: u32, list: &[(usize, Digest)]) -> Body {
+        Body::Screen {
+            plan: self.plan_id,
+            round,
+            prev: self.replay.head,
+            candidates: self.included(list),
+        }
+    }
+
+    fn check_body(&self, round: u32) -> Body {
+        Body::Check {
+            plan: self.plan_id,
+            round,
+            screen: self.replay.current().unwrap().screen_head,
+            shares: Digest::of(b"helper messages"),
+        }
+    }
+
+    fn screen(&mut self, round: u32, list: &[(usize, Digest)]) {
+        let body = self.screen_body(round, list);
+        let aggregator = self.aggregator.clone();
+        self.apply(&aggregator, body);
+        let body = self.check_body(round);
+        let helper = self.helper.clone();
+        self.apply(&helper, body);
+    }
+
     fn close(&mut self, round: u32, list: &[(usize, Digest)]) {
+        if self.plan.bounded {
+            self.screen(round, list);
+        }
         let body = self.close_body(round, list);
         let aggregator = self.aggregator.clone();
         self.apply(&aggregator, body);
@@ -287,12 +321,18 @@ impl Run {
         list
     }
 
+    fn group_count(&self) -> usize {
+        let cohort = self.replay.current().unwrap().included.len();
+        self.plan.scoring.map_or(0, |s| s.count(cohort))
+    }
+
     fn mask_sum_body(&self, round: u32) -> Body {
         Body::MaskSum {
             plan: self.plan_id,
             round,
             close: self.replay.current().unwrap().close_head,
             mask: Digest::of(b"mask"),
+            groups: vec![Digest::of(b"group mask"); self.group_count()],
         }
     }
 
@@ -310,6 +350,7 @@ impl Run {
             total_weight,
             aggregate: Digest::of(b"aggregate"),
             model: Digest::of(format!("model {round}").as_bytes()),
+            groups: vec![Digest::of(b"group sum"); self.group_count()],
         }
     }
 
@@ -368,6 +409,14 @@ impl Run {
             per_site: per_site.to_vec(),
             sum,
             aggregate,
+            shares: match self.group_count() {
+                0 => Vec::new(),
+                n => {
+                    let mut shares = vec![0; n];
+                    shares[0] = fedtally_core::scoring::WHOLE;
+                    shares
+                }
+            },
         }
     }
 
@@ -2244,4 +2293,263 @@ fn a_run_between_did_bio_identities_follows_the_same_rules() {
         matches!(fault, Fault::WrongSigner { .. } | Fault::WrongPhase { .. }),
         "{fault}"
     );
+}
+
+fn bounded(plan: &mut Plan) {
+    private(u64::MAX)(plan);
+    plan.bounded = true;
+}
+
+#[test]
+fn a_bounded_run_screens_every_round_before_closing_it() {
+    let mut run = Run::with(bounded);
+    run.join(0..3);
+    run.complete_round_at(1, 1);
+    run.complete_round_at(2, 1);
+    let round = &run.replay.rounds[0];
+    assert_eq!(round.screened, vec![0, 1, 2]);
+    assert_eq!(round.checks.len(), 1);
+    assert!(round.shares.is_some());
+    assert!(replay_lines(&run.lines).is_ok());
+}
+
+#[test]
+fn norm_proofs_need_privacy_terms_and_say_which_bound_they_enforce() {
+    let mut open = Run::new().plan.clone();
+    open.bounded = true;
+    assert_eq!(open.validate(), Err(PlanError::BoundedOpen));
+
+    // With little noise the squares can be summed and the bound is exact.
+    // With a lot, the proof holds a site to a multiple of it.
+    let quiet = Run::with(bounded).plan.norm().unwrap();
+    assert!(quiet.enforced() >= quiet.norm);
+    let mut loud = Run::with(bounded).plan.clone();
+    loud.privacy.as_mut().unwrap().noise = 1 << 50;
+    assert!(loud.validate().is_ok());
+    let loud = loud.norm().unwrap();
+    assert!(loud.enforced() > 60 * loud.norm);
+    assert!(Run::with(private(u64::MAX)).plan.norm().is_none());
+}
+
+#[test]
+fn a_contribution_carries_a_proof_exactly_when_the_plan_asks() {
+    for (edit, proof) in [
+        (bounded as fn(&mut Plan), None),
+        (|_: &mut Plan| {}, Some(Digest::of(b"proof"))),
+    ] {
+        let mut run = Run::with(edit);
+        run.join(0..3);
+        run.open(1);
+        let mut body = run.contribute_body(1, 1);
+        if let Body::Contribute { proof: slot, .. } = &mut body {
+            *slot = proof;
+        }
+        let site = run.site(0);
+        assert!(matches!(
+            run.refuse(&site, body),
+            Fault::BadContribution { .. }
+        ));
+    }
+}
+
+#[test]
+fn a_bounded_round_cannot_close_before_every_helper_has_checked() {
+    let mut run = Run::with(bounded);
+    run.join(0..3);
+    run.open(1);
+    let list: Vec<_> = (0..3).map(|s| run.contribute(s, 1, 1)).collect();
+    let aggregator = run.aggregator.clone();
+    let helper = run.helper.clone();
+
+    let early = run.close_body(1, &list);
+    assert!(matches!(
+        run.refuse(&aggregator, early),
+        Fault::WrongPhase { .. }
+    ));
+    let screen = run.screen_body(1, &list[..2]);
+    assert!(matches!(
+        run.refuse(&helper, screen.clone()),
+        Fault::WrongSigner { .. }
+    ));
+    run.apply(&aggregator, screen);
+
+    let unchecked = run.close_body(1, &list[..2]);
+    assert!(matches!(
+        run.refuse(&aggregator, unchecked),
+        Fault::HelperMissing(_)
+    ));
+    let late = run.contribute_body(1, 1);
+    let site = run.site(2);
+    assert!(matches!(run.refuse(&site, late), Fault::WrongPhase { .. }));
+
+    let mut stale = run.check_body(1);
+    if let Body::Check { screen, .. } = &mut stale {
+        *screen = Digest::of(b"another head");
+    }
+    assert!(matches!(run.refuse(&helper, stale), Fault::BrokenChain(_)));
+    let check = run.check_body(1);
+    assert!(matches!(
+        run.refuse(&aggregator, check.clone()),
+        Fault::WrongSigner { .. }
+    ));
+    run.apply(&helper, check.clone());
+    assert!(matches!(run.refuse(&helper, check), Fault::Duplicate(..)));
+
+    let unscreened = run.close_body(1, &list);
+    assert!(matches!(
+        run.refuse(&aggregator, unscreened),
+        Fault::BadClose(_)
+    ));
+    let mut silent = run.close_body(1, &list[..2]);
+    if let Body::Close { shares, .. } = &mut silent {
+        *shares = None;
+    }
+    assert!(matches!(
+        run.refuse(&aggregator, silent),
+        Fault::BadClose(_)
+    ));
+    let close = run.close_body(1, &list[..2]);
+    run.apply(&aggregator, close);
+    assert_eq!(run.replay.rounds[0].included, vec![0, 1]);
+}
+
+#[test]
+fn a_run_without_norm_proofs_takes_no_screening() {
+    let mut run = Run::new();
+    run.join(0..3);
+    run.open(1);
+    let list: Vec<_> = (0..3).map(|s| run.contribute(s, 1, 10)).collect();
+    let aggregator = run.aggregator.clone();
+    let screen = run.screen_body(1, &list);
+    assert!(matches!(
+        run.refuse(&aggregator, screen),
+        Fault::BadScreen(_)
+    ));
+    let mut close = run.close_body(1, &list);
+    if let Body::Close { shares, .. } = &mut close {
+        *shares = Some(Digest::of(b"own messages"));
+    }
+    assert!(matches!(run.refuse(&aggregator, close), Fault::BadClose(_)));
+}
+
+fn scored(plan: &mut Plan) {
+    plan.min_cohort = 3;
+    plan.scoring = Some(fedtally_core::scoring::Scoring { group: 3 });
+}
+
+#[test]
+fn a_scoring_run_names_its_groups_and_what_each_site_earned() {
+    let mut run = Run::with(scored);
+    run.join(0..3);
+    run.complete_round(1);
+    run.complete_round(2);
+    let report = run.replay.report().unwrap();
+    for round in &report.rounds {
+        assert_eq!(round.groups.len(), 1);
+        assert_eq!(round.groups[0].sites.len(), 3);
+        assert_eq!(round.groups[0].share, Some(fedtally_core::scoring::WHOLE));
+    }
+    assert_eq!(report.rewards.len(), 3);
+    let total: f64 = report.rewards.iter().map(|r| r.share).sum();
+    assert!((total - 1.0).abs() < 1e-9, "{total}");
+    assert!(
+        Run::complete_run()
+            .replay
+            .report()
+            .unwrap()
+            .rewards
+            .is_empty()
+    );
+
+    let prints = run.replay.rounds[0].group_prints(&run.plan).unwrap();
+    let n = numbers();
+    assert_eq!(prints, [n.aggregate]);
+}
+
+#[test]
+fn group_records_must_match_the_number_of_groups() {
+    let mut run = Run::with(scored);
+    run.join(0..3);
+    run.open_and_close_all(1);
+    let (aggregator, helper) = (run.aggregator.clone(), run.helper.clone());
+
+    let mut bare = run.mask_sum_body(1);
+    if let Body::MaskSum { groups, .. } = &mut bare {
+        groups.clear();
+    }
+    assert!(matches!(run.refuse(&helper, bare), Fault::WrongLength(_)));
+    run.mask_sum(1);
+
+    let mut extra = run.outcome_body(1, 30);
+    if let Body::Outcome { groups, .. } = &mut extra {
+        groups.push(Digest::of(b"another"));
+    }
+    assert!(matches!(
+        run.refuse(&aggregator, extra),
+        Fault::WrongLength(_)
+    ));
+    run.outcome(1, 30);
+
+    let n = numbers();
+    run.helper_attest(1, &n.shares);
+    for site in 0..3 {
+        let body = run.attest_body(1, n.masked[site]);
+        let id = run.site(site);
+        run.apply(&id, body);
+    }
+    let mut short = run.seal_body(1, &n.masked, n.sum, n.aggregate);
+    if let Body::Seal { shares, .. } = &mut short {
+        shares[0] -= 1;
+    }
+    assert!(matches!(run.refuse(&aggregator, short), Fault::Shares));
+    let mut none = run.seal_body(1, &n.masked, n.sum, n.aggregate);
+    if let Body::Seal { shares, .. } = &mut none {
+        shares.clear();
+    }
+    assert!(matches!(
+        run.refuse(&aggregator, none),
+        Fault::WrongLength(_)
+    ));
+
+    let mut plain = Run::new();
+    plain.join(0..3);
+    plain.open_and_close_all(1);
+    let mut body = plain.mask_sum_body(1);
+    if let Body::MaskSum { groups, .. } = &mut body {
+        groups.push(Digest::of(b"group mask"));
+    }
+    let helper = plain.helper.clone();
+    assert!(matches!(plain.refuse(&helper, body), Fault::WrongLength(_)));
+}
+
+#[test]
+fn a_scoring_plan_needs_masks_and_groups_that_fit_the_cohort() {
+    let base = Run::with(scored).plan.clone();
+    assert!(base.validate().is_ok());
+    for (group, ok) in [(1, false), (2, true), (3, true), (4, false)] {
+        let mut plan = base.clone();
+        plan.scoring = Some(fedtally_core::scoring::Scoring { group });
+        assert_eq!(plan.validate().is_ok(), ok, "group {group}");
+    }
+    let mut open = base.clone();
+    open.helpers.clear();
+    assert_eq!(open.validate(), Err(PlanError::ScoringUnmasked));
+}
+
+#[test]
+fn a_scoring_round_is_charged_at_the_size_of_its_smallest_group() {
+    let whole = Run::with(private(u64::MAX)).plan.clone();
+    let mut split = whole.clone();
+    split.min_cohort = 2;
+    split.scoring = Some(fedtally_core::scoring::Scoring { group: 2 });
+    assert!(split.validate().is_ok());
+    // Three sites make one group of three, and a fourth would make two pairs.
+    assert_eq!(split.round_cost(3), whole.round_cost(3));
+    assert_eq!(split.round_cost(4), whole.round_cost(2));
+    assert_eq!(split.dearest_round(), whole.round_cost(2));
+    assert!(split.round_cost(4) > split.round_cost(3));
+
+    let mut colluding = split.clone();
+    colluding.privacy.as_mut().unwrap().colluding = 2;
+    assert!(colluding.validate().is_err());
 }

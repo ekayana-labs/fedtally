@@ -14,15 +14,17 @@ use fedtally_core::field::Fp2;
 use fedtally_core::keys::Identity;
 use fedtally_core::log::LogFile;
 use fedtally_core::model;
+use fedtally_core::norm::{self, Challenge, Params};
 use fedtally_core::plan::Plan;
 use fedtally_core::record::{Body, Included, Record};
-use fedtally_core::replay::{Phase, Replay};
+use fedtally_core::replay::{Phase, Replay, RoundState};
+use fedtally_core::scoring;
 use fedtally_core::vector::{self, Digest, Manifest, Shape, challenge};
 use tokio::sync::{Notify, mpsc};
 use tokio_rustls::server::TlsStream;
 
 use crate::net::{Listener, accept_peer, split_stream};
-use crate::wire::{Msg, Object, PING_EVERY, SILENCE_LIMIT, read_msg, write_msg};
+use crate::wire::{Blob, Msg, Object, PING_EVERY, SILENCE_LIMIT, read_msg, write_msg};
 use crate::{Dirs, NodeError, blocking, frame_limit, newer_lists};
 
 const TICK: Duration = Duration::from_millis(100);
@@ -34,6 +36,7 @@ const LINGER: Duration = Duration::from_secs(30);
 /// Points where a test can act as a dishonest operator.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Stage {
+    BeforeVerdict { round: u32 },
     BeforeSum { round: u32 },
     BeforeOutcome { round: u32 },
 }
@@ -93,6 +96,8 @@ struct State {
     manifests: HashMap<Object, Manifest>,
     attests: Vec<PendingAttest>,
     per_site: Option<(u32, Vec<Fp2>)>,
+    /// The scored groups' shares for the round being sealed.
+    shares: Vec<u32>,
     /// The disk refused a log write. Memory is now ahead of the log, so
     /// nothing more may be signed or served until a restart replays it.
     log_failed: bool,
@@ -159,6 +164,18 @@ impl Shared {
                 .round_path(round)
                 .join(format!("mask-{helper}.bin")),
             Object::Aggregate { round } => self.dirs.round_path(round).join("aggregate.bin"),
+            Object::GroupMask {
+                round,
+                helper,
+                group,
+            } => self
+                .dirs
+                .round_path(round)
+                .join(format!("mask-{helper}-g{group}.bin")),
+            Object::GroupAggregate { round, group } => self
+                .dirs
+                .round_path(round)
+                .join(format!("aggregate-g{group}.bin")),
             Object::Model { round } => self.dirs.model(round),
             Object::InitialModel => self.dirs.model(0),
         }
@@ -168,6 +185,24 @@ impl Shared {
         self.dirs
             .round_path(round)
             .join(format!("sealed-{site}-{helper}.bin"))
+    }
+
+    fn blob_path(&self, blob: Blob) -> PathBuf {
+        match blob {
+            Blob::Proof { round, site } => self
+                .dirs
+                .round_path(round)
+                .join(format!("proof-{site}.bin")),
+            Blob::Check { round, helper } => self
+                .dirs
+                .round_path(round)
+                .join(format!("check-{helper}.bin")),
+            Blob::Screened { round } => self.dirs.round_path(round).join("screened.bin"),
+        }
+    }
+
+    fn holds(&self, blob: Blob, want: &Digest) -> bool {
+        std::fs::read(self.blob_path(blob)).is_ok_and(|data| Digest::of(&data) == *want)
     }
 }
 
@@ -231,6 +266,7 @@ pub async fn run_aggregator(config: AggregatorConfig) -> Result<Replay, NodeErro
             manifests: HashMap::new(),
             attests: Vec::new(),
             per_site: None,
+            shares: Vec::new(),
             log_failed: false,
         }),
         wake: Notify::new(),
@@ -522,6 +558,52 @@ async fn handle(
             )
             .await
         }
+        Msg::PutBlob { blob, data: bytes } => {
+            let expected = {
+                let state = shared.lock();
+                let current = state.replay.current();
+                let now = |round: u32, phase| {
+                    round == state.replay.round_number() && state.replay.phase == phase
+                };
+                match (blob, role) {
+                    (Blob::Proof { round, site }, Role::Site(me))
+                        if me == site && now(round, Phase::Collecting) =>
+                    {
+                        current
+                            .and_then(|r| r.contributions.get(&(site as usize)))
+                            .and_then(|c| c.proof)
+                    }
+                    (Blob::Check { round, helper }, Role::Helper(me))
+                        if me == helper && now(round, Phase::Screening) =>
+                    {
+                        Some(Digest::of(&bytes))
+                    }
+                    _ => return Ok(()),
+                }
+            };
+            if expected != Some(Digest::of(&bytes)) {
+                return Err(NodeError::Protocol(
+                    "that proof is not in the signed contribution".into(),
+                ));
+            }
+            let path = shared.blob_path(blob);
+            blocking(move || write_atomic(&path, &bytes)).await?;
+            shared.wake.notify_waiters();
+            Ok(())
+        }
+        Msg::GetBlob { blob } => {
+            let contents = std::fs::read(shared.blob_path(blob))
+                .ok()
+                .map(serde_bytes::ByteBuf::from);
+            reply(
+                data,
+                Msg::Blob {
+                    blob,
+                    data: contents,
+                },
+            )
+            .await
+        }
         Msg::GetManifest { object } => {
             let answer = match manifest_for(shared, role, object).await {
                 Ok(Some(manifest)) => Msg::Manifest { object, manifest },
@@ -569,7 +651,10 @@ fn readable(shared: &Shared, role: Role, object: Object) -> bool {
         return watchable(shared, object);
     }
     match object {
-        Object::Aggregate { .. } | Object::Model { .. } | Object::InitialModel => true,
+        Object::Aggregate { .. }
+        | Object::GroupAggregate { .. }
+        | Object::Model { .. }
+        | Object::InitialModel => true,
         // A masked vector is noise to a site, so it's safe to audit, but only the
         // assigned auditor gets it. A site working with every helper could unmask
         // what it reads, so this keeps that to the vectors it was given.
@@ -594,7 +679,7 @@ fn readable(shared: &Shared, role: Role, object: Object) -> bool {
                     .audit_targets(&challenge, reader, current.included.len())
                     .contains(&target)
         }
-        Object::Mask { .. } => false,
+        Object::Mask { .. } | Object::GroupMask { .. } => false,
     }
 }
 
@@ -602,9 +687,11 @@ fn readable(shared: &Shared, role: Role, object: Object) -> bool {
 /// round tell it the aggregate and nothing more.
 fn watchable(shared: &Shared, object: Object) -> bool {
     let round = match object {
-        Object::Upload { round, .. } | Object::Mask { round, .. } | Object::Aggregate { round } => {
-            round
-        }
+        Object::Upload { round, .. }
+        | Object::Mask { round, .. }
+        | Object::Aggregate { round }
+        | Object::GroupMask { round, .. }
+        | Object::GroupAggregate { round, .. } => round,
         Object::Model { .. } | Object::InitialModel => return true,
     };
     let state = shared.lock();
@@ -789,7 +876,9 @@ async fn on_manifest(
 ) -> Result<(), NodeError> {
     let allowed = match (object, role) {
         (Object::Upload { site, .. }, Role::Site(me)) => site == me,
-        (Object::Mask { helper, .. }, Role::Helper(me)) => helper == me,
+        (Object::Mask { helper, .. } | Object::GroupMask { helper, .. }, Role::Helper(me)) => {
+            helper == me
+        }
         _ => false,
     };
     if !allowed || manifest.chunks.len() as u64 != shared.shape.chunks() {
@@ -802,7 +891,9 @@ async fn on_manifest(
     let late = {
         let state = shared.lock();
         let round = match object {
-            Object::Upload { round, .. } | Object::Mask { round, .. } => round,
+            Object::Upload { round, .. }
+            | Object::Mask { round, .. }
+            | Object::GroupMask { round, .. } => round,
             _ => 0,
         };
         let wanted = match object {
@@ -840,7 +931,10 @@ async fn on_manifest(
         state.uploads.get(&object).map(|u| u.manifest.root)
     };
     if existing != Some(manifest.root) {
-        if let Object::Upload { round, .. } | Object::Mask { round, .. } = object {
+        if let Object::Upload { round, .. }
+        | Object::Mask { round, .. }
+        | Object::GroupMask { round, .. } = object
+        {
             shared.dirs.round(round)?;
         }
         let path = shared.upload_path(object);
@@ -871,7 +965,9 @@ async fn on_chunk(
 ) -> Result<(), NodeError> {
     let allowed = match (object, role) {
         (Object::Upload { site, .. }, Role::Site(me)) => site == me,
-        (Object::Mask { helper, .. }, Role::Helper(me)) => helper == me,
+        (Object::Mask { helper, .. } | Object::GroupMask { helper, .. }, Role::Helper(me)) => {
+            helper == me
+        }
         _ => false,
     };
     if !allowed {
@@ -979,6 +1075,7 @@ async fn send_file(
 enum Decision {
     Wait,
     Open,
+    Screen,
     Close,
     Outcome,
     Fingerprints,
@@ -1010,12 +1107,19 @@ fn ready_sites(shared: &Shared, state: &State) -> Vec<usize> {
                 .uploads
                 .get(&object)
                 .is_some_and(|u| u.is_ready(&contribution.masked));
+            let proof = Blob::Proof {
+                round,
+                site: **site as u32,
+            };
             uploaded
                 && contribution
                     .sealed
                     .iter()
                     .enumerate()
                     .all(|(h, want)| sealed_ok(**site, h, want))
+                && contribution
+                    .proof
+                    .is_none_or(|want| shared.holds(proof, &want))
         })
         .map(|(site, _)| *site)
         .collect()
@@ -1049,17 +1153,43 @@ fn decide(shared: &Shared, state: &State, elapsed: Duration) -> Decision {
                 .iter()
                 .filter(|s| state.replay.joined.contains_key(s))
                 .all(|s| ready.contains(s));
+            let close = || {
+                if plan.bounded {
+                    Decision::Screen
+                } else {
+                    Decision::Close
+                }
+            };
             if everyone && ready.len() >= min {
-                Decision::Close
+                close()
             } else if past(plan.timeouts.collect_secs) {
                 if ready.len() >= min {
-                    Decision::Close
+                    close()
                 } else {
                     Decision::Abort(format!(
                         "{} sites finished, the plan needs {min}",
                         ready.len()
                     ))
                 }
+            } else {
+                Decision::Wait
+            }
+        }
+        Phase::Screening => {
+            let checked = state.replay.current().is_some_and(|r| {
+                r.checks.len() == plan.helpers.len()
+                    && r.checks.iter().all(|(helper, want)| {
+                        let blob = Blob::Check {
+                            round: r.round,
+                            helper: *helper as u32,
+                        };
+                        shared.holds(blob, want)
+                    })
+            });
+            if checked {
+                Decision::Close
+            } else if past(plan.timeouts.collect_secs) {
+                Decision::Abort("a helper did not check the norm proofs".into())
             } else {
                 Decision::Wait
             }
@@ -1144,6 +1274,7 @@ async fn drive(shared: &Arc<Shared>) -> Result<(), NodeError> {
             Decision::Stop => return Ok(()),
             Decision::Abort(reason) => abort(shared, reason)?,
             Decision::Open => open_round(shared)?,
+            Decision::Screen => screen_round(shared)?,
             Decision::Close => close_round(shared).await?,
             Decision::Outcome => outcome_round(shared).await?,
             Decision::Fingerprints => fingerprints(shared).await?,
@@ -1189,10 +1320,7 @@ fn open_round(shared: &Shared) -> Result<(), NodeError> {
     };
     if let Some(privacy) = &shared.plan.privacy {
         let left = privacy.budget.saturating_sub(spent);
-        let fits = shared
-            .plan
-            .round_cost(shared.plan.min_cohort as usize)
-            .is_some_and(|cost| cost <= left);
+        let fits = shared.plan.dearest_round().is_some_and(|cost| cost <= left);
         if !fits {
             return abort(
                 shared,
@@ -1233,20 +1361,118 @@ fn next_round(shared: &Arc<Shared>) -> Result<(), NodeError> {
     open_round(shared)
 }
 
-async fn close_round(shared: &Arc<Shared>) -> Result<(), NodeError> {
-    let (round, ready, weights) = {
+/// Puts the finished contributions up for their norm proofs to be checked.
+fn screen_round(shared: &Arc<Shared>) -> Result<(), NodeError> {
+    let (round, candidates) = {
         let state = shared.lock();
         let current = state
             .replay
             .current()
             .ok_or_else(|| NodeError::Protocol("no round".into()))?;
-        let ready = ready_sites(shared, &state);
-        let weights: Vec<u64> = ready
+        let candidates: Vec<Included> = ready_sites(shared, &state)
             .iter()
-            .map(|s| current.contributions[s].weight)
+            .map(|s| Included {
+                site: shared.plan.sites[*s].clone(),
+                contribution: current.contributions[s].hash,
+            })
             .collect();
-        (current.round, ready, weights)
+        (current.round, candidates)
     };
+    let plan = shared.plan_id;
+    shared.append_own(|replay| Body::Screen {
+        plan,
+        round,
+        prev: replay.head,
+        candidates,
+    })
+}
+
+/// Checks every screened proof. Returns the sites whose proofs hold and the
+/// digest of the aggregator's own messages, which it keeps for auditors.
+async fn check_proofs(
+    shared: &Arc<Shared>,
+    current: &RoundState,
+    params: Params,
+) -> Result<(Vec<usize>, Digest), NodeError> {
+    let round = current.round;
+    let helpers = (0..shared.plan.helpers.len())
+        .map(|helper| {
+            std::fs::read(shared.blob_path(Blob::Check {
+                round,
+                helper: helper as u32,
+            }))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let jobs: Vec<_> = current
+        .screened
+        .iter()
+        .map(|site| {
+            let contribution = &current.contributions[site];
+            let index = *site as u32;
+            (
+                *site,
+                norm::joint(
+                    &shared.plan_id,
+                    round,
+                    index,
+                    &contribution.masked,
+                    &contribution.sealed,
+                ),
+                Challenge::derive(&current.screen_head, index),
+                shared.upload_path(Object::Upload { round, site: index }),
+                shared.blob_path(Blob::Proof { round, site: index }),
+            )
+        })
+        .collect();
+    let out = shared.blob_path(Blob::Screened { round });
+    let hook = shared.hook.clone();
+    blocking(move || {
+        let size = params.share_bytes();
+        let mut own = Vec::with_capacity(jobs.len() * size);
+        for (_, joint, challenge, masked, proof) in &jobs {
+            let proof = std::fs::read(proof)?;
+            let share = norm::leader_share(&params, joint, challenge, masked, &proof)?;
+            own.extend(share.unwrap_or_else(|_| vec![0; size]));
+        }
+        write_atomic(&out, &own)?;
+        if let (Some(hook), Some(dir)) = (&hook, out.parent()) {
+            hook(Stage::BeforeVerdict { round }, dir);
+            own = std::fs::read(&out)?;
+        }
+        let mut proven = Vec::new();
+        for (position, (site, ..)) in jobs.iter().enumerate() {
+            if norm::accepted(&params, position, &own, &helpers) {
+                proven.push(*site);
+            } else {
+                tracing::warn!("site {site} did not prove its update short, leaving it out");
+            }
+        }
+        Ok((proven, Digest::of(&own)))
+    })
+    .await
+}
+
+async fn close_round(shared: &Arc<Shared>) -> Result<(), NodeError> {
+    let (current, mut ready) = {
+        let state = shared.lock();
+        let current = state
+            .replay
+            .current()
+            .cloned()
+            .ok_or_else(|| NodeError::Protocol("no round".into()))?;
+        (current, ready_sites(shared, &state))
+    };
+    let round = current.round;
+    let mut shares = None;
+    if let Some(params) = shared.plan.norm() {
+        let (proven, digest) = check_proofs(shared, &current, params).await?;
+        ready = proven;
+        shares = Some(digest);
+    }
+    let weights: Vec<u64> = ready
+        .iter()
+        .map(|s| current.contributions[s].weight)
+        .collect();
     let dir = shared.dirs.round(round)?;
     if let Some(hook) = &shared.hook {
         hook(Stage::BeforeSum { round }, &dir);
@@ -1321,6 +1547,7 @@ async fn close_round(shared: &Arc<Shared>) -> Result<(), NodeError> {
         prev: replay.head,
         included,
         sum: manifest.root,
+        shares,
     })
 }
 
@@ -1424,6 +1651,44 @@ async fn outcome_round(shared: &Arc<Shared>) -> Result<(), NodeError> {
         .lock()
         .manifests
         .insert(Object::Aggregate { round }, manifest);
+
+    let mut groups = Vec::new();
+    for (group, members) in shared
+        .plan
+        .groups(&state_copy.close_head, state_copy.included.len())
+        .into_iter()
+        .enumerate()
+    {
+        let group = group as u32;
+        let add: Vec<PathBuf> = members
+            .iter()
+            .map(|p| {
+                shared.upload_path(Object::Upload {
+                    round,
+                    site: state_copy.included[*p] as u32,
+                })
+            })
+            .collect();
+        let sub: Vec<PathBuf> = (0..shared.plan.helpers.len())
+            .map(|helper| {
+                shared.upload_path(Object::GroupMask {
+                    round,
+                    helper: helper as u32,
+                    group,
+                })
+            })
+            .collect();
+        let object = Object::GroupAggregate { round, group };
+        let out = shared.upload_path(object);
+        let manifest = blocking(move || {
+            let add: Vec<&Path> = add.iter().map(PathBuf::as_path).collect();
+            let sub: Vec<&Path> = sub.iter().map(PathBuf::as_path).collect();
+            Ok(vector::combine(&out, shape, &add, &sub)?)
+        })
+        .await?;
+        groups.push(manifest.root);
+        shared.lock().manifests.insert(object, manifest);
+    }
     let plan_id = shared.plan_id;
     shared.append_own(|replay| Body::Outcome {
         plan: plan_id,
@@ -1432,10 +1697,39 @@ async fn outcome_round(shared: &Arc<Shared>) -> Result<(), NodeError> {
         total_weight,
         aggregate: root,
         model: model_digest,
+        groups,
     })
 }
 
+/// Each scored group's share of the round's reward, from the group sums.
+async fn score_groups(
+    shared: &Arc<Shared>,
+    round: u32,
+    close_head: &Digest,
+    cohort: usize,
+) -> Result<Vec<u32>, NodeError> {
+    let groups = shared.plan.groups(close_head, cohort).len() as u32;
+    if groups == 0 {
+        return Ok(Vec::new());
+    }
+    let total = shared.upload_path(Object::Aggregate { round });
+    let sums: Vec<PathBuf> = (0..groups)
+        .map(|group| shared.upload_path(Object::GroupAggregate { round, group }))
+        .collect();
+    let (plan, shape) = (shared.plan.clone(), shared.shape);
+    blocking(move || {
+        let plain = plan.layout.coords();
+        let alignments = sums
+            .iter()
+            .map(|sum| scoring::alignment(sum, &total, shape, plain))
+            .collect::<Result<Vec<i128>, _>>()?;
+        Ok(scoring::shares(&alignments))
+    })
+    .await
+}
+
 async fn fingerprints(shared: &Arc<Shared>) -> Result<(), NodeError> {
+    let close_head;
     let (round, included, head) = {
         let state = shared.lock();
         let current = state
@@ -1447,6 +1741,7 @@ async fn fingerprints(shared: &Arc<Shared>) -> Result<(), NodeError> {
             .as_ref()
             .map(|o| o.challenge)
             .ok_or_else(|| NodeError::Protocol("no outcome".into()))?;
+        close_head = current.close_head;
         (current.round, current.included.clone(), head)
     };
     let paths: Vec<PathBuf> = included
@@ -1467,7 +1762,9 @@ async fn fingerprints(shared: &Arc<Shared>) -> Result<(), NodeError> {
             .collect::<Result<Vec<Fp2>, NodeError>>()
     })
     .await?;
+    let shares = score_groups(shared, round, &close_head, included.len()).await?;
     let mut state = shared.lock();
+    state.shares = shares;
     state.per_site = Some((round, per_site));
     flush_attests(shared, &mut state);
     shared.wake.notify_waiters();
@@ -1494,6 +1791,7 @@ fn seal_round(shared: &Arc<Shared>) -> Result<(), NodeError> {
         per_site,
         sum,
         aggregate: sum - masks,
+        shares: state.shares.clone(),
     };
     for pending in std::mem::take(&mut state.attests) {
         if let Some(p) = state.peers.get(&pending.peer) {

@@ -15,12 +15,15 @@ use fedtally_core::keys::{Identity, random_bytes, seal};
 use fedtally_core::model::{
     self, EncodeRequest, Encoded, ModelError, PAD, PrivateRequest, TensorView,
 };
+use fedtally_core::norm::{self, Challenge, Params};
 use fedtally_core::pq_ucan::Cid;
 use fedtally_core::pq_ucan::did::Did;
 use fedtally_core::pq_ucan::time::Timestamp;
 use fedtally_core::pq_ucan::validate::RevocationStore;
+use fedtally_core::privacy::Privacy;
 use fedtally_core::record::{Body, encode_token};
 use fedtally_core::replay::{Phase, RoundState};
+use fedtally_core::scoring;
 use fedtally_core::vector::{self, Digest, Manifest, challenge};
 use serde::{Deserialize, Serialize};
 
@@ -28,7 +31,7 @@ use crate::follower::{Follower, Patience, Start};
 use crate::helper::seal_context;
 use crate::net::Client;
 use crate::registry::{self, Registry};
-use crate::wire::{Msg, Object};
+use crate::wire::{Blob, Msg, Object};
 use crate::{NodeError, blocking, newer_lists};
 
 pub struct TrainContext {
@@ -71,6 +74,9 @@ pub struct SiteConfig {
     pub standing: Standing,
     /// Where to ask whether `did:bio` operators and issuers still stand.
     pub registry: Option<Arc<dyn Registry>>,
+    /// Terms to encode with in place of the plan's, without the checks an
+    /// honest site makes on itself. Only for playing a dishonest site.
+    pub cheat: Option<Privacy>,
 }
 
 /// A site's dataset and credentials, and where it keeps the issuers' newest
@@ -96,6 +102,8 @@ struct RoundFile {
     weight: u64,
     manifest: Manifest,
     sealed: Vec<Digest>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    proof: Option<Digest>,
 }
 
 struct Site {
@@ -107,6 +115,7 @@ struct Site {
     standing: Standing,
     held: Vec<Credential>,
     registry: Option<Arc<dyn Registry>>,
+    cheat: Option<Privacy>,
     trainer: Option<Box<dyn Trainer>>,
     refused: Vec<u32>,
     checks: Option<Checks>,
@@ -153,6 +162,7 @@ pub async fn run_site(
         standing: config.standing,
         held,
         registry: config.registry,
+        cheat: config.cheat,
         trainer: Some(trainer),
         refused: Vec::new(),
         checks: None,
@@ -387,6 +397,7 @@ impl Site {
                 masked: file.manifest.root,
                 weight: file.weight,
                 sealed: file.sealed.clone(),
+                proof: file.proof,
             };
             if !self.f.offer(client, &body).await? {
                 self.refused.push(round);
@@ -406,6 +417,14 @@ impl Site {
                     data,
                 })
                 .await?;
+        }
+        if file.proof.is_some() {
+            let blob = Blob::Proof {
+                round,
+                site: self.me as u32,
+            };
+            let data = std::fs::read(round_dir.join("proof.bin"))?;
+            client.send(&Msg::PutBlob { blob, data }).await?;
         }
         let object = Object::Upload {
             round,
@@ -442,8 +461,13 @@ impl Site {
             .take()
             .ok_or_else(|| NodeError::Trainer("trainer lost after a failed round".into()))?;
         let (meta, spool) = (meta.to_owned(), spool.to_owned());
+        let (plan_id, me, cheat) = (self.f.plan_id, self.me as u32, self.cheat);
+        let proof_path = round_dir.join("proof.bin");
         let task = blocking(move || {
             let mut outcome: Option<(Encoded, u64)> = None;
+            let mut proof = None;
+            let terms = cheat.as_ref().or(plan.privacy.as_ref());
+            let bound = plan.norm();
             let ctx = TrainContext {
                 round,
                 base_model: base.clone(),
@@ -455,29 +479,53 @@ impl Site {
                 }
                 // A private run counts every site the same, whatever it trained on.
                 let weight = if plan.privacy.is_some() { 1 } else { weight };
-                let encoded = match &plan.privacy {
-                    Some(privacy) => model::encode_private(&PrivateRequest {
-                        layout: &plan.layout,
-                        frac_bits: plan.encoding.frac_bits,
-                        chunk_coords: plan.chunk_coords,
-                        base: &base,
-                        local: tensors,
-                        privacy,
-                        pad,
-                        seeds: &seeds,
-                        out: &spool,
-                    })?,
-                    None => model::encode_update(&EncodeRequest {
-                        layout: &plan.layout,
-                        encoding: plan.encoding,
-                        chunk_coords: plan.chunk_coords,
-                        base: &base,
-                        local: tensors,
-                        weight,
-                        pad,
-                        seeds: &seeds,
-                        out: &spool,
-                    })?,
+                let mut tries = 0;
+                let encoded = loop {
+                    let encoded = match terms {
+                        Some(privacy) => model::encode_private(&PrivateRequest {
+                            layout: &plan.layout,
+                            frac_bits: plan.encoding.frac_bits,
+                            chunk_coords: plan.chunk_coords,
+                            base: &base,
+                            local: tensors,
+                            privacy,
+                            pad,
+                            seeds: &seeds,
+                            out: &spool,
+                        })?,
+                        None => model::encode_update(&EncodeRequest {
+                            layout: &plan.layout,
+                            encoding: plan.encoding,
+                            chunk_coords: plan.chunk_coords,
+                            base: &base,
+                            local: tensors,
+                            weight,
+                            pad,
+                            seeds: &seeds,
+                            out: &spool,
+                        })?,
+                    };
+                    let Some(params) = &bound else {
+                        break encoded;
+                    };
+                    let joint = norm::joint(&plan_id, round, me, &encoded.manifest.root, &sealed);
+                    let made = match cheat {
+                        Some(_) => Some(norm::prove_unchecked(params, &joint, &spool, &seeds)?),
+                        None => norm::prove(params, &joint, &spool, &seeds)?,
+                    };
+                    if let Some(bytes) = made {
+                        proof = Some(Digest::of(&bytes));
+                        std::fs::write(&proof_path, bytes)?;
+                        break encoded;
+                    }
+                    // Fresh noise and seeds each time, and each try fails
+                    // with negligible probability.
+                    tries += 1;
+                    if tries == 3 {
+                        return Err(ModelError::Mismatch(
+                            "the update does not fit the plan's norm bound".into(),
+                        ));
+                    }
                 };
                 outcome = Some((
                     Encoded {
@@ -499,6 +547,7 @@ impl Site {
                 weight,
                 manifest: encoded.manifest,
                 sealed,
+                proof,
             };
             let text = serde_json::to_vec(&file).map_err(|e| NodeError::Protocol(e.to_string()))?;
             let partial = meta.with_extension("partial");
@@ -589,6 +638,10 @@ impl Site {
             ));
         }
 
+        let bound = match self.f.plan.norm() {
+            Some(params) => Some((params, self.proof_messages(client, state, &params).await?)),
+            None => None,
+        };
         let mut audits = Vec::new();
         let targets = self
             .f
@@ -601,7 +654,23 @@ impl Site {
                 site: site as u32,
             };
             let root = state.contributions[&site].masked;
-            let print = self.f.fetch_fingerprint(client, object, root, rho).await?;
+            // A norm proof is rechecked against the vector itself, so a
+            // bounded plan keeps it on disk until that is done.
+            let print = match &bound {
+                Some((params, (own, _))) => {
+                    let path = round_dir.join(format!("audit-{site}.bin"));
+                    self.f.fetch_vector(client, object, root, &path).await?;
+                    let reading = path.clone();
+                    let print =
+                        blocking(move || Ok(vector::fingerprint_file(&reading, shape, rho)?))
+                            .await?;
+                    self.audit_proof(client, state, *params, site, &path, own)
+                        .await?;
+                    std::fs::remove_file(&path)?;
+                    print
+                }
+                None => self.f.fetch_fingerprint(client, object, root, rho).await?,
+            };
             audits.push((target, print));
         }
 
@@ -613,6 +682,151 @@ impl Site {
         };
         self.checks = Some(checks.clone());
         Ok(checks)
+    }
+
+    /// Fetches every party's messages about the round's norm proofs and
+    /// checks that they accept each site the aggregator let in.
+    async fn proof_messages(
+        &mut self,
+        client: &mut Client,
+        state: &RoundState,
+        params: &Params,
+    ) -> Result<(Vec<u8>, Vec<Vec<u8>>), NodeError> {
+        let round = state.round;
+        let missing = || NodeError::Check(format!("round {round}: no record of the proof checks"));
+        let own = fetch_blob(
+            client,
+            Blob::Screened { round },
+            state.shares.ok_or_else(missing)?,
+        )
+        .await?;
+        let mut helpers = Vec::with_capacity(self.f.plan.helpers.len());
+        for helper in 0..self.f.plan.helpers.len() {
+            let blob = Blob::Check {
+                round,
+                helper: helper as u32,
+            };
+            let want = *state.checks.get(&helper).ok_or_else(missing)?;
+            helpers.push(fetch_blob(client, blob, want).await?);
+        }
+        for site in &state.included {
+            let position = state.screened.iter().position(|s| s == site);
+            if !position.is_some_and(|p| norm::accepted(params, p, &own, &helpers)) {
+                return Err(NodeError::Check(format!(
+                    "round {round}: {} is in the round without a valid norm proof",
+                    self.f.plan.sites[*site]
+                )));
+            }
+        }
+        Ok((own, helpers))
+    }
+
+    /// Recomputes the aggregator's message about `site` from the vector and
+    /// the proof share that site committed to.
+    async fn audit_proof(
+        &mut self,
+        client: &mut Client,
+        state: &RoundState,
+        params: Params,
+        site: usize,
+        masked: &Path,
+        own: &[u8],
+    ) -> Result<(), NodeError> {
+        let round = state.round;
+        let index = site as u32;
+        let contribution = &state.contributions[&site];
+        let wrong = || {
+            NodeError::Check(format!(
+                "round {round}: the aggregator misreported the norm proof of {}",
+                self.f.plan.sites[site]
+            ))
+        };
+        let proof = fetch_blob(
+            client,
+            Blob::Proof { round, site: index },
+            contribution.proof.ok_or_else(wrong)?,
+        )
+        .await?;
+        let joint = norm::joint(
+            &self.f.plan_id,
+            round,
+            index,
+            &contribution.masked,
+            &contribution.sealed,
+        );
+        let challenge = Challenge::derive(&state.screen_head, index);
+        let masked = masked.to_owned();
+        let share = blocking(move || {
+            Ok(norm::leader_share(
+                &params, &joint, &challenge, &masked, &proof,
+            )?)
+        })
+        .await?
+        .map_err(|_| wrong())?;
+        let size = params.share_bytes();
+        let position = state
+            .screened
+            .iter()
+            .position(|s| *s == site)
+            .ok_or_else(wrong)?;
+        if own.get(position * size..(position + 1) * size) != Some(share.as_slice()) {
+            return Err(wrong());
+        }
+        Ok(())
+    }
+
+    /// Fetches every scored group's sum, checks it against the fingerprint
+    /// the signed values give it, and recomputes the shares.
+    async fn check_scores(
+        &mut self,
+        client: &mut Client,
+        state: &RoundState,
+    ) -> Result<(), NodeError> {
+        let plan = self.f.plan.clone();
+        let groups = plan.groups(&state.close_head, state.included.len());
+        if groups.is_empty() {
+            return Ok(());
+        }
+        let round = state.round;
+        let wrong = |what: &str| NodeError::Check(format!("round {round}: {what}"));
+        let (Some(outcome), Some(seal), Some(prints)) =
+            (&state.outcome, &state.seal, state.group_prints(&plan))
+        else {
+            return Err(wrong("the group sums cannot be checked yet"));
+        };
+        let round_dir = self.f.dirs.round(round)?;
+        let total = round_dir.join("aggregate.bin");
+        let shape = self.f.shape();
+        let rho = challenge(&outcome.challenge);
+        let mut alignments = Vec::with_capacity(groups.len());
+        for (group, print) in prints.iter().enumerate() {
+            let path = round_dir.join(format!("group-{group}.bin"));
+            let object = Object::GroupAggregate {
+                round,
+                group: group as u32,
+            };
+            let root = *outcome
+                .groups
+                .get(group)
+                .ok_or_else(|| wrong("a group sum is missing"))?;
+            self.f.fetch_vector(client, object, root, &path).await?;
+            let (total, plain) = (total.clone(), plan.layout.coords());
+            let (found, alignment) = blocking(move || {
+                let found = vector::fingerprint_file(&path, shape, rho)?;
+                let alignment = scoring::alignment(&path, &total, shape, plain)?;
+                std::fs::remove_file(&path)?;
+                Ok((found, alignment))
+            })
+            .await?;
+            if found != *print {
+                return Err(wrong("a group sum is not the sum of its members"));
+            }
+            alignments.push(alignment);
+        }
+        if scoring::shares(&alignments) != seal.shares {
+            return Err(wrong("the sealed shares are not what the group sums give"));
+        }
+        Ok(())
     }
 
     async fn attest(&mut self, client: &mut Client, state: &RoundState) -> Result<(), NodeError> {
@@ -675,6 +889,7 @@ impl Site {
                 )));
             }
         }
+        self.check_scores(client, state).await?;
         let body = Body::Ack {
             plan: self.f.plan_id,
             round,
@@ -724,4 +939,14 @@ fn decode_seeds(file: &RoundFile) -> Result<Vec<[u8; 32]>, NodeError> {
             Ok(seed)
         })
         .collect()
+}
+
+async fn fetch_blob(client: &mut Client, blob: Blob, want: Digest) -> Result<Vec<u8>, NodeError> {
+    client.send(&Msg::GetBlob { blob }).await?;
+    let Msg::Blob { data, .. } = client.reply().await? else {
+        return Err(NodeError::Protocol("expected a stored file".into()));
+    };
+    data.map(serde_bytes::ByteBuf::into_vec)
+        .filter(|data| Digest::of(data) == want)
+        .ok_or_else(|| NodeError::Check(format!("{blob:?} is not what the log names")))
 }

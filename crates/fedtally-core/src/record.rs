@@ -60,6 +60,24 @@ pub enum Body {
         masked: Digest,
         weight: u64,
         sealed: Vec<Digest>,
+        /// Its share of the proof that the update is short, where the plan asks.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        proof: Option<Digest>,
+    },
+    /// Aggregator: the contributions whose norm proofs are checked next.
+    /// The log head after this record is the challenge for those proofs.
+    Screen {
+        plan: Digest,
+        round: u32,
+        prev: Digest,
+        candidates: Vec<Included>,
+    },
+    /// Helper: the digest of its messages about the screened proofs.
+    Check {
+        plan: Digest,
+        round: u32,
+        screen: Digest,
+        shares: Digest,
     },
     /// Aggregator: fixes who is in the round and the digest of their sum.
     Close {
@@ -68,6 +86,9 @@ pub enum Body {
         prev: Digest,
         included: Vec<Included>,
         sum: Digest,
+        /// Its own messages about the screened proofs.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        shares: Option<Digest>,
     },
     /// Helper: the digest of the mask total it computed for that Close.
     MaskSum {
@@ -75,6 +96,9 @@ pub enum Body {
         round: u32,
         close: Digest,
         mask: Digest,
+        /// Its mask total for each scored group, in a scoring run.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        groups: Vec<Digest>,
     },
     /// Aggregator: commits to the unmasked sum and the next model.
     /// The log head after this record is the challenge.
@@ -85,6 +109,9 @@ pub enum Body {
         total_weight: u64,
         aggregate: Digest,
         model: Digest,
+        /// The unmasked sum of each scored group.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        groups: Vec<Digest>,
     },
     /// Site: the fingerprint of its own masked vector. An honest site signs this
     /// only after checking the helpers' shares for it against its own seeds.
@@ -110,6 +137,9 @@ pub enum Body {
         per_site: Vec<Fp2>,
         sum: Fp2,
         aggregate: Fp2,
+        /// Each scored group's share of the round's reward, in millionths.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        shares: Vec<u32>,
     },
     /// Site: checked the sealed round against the bytes it holds.
     Ack {

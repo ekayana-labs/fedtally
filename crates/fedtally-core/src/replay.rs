@@ -19,6 +19,7 @@ use crate::plan::Plan;
 use crate::policy::{Check, Holder, Policy, Rule};
 use crate::record::{Body, Included, Record, decode_token};
 use crate::sampling;
+use crate::scoring;
 use crate::status::StatusList;
 use crate::vector::Digest;
 
@@ -53,6 +54,8 @@ pub enum Fault {
     BadContribution { site: String, why: String },
     #[error("close: {0}")]
     BadClose(String),
+    #[error("screen: {0}")]
+    BadScreen(String),
     #[error("open: base is {got:?}, the current model is {want:?}")]
     WrongBase { got: Digest, want: Digest },
     #[error("outcome claims total weight {got}, the included weights add to {want}")]
@@ -83,6 +86,8 @@ pub enum Fault {
     OverBudget { round: u32, cost: u64, left: u64 },
     #[error("status list: {0}")]
     Status(String),
+    #[error("seal: the groups' shares must add up to the whole reward")]
+    Shares,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -90,6 +95,7 @@ pub enum Phase {
     Empty,
     Joining,
     Collecting,
+    Screening,
     Masking,
     Attesting,
     Acking,
@@ -103,6 +109,7 @@ pub struct Contribution {
     pub masked: Digest,
     pub weight: u64,
     pub sealed: Vec<Digest>,
+    pub proof: Option<Digest>,
 }
 
 #[derive(Clone, Debug)]
@@ -122,6 +129,7 @@ pub struct Outcome {
     pub aggregate: Digest,
     pub model: Digest,
     pub challenge: Digest,
+    pub groups: Vec<Digest>,
 }
 
 #[derive(Clone, Debug)]
@@ -130,6 +138,7 @@ pub struct Seal {
     pub sum: Fp2,
     pub aggregate: Fp2,
     pub head: Digest,
+    pub shares: Vec<u32>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -141,7 +150,16 @@ pub struct RoundState {
     pub included: Vec<usize>,
     pub sum: Digest,
     pub close_head: Digest,
+    /// Site indexes whose norm proofs were put up for checking, ascending.
+    pub screened: Vec<usize>,
+    pub screen_head: Digest,
+    /// Each helper's messages about the screened proofs.
+    pub checks: BTreeMap<usize, Digest>,
+    /// The aggregator's messages about them.
+    pub shares: Option<Digest>,
     pub masks: BTreeMap<usize, Digest>,
+    /// Each helper's mask totals for the scored groups.
+    pub group_masks: BTreeMap<usize, Vec<Digest>>,
     pub outcome: Option<Outcome>,
     pub site_attests: BTreeMap<usize, SiteAttest>,
     pub helper_attests: BTreeMap<usize, HelperAttest>,
@@ -196,6 +214,8 @@ fn kind(body: &Body) -> &'static str {
         Body::Join { .. } => "join",
         Body::Open { .. } => "open",
         Body::Contribute { .. } => "contribute",
+        Body::Screen { .. } => "screen",
+        Body::Check { .. } => "check",
         Body::Close { .. } => "close",
         Body::MaskSum { .. } => "mask_sum",
         Body::Outcome { .. } => "outcome",
@@ -389,19 +409,29 @@ impl Replay {
             .collect()
     }
 
-    /// What a round over `cohort` sites costs, if the budget still covers it.
-    fn affordable(&self, plan: &Plan, round: u32, cohort: usize) -> Result<u64, Fault> {
+    /// A round's cost, if the budget still covers it.
+    fn affordable(&self, plan: &Plan, round: u32, cost: Option<u64>) -> Result<u64, Fault> {
         let left = plan
             .privacy
             .as_ref()
             .map_or(u64::MAX, |p| p.budget.saturating_sub(self.spent));
-        match plan.round_cost(cohort) {
+        match cost {
             Some(cost) if cost <= left => Ok(cost),
             cost => Err(Fault::OverBudget {
                 round,
                 cost: cost.unwrap_or(u64::MAX),
                 left,
             }),
+        }
+    }
+
+    fn still_admitted(&self, plan: &Plan, sites: &[usize]) -> Result<(), Fault> {
+        match sites.iter().find(|s| self.revoked.contains_key(s)) {
+            Some(site) => Err(Fault::BadClose(format!(
+                "{} is no longer admitted",
+                plan.sites[*site]
+            ))),
+            None => Ok(()),
         }
     }
 
@@ -561,9 +591,8 @@ impl Replay {
                         want: self.model,
                     });
                 }
-                // The smallest cohort is the dearest a round can be. If that
-                // fits, whatever Close picks fits too.
-                self.affordable(plan, *round, plan.min_cohort as usize)?;
+                // If the dearest round fits, whatever Close picks fits too.
+                self.affordable(plan, *round, plan.dearest_round())?;
                 let invited = plan.sample.map(|size| {
                     let beacon = sampling::beacon(&self.plan_id, *round, &self.model);
                     sampling::invited(&beacon, plan.sites.len(), size as usize).0
@@ -585,6 +614,7 @@ impl Replay {
                 masked,
                 weight,
                 sealed,
+                proof,
             } => {
                 let site = from_site()?;
                 same_run(id)?;
@@ -616,6 +646,9 @@ impl Replay {
                 if sealed.len() != plan.helpers.len() {
                     return Err(bad("wrong number of sealed seeds".to_owned()));
                 }
+                if proof.is_some() != plan.bounded {
+                    return Err(bad("a norm proof exactly when the plan asks".to_owned()));
+                }
                 let state = self.rounds.last_mut().ok_or(Fault::NoPlan)?;
                 if state.contributions.contains_key(&site) {
                     return Err(Fault::Duplicate(name, signer.to_owned()));
@@ -627,8 +660,58 @@ impl Replay {
                         masked: *masked,
                         weight: *weight,
                         sealed: sealed.clone(),
+                        proof: *proof,
                     },
                 );
+                Ok(())
+            }
+
+            Body::Screen {
+                plan: id,
+                round,
+                prev,
+                candidates,
+            } => {
+                from_aggregator()?;
+                same_run(id)?;
+                chained(prev)?;
+                self.wants(&[Phase::Collecting], body)?;
+                this_round(*round)?;
+                let screen = |fault| match fault {
+                    Fault::BadClose(why) => Fault::BadScreen(why),
+                    other => other,
+                };
+                if !plan.bounded {
+                    return Err(Fault::BadScreen("the plan asks for no proofs".to_owned()));
+                }
+                let state = self.current().ok_or(Fault::NoPlan)?;
+                let sites = check_included(plan, state, candidates).map_err(screen)?;
+                self.still_admitted(plan, &sites).map_err(screen)?;
+                let state = self.rounds.last_mut().ok_or(Fault::NoPlan)?;
+                state.screened = sites;
+                state.screen_head = head_after;
+                self.phase = Phase::Screening;
+                Ok(())
+            }
+
+            Body::Check {
+                plan: id,
+                round,
+                screen,
+                shares,
+            } => {
+                let helper = from_helper()?;
+                same_run(id)?;
+                self.wants(&[Phase::Screening], body)?;
+                this_round(*round)?;
+                let state = self.rounds.last_mut().ok_or(Fault::NoPlan)?;
+                if *screen != state.screen_head {
+                    return Err(Fault::BrokenChain(name));
+                }
+                if state.checks.contains_key(&helper) {
+                    return Err(Fault::Duplicate(name, signer.to_owned()));
+                }
+                state.checks.insert(helper, *shares);
                 Ok(())
             }
 
@@ -638,28 +721,48 @@ impl Replay {
                 prev,
                 included,
                 sum,
+                shares,
             } => {
                 from_aggregator()?;
                 same_run(id)?;
                 chained(prev)?;
-                self.wants(&[Phase::Collecting], body)?;
+                let after = if plan.bounded {
+                    Phase::Screening
+                } else {
+                    Phase::Collecting
+                };
+                self.wants(&[after], body)?;
                 this_round(*round)?;
                 let state = self.current().ok_or(Fault::NoPlan)?;
                 let sites = check_included(plan, state, included)?;
-                if let Some(site) = sites.iter().find(|s| self.revoked.contains_key(s)) {
-                    return Err(Fault::BadClose(format!(
-                        "{} is no longer admitted",
-                        plan.sites[*site]
-                    )));
+                self.still_admitted(plan, &sites)?;
+                if shares.is_some() != plan.bounded {
+                    return Err(Fault::BadClose(
+                        "the aggregator's proof messages exactly when the plan asks".to_owned(),
+                    ));
+                }
+                if plan.bounded {
+                    if let Some(missing) =
+                        (0..plan.helpers.len()).find(|h| !state.checks.contains_key(h))
+                    {
+                        return Err(Fault::HelperMissing(plan.helpers[missing].did.clone()));
+                    }
+                    if let Some(site) = sites.iter().find(|s| !state.screened.contains(s)) {
+                        return Err(Fault::BadClose(format!(
+                            "{} was not screened",
+                            plan.sites[*site]
+                        )));
+                    }
                 }
                 let expected = self.expected(plan);
                 // The sum is as good as released once the cohort is fixed, so
                 // the round is paid for here, whether or not it gets sealed.
-                let cost = self.affordable(plan, *round, sites.len())?;
+                let cost = self.affordable(plan, *round, plan.round_cost(sites.len()))?;
                 self.spent += cost;
                 let state = self.rounds.last_mut().ok_or(Fault::NoPlan)?;
                 state.included = sites;
                 state.sum = *sum;
+                state.shares = *shares;
                 state.close_head = head_after;
                 state.cost = cost;
                 state.expected = expected;
@@ -672,6 +775,7 @@ impl Replay {
                 round,
                 close,
                 mask,
+                groups,
             } => {
                 let helper = from_helper()?;
                 same_run(id)?;
@@ -684,6 +788,10 @@ impl Replay {
                 if state.masks.contains_key(&helper) {
                     return Err(Fault::Duplicate(name, signer.to_owned()));
                 }
+                if groups.len() != group_count(plan, state) {
+                    return Err(Fault::WrongLength(name));
+                }
+                state.group_masks.insert(helper, groups.clone());
                 state.masks.insert(helper, *mask);
                 Ok(())
             }
@@ -695,6 +803,7 @@ impl Replay {
                 total_weight,
                 aggregate,
                 model,
+                groups,
             } => {
                 from_aggregator()?;
                 same_run(id)?;
@@ -718,11 +827,15 @@ impl Replay {
                         want,
                     });
                 }
+                if groups.len() != group_count(plan, state) {
+                    return Err(Fault::WrongLength(name));
+                }
                 state.outcome = Some(Outcome {
                     total_weight: *total_weight,
                     aggregate: *aggregate,
                     model: *model,
                     challenge: head_after,
+                    groups: groups.clone(),
                 });
                 self.phase = Phase::Attesting;
                 Ok(())
@@ -804,6 +917,7 @@ impl Replay {
                 per_site,
                 sum,
                 aggregate,
+                shares,
             } => {
                 from_aggregator()?;
                 same_run(id)?;
@@ -812,12 +926,20 @@ impl Replay {
                 this_round(*round)?;
                 let state = self.current().ok_or(Fault::NoPlan)?;
                 check_seal(plan, state, per_site, *sum, *aggregate)?;
+                if shares.len() != group_count(plan, state) {
+                    return Err(Fault::WrongLength(name));
+                }
+                let whole = shares.iter().try_fold(0u32, |sum, s| sum.checked_add(*s));
+                if !shares.is_empty() && whole != Some(scoring::WHOLE) {
+                    return Err(Fault::Shares);
+                }
                 let state = self.rounds.last_mut().ok_or(Fault::NoPlan)?;
                 state.seal = Some(Seal {
                     per_site: per_site.clone(),
                     sum: *sum,
                     aggregate: *aggregate,
                     head: head_after,
+                    shares: shares.clone(),
                 });
                 let model = state
                     .outcome
@@ -951,6 +1073,31 @@ impl Replay {
                 Ok(())
             }
         }
+    }
+}
+
+fn group_count(plan: &Plan, state: &RoundState) -> usize {
+    plan.scoring.map_or(0, |s| s.count(state.included.len()))
+}
+
+impl RoundState {
+    /// The fingerprint each scored group's sum must have, worked out from
+    /// values every member site and helper has signed. `None` before the seal.
+    pub fn group_prints(&self, plan: &Plan) -> Option<Vec<Fp2>> {
+        let seal = self.seal.as_ref()?;
+        let over = |values: &[Fp2], group: &[usize]| -> Option<Fp2> {
+            group.iter().map(|p| values.get(*p).copied()).sum()
+        };
+        plan.groups(&self.close_head, self.included.len())
+            .iter()
+            .map(|group| {
+                let mut print = over(&seal.per_site, group)?;
+                for helper in 0..plan.helpers.len() {
+                    print = print - over(&self.helper_attests.get(&helper)?.per_site, group)?;
+                }
+                Some(print)
+            })
+            .collect()
     }
 }
 
