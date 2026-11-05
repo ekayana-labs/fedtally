@@ -12,7 +12,7 @@
       "run_finished": true,
       "site_errors": [],
       "verified_complete": true,
-      "seconds_from_restart_to_finish": 5.29,
+      "seconds_from_restart_to_finish": 5.11,
       "rounds_each_site_trained": [
         [
           1,
@@ -52,7 +52,7 @@
       "run_finished": true,
       "site_errors": [],
       "verified_complete": true,
-      "seconds_from_restart_to_finish": 5.43,
+      "seconds_from_restart_to_finish": 5.22,
       "rounds_each_site_trained": [
         [
           1,
@@ -92,7 +92,7 @@
       "run_finished": true,
       "site_errors": [],
       "verified_complete": true,
-      "seconds_from_restart_to_finish": 5.35,
+      "seconds_from_restart_to_finish": 5.3,
       "rounds_each_site_trained": [
         [
           1,
@@ -132,7 +132,7 @@
       "run_finished": true,
       "site_errors": [],
       "verified_complete": true,
-      "seconds_from_restart_to_finish": 5.59,
+      "seconds_from_restart_to_finish": 5.38,
       "rounds_each_site_trained": [
         [
           1,
@@ -168,11 +168,11 @@
         "aggregator"
       ],
       "outage_seconds": 90,
-      "entries_in_log_at_kill": 25,
+      "entries_in_log_at_kill": 26,
       "run_finished": true,
       "site_errors": [],
       "verified_complete": true,
-      "seconds_from_restart_to_finish": 5.59,
+      "seconds_from_restart_to_finish": 5.38,
       "rounds_each_site_trained": [
         [
           1,
@@ -212,7 +212,7 @@
       "run_finished": true,
       "site_errors": [],
       "verified_complete": true,
-      "seconds_from_restart_to_finish": 5.64,
+      "seconds_from_restart_to_finish": 5.57,
       "rounds_each_site_trained": [
         [
           1,
@@ -253,7 +253,7 @@
       "run_finished": true,
       "site_errors": [],
       "verified_complete": true,
-      "seconds_from_restart_to_finish": 5.29,
+      "seconds_from_restart_to_finish": 5.17,
       "rounds_each_site_trained": [
         [
           1,
@@ -294,7 +294,7 @@
       "run_finished": true,
       "site_errors": [],
       "verified_complete": true,
-      "seconds_from_restart_to_finish": 5.53,
+      "seconds_from_restart_to_finish": 5.31,
       "rounds_each_site_trained": [
         [
           1,
