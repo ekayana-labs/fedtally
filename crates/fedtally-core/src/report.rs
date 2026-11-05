@@ -8,6 +8,7 @@ use thiserror::Error;
 
 use crate::admission::Admission;
 use crate::log::read_lines;
+use crate::privacy::{self, rho_units};
 use crate::replay::{Fault, Phase, Replay};
 use crate::vector::Digest;
 
@@ -28,6 +29,24 @@ pub struct SiteJoin {
     pub site: String,
     pub at: i64,
     pub admission: Admission,
+    /// The dataset the site said it trains on.
+    pub dataset: Option<String>,
+    /// The credentials it was admitted on.
+    pub credentials: Vec<Held>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct Held {
+    pub kind: String,
+    pub issuer: String,
+    pub digest: Digest,
+    pub valid_until: Option<i64>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct Revoked {
+    pub site: String,
+    pub reason: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -42,8 +61,10 @@ pub struct RoundReport {
     pub included: Vec<Contributor>,
     /// Signed a contribution but were left out of the round.
     pub excluded: Vec<String>,
-    /// On the plan, but nothing from them is in the round. They may have sat
-    /// out, or the aggregator may have refused to log them.
+    /// The sites drawn for the round, where the plan samples.
+    pub invited: Option<Vec<String>>,
+    /// Could have been in the round, but nothing from them is in it. They may
+    /// have sat out, or the aggregator may have refused to log them.
     pub absent: Vec<String>,
     /// Included, but only the aggregator and helpers speak for their fingerprints.
     pub unattested: Vec<String>,
@@ -51,6 +72,25 @@ pub struct RoundReport {
     pub total_weight: Option<u64>,
     pub model: Option<Digest>,
     pub sealed: bool,
+    /// The zCDP rho this round spent, in a private run.
+    pub rho: Option<f64>,
+}
+
+/// What a private run has spent. Rho is what the rules enforce. The epsilons
+/// are worked out from it at the plan's delta, for people.
+#[derive(Debug, Serialize)]
+pub struct PrivacyReport {
+    pub rho_spent: f64,
+    pub rho_budget: f64,
+    pub epsilon_spent: f64,
+    pub epsilon_budget: f64,
+    /// The target the plan states. It should not be below `epsilon_budget`.
+    pub epsilon_stated: f64,
+    pub delta: f64,
+    /// Sites per cohort the accounting assumes give their noise away.
+    pub colluding: u32,
+    /// Rho per round for one site if every mask were removed later.
+    pub rho_unmasked: f64,
 }
 
 #[derive(Debug, Serialize)]
@@ -67,6 +107,9 @@ pub struct Report {
     pub model: Digest,
     pub joined: Vec<SiteJoin>,
     pub rounds: Vec<RoundReport>,
+    pub privacy: Option<PrivacyReport>,
+    /// Sites whose credentials stopped meeting the policy during the run.
+    pub revoked: Vec<Revoked>,
 }
 
 impl Report {
@@ -81,6 +124,19 @@ impl Report {
                     && r.unattested.is_empty()
                     && r.unacked.is_empty()
             })
+    }
+
+    /// The rho spent on rounds this site's data went into. A site that sat
+    /// some rounds out has spent less than the run as a whole.
+    pub fn rho_spent_by(&self, site: &str) -> Option<f64> {
+        self.privacy.as_ref()?;
+        Some(
+            self.rounds
+                .iter()
+                .filter(|r| r.included.iter().any(|c| c.site == site))
+                .filter_map(|r| r.rho)
+                .sum(),
+        )
     }
 
     /// The rounds a site's data went into.
@@ -102,6 +158,10 @@ impl Replay {
             .iter()
             .map(|r| RoundReport {
                 round: r.round,
+                invited: r
+                    .invited
+                    .as_ref()
+                    .map(|sites| sites.iter().map(name).collect()),
                 included: r
                     .included
                     .iter()
@@ -119,10 +179,15 @@ impl Replay {
                         .map(name)
                         .collect()
                 },
-                absent: (0..plan.sites.len())
-                    .filter(|s| !r.contributions.contains_key(s))
-                    .map(|s| name(&s))
-                    .collect(),
+                absent: if r.close_head == Digest::default() {
+                    self.expected(plan)
+                } else {
+                    r.expected.clone()
+                }
+                .iter()
+                .filter(|s| !r.contributions.contains_key(s))
+                .map(name)
+                .collect(),
                 unattested: r
                     .included
                     .iter()
@@ -138,8 +203,21 @@ impl Replay {
                 total_weight: r.outcome.as_ref().map(|o| o.total_weight),
                 model: r.outcome.as_ref().map(|o| o.model),
                 sealed: r.seal.is_some(),
+                rho: plan.privacy.map(|_| rho_units(r.cost)),
             })
             .collect();
+        let privacy = plan.privacy.map(|p| PrivacyReport {
+            rho_spent: rho_units(self.spent),
+            rho_budget: rho_units(p.budget),
+            epsilon_spent: privacy::epsilon(rho_units(self.spent), p.delta),
+            epsilon_budget: privacy::epsilon(rho_units(p.budget), p.delta),
+            epsilon_stated: p.epsilon,
+            delta: p.delta,
+            colluding: p.colluding,
+            rho_unmasked: p
+                .round_cost(plan.layout.coords(), p.colluding + 1)
+                .map_or(f64::INFINITY, rho_units),
+        });
         Some(Report {
             plan_id: self.plan_id,
             purpose: plan.purpose.clone(),
@@ -158,9 +236,29 @@ impl Replay {
                     site: name(s),
                     at: j.at,
                     admission: j.admission.clone(),
+                    dataset: j.dataset.clone(),
+                    credentials: j
+                        .credentials
+                        .iter()
+                        .map(|c| Held {
+                            kind: c.types.first().cloned().unwrap_or_default(),
+                            issuer: c.issuer.clone(),
+                            digest: c.digest,
+                            valid_until: c.valid_until,
+                        })
+                        .collect(),
                 })
                 .collect(),
             rounds,
+            privacy,
+            revoked: self
+                .revoked
+                .iter()
+                .map(|(site, reason)| Revoked {
+                    site: name(site),
+                    reason: reason.clone(),
+                })
+                .collect(),
         })
     }
 }

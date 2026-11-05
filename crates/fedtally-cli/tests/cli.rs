@@ -173,3 +173,120 @@ fn a_site_has_to_say_what_it_will_accept() {
     assert!(with(&["--any-helper", "--min-cohort", "3"]));
     assert!(with(&["--allow-plain"]));
 }
+
+#[test]
+fn an_issuer_signs_credentials_and_revocations_from_the_command_line() {
+    use fedtally_core::credential::Credential;
+    use fedtally_core::status::StatusList;
+    use fedtally_node::local::StandingFile;
+
+    let dir = tempfile::tempdir().unwrap();
+    let path = |name: &str| dir.path().join(name).to_str().unwrap().to_owned();
+    let (dac_key, dac) = key(dir.path(), "dac.key", &[]);
+    let (_, site) = key(dir.path(), "site.key", &[]);
+    let (dac_did, site_did) = (dac["did"].as_str().unwrap(), site["did"].as_str().unwrap());
+    let dataset = "did:example:cohort-7";
+
+    let claims = json!({
+        "ga4gh_visa_v1": {"type": "ControlledAccessGrants", "value": dataset, "by": "dac"},
+        "data_use": {"permission": "DUO:0000006"},
+    });
+    std::fs::write(path("claims.json"), claims.to_string()).unwrap();
+    let digest = ok(&[
+        "issue",
+        "--key",
+        &dac_key,
+        "--type",
+        "ControlledAccessGrants",
+        "--subject",
+        site_did,
+        "--claims",
+        &path("claims.json"),
+        "--list",
+        "urn:dac:list",
+        "--index",
+        "7",
+        "--days",
+        "30",
+        "--out",
+        &path("grant.json"),
+    ]);
+    let credential =
+        Credential::parse(&std::fs::read_to_string(path("grant.json")).unwrap()).unwrap();
+    assert_eq!(credential.digest.to_string(), digest.trim());
+    assert_eq!(
+        (credential.issuer.as_str(), credential.subject.as_str()),
+        (dac_did, site_did)
+    );
+    assert_eq!(credential.status.as_ref().unwrap().index, 7);
+    assert!(credential.valid_at(now()) && !credential.valid_at(now() + 31 * 86_400));
+
+    let shown: Value = serde_json::from_str(&ok(&["show", &path("grant.json")])).unwrap();
+    assert_eq!(shown["claims"]["ga4gh_visa_v1"]["value"], dataset);
+    assert_eq!(shown["valid_now"], true);
+    assert_eq!(shown["status"]["list"], "urn:dac:list");
+
+    ok(&[
+        "standing",
+        "--dataset",
+        dataset,
+        "--credential",
+        &path("grant.json"),
+        "--out",
+        &path("standing.json"),
+    ]);
+    let standing = StandingFile::load(Path::new(&path("standing.json")), None).unwrap();
+    assert_eq!(standing.dataset.as_deref(), Some(dataset));
+    assert_eq!(standing.credentials, std::slice::from_ref(&credential.text));
+
+    ok(&[
+        "revoke",
+        "--key",
+        &dac_key,
+        "--list",
+        "urn:dac:list",
+        "--index",
+        "7",
+        "--index",
+        "9",
+        "--out",
+        &path("list.json"),
+    ]);
+    let list = StatusList::parse(&std::fs::read_to_string(path("list.json")).unwrap()).unwrap();
+    assert_eq!(
+        (list.id.as_str(), list.issuer.as_str()),
+        ("urn:dac:list", dac_did)
+    );
+    assert!(list.is_set(7) && list.is_set(9) && !list.is_set(8));
+    let shown: Value = serde_json::from_str(&ok(&["show", &path("list.json")])).unwrap();
+    assert_eq!(shown["list"]["id"], "urn:dac:list");
+
+    // A file someone edited no longer verifies.
+    let edited = credential.text.replace("cohort-7", "cohort-8");
+    std::fs::write(path("edited.json"), edited).unwrap();
+    assert!(!fedtally(&["show", &path("edited.json")]).status.success());
+    assert!(
+        !fedtally(&[
+            "standing",
+            "--credential",
+            &path("edited.json"),
+            "--out",
+            &path("s.json"),
+        ])
+        .status
+        .success()
+    );
+    let (pq_key, _) = key(dir.path(), "pq.key", &["--alg", "ml-dsa-65"]);
+    let refused = fedtally(&[
+        "issue",
+        "--key",
+        &pq_key,
+        "--type",
+        "T",
+        "--subject",
+        site_did,
+        "--out",
+        &path("x.json"),
+    ]);
+    assert!(String::from_utf8_lossy(&refused.stderr).contains("Ed25519"));
+}

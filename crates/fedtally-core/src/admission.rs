@@ -16,6 +16,7 @@ use pq_ucan::validate::{MemoryStore, RevocationStore, Validator};
 use serde::Serialize;
 use thiserror::Error;
 
+use crate::keys::Principals;
 use crate::plan::Plan;
 use crate::vector::Digest;
 
@@ -57,7 +58,22 @@ pub fn arguments(plan_id: &Digest, plan: &Plan) -> BTreeMap<String, Ipld> {
             Ipld::List(plan.sites.iter().map(|s| text(s)).collect()),
         ),
         ("audits".to_owned(), Ipld::Integer(plan.audits.into())),
+        ("privacy".to_owned(), privacy_argument(plan)),
     ])
+}
+
+/// The plan's privacy terms, or null for a plan that makes no such promise.
+fn privacy_argument(plan: &Plan) -> Ipld {
+    let Some(privacy) = &plan.privacy else {
+        return Ipld::Null;
+    };
+    let entry = |name: &str, value: u64| (name.to_owned(), Ipld::Integer(value.into()));
+    Ipld::Map(BTreeMap::from([
+        entry("budget", privacy.budget),
+        entry("clip", privacy.clip),
+        entry("colluding", privacy.colluding.into()),
+        entry("noise", privacy.noise),
+    ]))
 }
 
 /// The conditions a site puts on its participation.
@@ -77,6 +93,12 @@ pub struct Terms {
     /// have at least one: otherwise the aggregator and one site can change the
     /// sum unnoticed.
     pub min_audits: Option<u32>,
+    /// Only join a private plan, whose whole budget is at most this much rho
+    /// in units of 2^-40.
+    pub max_budget: Option<u64>,
+    /// Only join a private plan that assumes at least this many sites in a
+    /// round give their noise away.
+    pub min_colluding: Option<u32>,
 }
 
 impl Terms {
@@ -130,6 +152,20 @@ impl Terms {
             statements.push(list(vec![
                 text("<="),
                 text(".rounds"),
+                Ipld::Integer(n.into()),
+            ]));
+        }
+        if let Some(n) = self.max_budget {
+            statements.push(list(vec![
+                text("<="),
+                text(".privacy.budget"),
+                Ipld::Integer(n.into()),
+            ]));
+        }
+        if let Some(n) = self.min_colluding {
+            statements.push(list(vec![
+                text(">="),
+                text(".privacy.colluding"),
                 Ipld::Integer(n.into()),
             ]));
         }
@@ -206,6 +242,7 @@ pub fn check(
         store.insert(Delegation::decode(proof).map_err(|e| AdmissionError::Token(e.to_string()))?);
     }
     let mut validator = Validator::new(&store, now)
+        .resolver(&Principals)
         .executor(site)
         .max_proofs(MAX_CHAIN);
     if let Some(revocations) = revocations {

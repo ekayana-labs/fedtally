@@ -6,6 +6,7 @@ mod follower;
 pub mod helper;
 pub mod local;
 pub mod net;
+pub mod registry;
 pub mod site;
 pub mod wire;
 
@@ -15,7 +16,8 @@ use fedtally_core::keys::KeyError;
 use fedtally_core::model::ModelError;
 use fedtally_core::plan::Plan;
 use fedtally_core::record::RecordError;
-use fedtally_core::replay::Fault;
+use fedtally_core::replay::{Fault, Replay};
+use fedtally_core::status::StatusList;
 use thiserror::Error;
 
 const FRAME_SLACK: usize = 1 << 23;
@@ -80,6 +82,29 @@ where
     tokio::task::spawn_blocking(f)
         .await
         .map_err(|e| NodeError::Join(e.to_string()))?
+}
+
+/// The revocation lists in `dir` that a run relies on and its log lacks or
+/// holds an older copy of, oldest first. A file that isn't a list is skipped.
+pub(crate) fn newer_lists(dir: &Path, replay: &Replay) -> Vec<String> {
+    let Some(policy) = replay.plan().and_then(|p| p.admission.as_ref()) else {
+        return Vec::new();
+    };
+    let mut found: Vec<StatusList> = std::fs::read_dir(dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|entry| std::fs::read_to_string(entry.path()).ok())
+        .filter_map(|text| StatusList::parse(text.trim()).ok())
+        .filter(|list| policy.relies_on(&list.issuer))
+        .filter(|list| {
+            replay
+                .list(&list.issuer, &list.id)
+                .is_none_or(|held| held.issued < list.issued || !held.keeps(list))
+        })
+        .collect();
+    found.sort_by_key(|list| list.issued);
+    found.into_iter().map(|list| list.text).collect()
 }
 
 pub(crate) struct Dirs(PathBuf);

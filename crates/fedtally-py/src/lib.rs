@@ -5,14 +5,14 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
-use fedtally_core::keys::{Identity, SigAlg};
-use fedtally_core::model::{Dtype, Encoding, Layout, TensorSpec, TensorView, write_model};
-use fedtally_core::plan::Timeouts;
+use fedtally_core::keys::Identity;
+use fedtally_core::model::{Dtype, Layout, TensorSpec, TensorView, write_model};
 use fedtally_core::report::{VerifyError, verify_log};
 use fedtally_node::NodeError;
 use fedtally_node::aggregator::run_aggregator;
 use fedtally_node::helper::run_helper;
-use fedtally_node::local::{GrantFile, LocalFederation, Options};
+use fedtally_node::local::{GrantFile, LocalFederation, Options, StandingFile};
+use fedtally_node::registry::RpcRegistry;
 use fedtally_node::site::{
     RevocationFile, SiteConfig, SiteSummary, Submit, TrainContext, Trainer, run_site,
 };
@@ -178,58 +178,16 @@ struct Federation {
 
 #[pymethods]
 impl Federation {
+    /// `options` is a JSON object. See `Options::from_json` for its fields.
     #[new]
-    #[pyo3(signature = (
-        root, layout, initial_model, sites, helpers, rounds, min_cohort, chunk_coords,
-        frac_bits, clip, max_weight, audits, purpose, granted_purpose, join_secs, collect_secs,
-        attest_secs, ack_secs, sig_alg
-    ))]
-    #[allow(clippy::too_many_arguments)]
     fn new(
         root: PathBuf,
         layout: Vec<(String, String, Vec<u64>)>,
         initial_model: PathBuf,
-        sites: usize,
-        helpers: usize,
-        rounds: u32,
-        min_cohort: u32,
-        chunk_coords: u64,
-        frac_bits: u32,
-        clip: f64,
-        max_weight: u64,
-        audits: u32,
-        purpose: String,
-        granted_purpose: Option<String>,
-        join_secs: u64,
-        collect_secs: u64,
-        attest_secs: u64,
-        ack_secs: u64,
-        sig_alg: &str,
+        options: &str,
     ) -> PyResult<Federation> {
-        let sig_alg = match sig_alg {
-            "ed25519" => SigAlg::Ed25519,
-            "ml-dsa-65" => SigAlg::MlDsa65,
-            other => return Err(PyValueError::new_err(format!("unknown algorithm {other}"))),
-        };
-        let options = Options {
-            sites,
-            helpers,
-            rounds,
-            min_cohort,
-            chunk_coords,
-            encoding: Encoding { frac_bits, clip },
-            max_weight,
-            audits,
-            timeouts: Timeouts {
-                join_secs,
-                collect_secs,
-                attest_secs,
-                ack_secs,
-            },
-            purpose,
-            granted_purpose,
-            sig_alg,
-        };
+        let options =
+            Options::from_json(options).map_err(|e| PyValueError::new_err(e.to_string()))?;
         let inner = LocalFederation::create(&root, parse_layout(layout)?, &initial_model, &options)
             .map_err(fail)?;
         Ok(Federation { inner })
@@ -276,6 +234,11 @@ impl Federation {
 
     /// Runs the aggregator and helpers here and one trainer per site. Each
     /// trainer is called as `trainer(round, base_model_path)` and returns
+    /// Has the data access committee take back a site's access grant.
+    fn revoke_access(&self, site: usize) -> PyResult<()> {
+        self.inner.revoke_access(site).map_err(fail)
+    }
+
     /// `(arrays_in_layout_order, weight)`.
     #[pyo3(signature = (trainers, keep_spool = false))]
     fn run<'py>(
@@ -351,7 +314,10 @@ impl Federation {
 /// Runs one site until the run ends. For deployments, where every party is
 /// its own process.
 #[pyfunction]
-#[pyo3(signature = (key, plan, grant, connect, dir, trainer, layout, revocations = None, give_up_secs = 600))]
+#[pyo3(signature = (
+    key, plan, grant, connect, dir, trainer, layout, revocations = None, give_up_secs = 600,
+    standing = None, status_dir = None, registry_rpc = None
+))]
 #[allow(clippy::too_many_arguments)]
 fn run_site_process<'py>(
     py: Python<'py>,
@@ -364,11 +330,18 @@ fn run_site_process<'py>(
     layout: Vec<(String, String, Vec<u64>)>,
     revocations: Option<PathBuf>,
     give_up_secs: u64,
+    standing: Option<PathBuf>,
+    status_dir: Option<PathBuf>,
+    registry_rpc: Option<String>,
 ) -> PyResult<Bound<'py, PyDict>> {
     let layout = parse_layout(layout)?;
     let identity = Arc::new(Identity::load(&key).map_err(fail)?);
     let plan_line = std::fs::read(&plan).map_err(fail)?;
     let grant = GrantFile::load(&grant).map_err(fail)?;
+    let standing = match standing {
+        Some(path) => StandingFile::load(&path, status_dir).map_err(fail)?,
+        None => Default::default(),
+    };
     let config = SiteConfig {
         identity,
         plan_line,
@@ -378,6 +351,8 @@ fn run_site_process<'py>(
         proofs: grant.proofs,
         revocations: revocations.map(|path| Arc::new(RevocationFile(path)) as _),
         give_up_after: Duration::from_secs(give_up_secs),
+        standing,
+        registry: registry_rpc.map(|url| Arc::new(RpcRegistry { url }) as _),
     };
     let trainer = PyTrainer {
         callable: trainer,

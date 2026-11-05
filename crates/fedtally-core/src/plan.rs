@@ -6,8 +6,11 @@ use pq_ucan::did::Did;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::keys::{SealPublic, verify_seal_proof};
+use crate::credential::Credential;
+use crate::keys::{SealPublic, key_of, verify_seal_proof};
 use crate::model::{Encoding, Layout};
+use crate::policy::Policy;
+use crate::privacy::{Privacy, PrivacyError};
 use crate::vector::{Digest, Shape};
 
 const SUM_BITS_LIMIT: u32 = 62;
@@ -18,6 +21,9 @@ pub struct AggregatorSpec {
     pub did: String,
     /// BLAKE3 digest of the aggregator's TLS certificate.
     pub tls_pin: Digest,
+    /// Credentials about the aggregator, for a plan whose policy asks for them.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub credentials: Vec<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -27,6 +33,8 @@ pub struct HelperSpec {
     pub seal: SealPublic,
     /// The helper's own signature over `seal`.
     pub seal_proof: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub credentials: Vec<String>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -58,6 +66,17 @@ pub struct Plan {
     /// How many other sites' masked vectors each site re-checks per round.
     pub audits: u32,
     pub timeouts: Timeouts,
+    /// Noise every site adds, and what the run may spend. Absent in a run
+    /// that makes no privacy promise about the model.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub privacy: Option<Privacy>,
+    /// The credentials every party must hold, and what the data is for.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub admission: Option<Policy>,
+    /// How many sites each round invites, drawn afresh from a beacon. Absent
+    /// when every site is asked into every round.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sample: Option<u32>,
 }
 
 #[derive(Debug, Error, PartialEq, Eq)]
@@ -86,6 +105,18 @@ pub enum PlanError {
     MaxWeight,
     #[error("sums need {0} bits but the field holds {SUM_BITS_LIMIT}")]
     FieldOverflow(u32),
+    #[error("privacy: {0}")]
+    Privacy(#[from] PrivacyError),
+    #[error("a private run needs a helper, or the aggregator reads each noisy update")]
+    PrivacyUnmasked,
+    #[error("a private run counts every site the same, so max_weight must be 1")]
+    PrivacyWeights,
+    #[error("admission policy: {0}")]
+    Policy(String),
+    #[error("a credential listed for {0} is not valid or not about it")]
+    Credential(String),
+    #[error("a round must invite at least min_cohort sites and no more than there are")]
+    Sample,
 }
 
 impl Plan {
@@ -105,15 +136,19 @@ impl Plan {
             .iter()
             .chain(self.helpers.iter().map(|h| &h.did))
             .chain([&self.aggregator.did]);
+        // The same key under two names, did:key and did:bio, is one party.
+        let mut keys = BTreeSet::new();
         for did in everyone {
-            if !seen.insert(did) {
+            let key = Did::parse(did).ok().and_then(|d| key_of(&d).ok());
+            let fresh = key.is_none_or(|k| keys.insert(k.as_bytes().to_vec()));
+            if !seen.insert(did) || !fresh {
                 return Err(PlanError::DuplicateParty(did.clone()));
             }
         }
         for did in seen.iter().copied().chain([&self.sponsor]) {
             Did::parse(did)
                 .ok()
-                .filter(|d| d.key().is_ok())
+                .filter(|d| key_of(d).is_ok())
                 .ok_or_else(|| PlanError::BadDid(did.clone()))?;
         }
         for helper in &self.helpers {
@@ -151,6 +186,29 @@ impl Plan {
         if bits > SUM_BITS_LIMIT {
             return Err(PlanError::FieldOverflow(bits));
         }
+        if let Some(privacy) = &self.privacy {
+            if self.helpers.is_empty() {
+                return Err(PlanError::PrivacyUnmasked);
+            }
+            if self.max_weight != 1 {
+                return Err(PlanError::PrivacyWeights);
+            }
+            privacy.validate(self.layout.coords(), self.sites.len(), self.min_cohort)?;
+        }
+        if let Some(policy) = &self.admission {
+            policy.validate().map_err(PlanError::Policy)?;
+        }
+        for (did, credentials) in self.operators() {
+            let about_it = |text: &String| Credential::parse(text).is_ok_and(|c| c.subject == did);
+            if !credentials.iter().all(about_it) {
+                return Err(PlanError::Credential(did.to_owned()));
+            }
+        }
+        if let Some(size) = self.sample
+            && (size < self.min_cohort || size as usize > self.sites.len())
+        {
+            return Err(PlanError::Sample);
+        }
         Ok(())
     }
 
@@ -164,6 +222,35 @@ impl Plan {
 
     pub fn helper_index(&self, did: &str) -> Option<usize> {
         self.helpers.iter().position(|h| h.did == did)
+    }
+
+    /// The aggregator and each helper, with the credentials the plan lists for them.
+    pub fn operators(&self) -> impl Iterator<Item = (&str, &[String])> {
+        std::iter::once((
+            self.aggregator.did.as_str(),
+            self.aggregator.credentials.as_slice(),
+        ))
+        .chain(
+            self.helpers
+                .iter()
+                .map(|h| (h.did.as_str(), h.credentials.as_slice())),
+        )
+    }
+
+    /// True for the sponsor, the aggregator, a helper or a site.
+    pub fn is_party(&self, did: &str) -> bool {
+        did == self.sponsor
+            || did == self.aggregator.did
+            || self.helper_index(did).is_some()
+            || self.site_index(did).is_some()
+    }
+
+    /// What a round over `cohort` sites spends, in units of 2^-40 of rho.
+    pub fn round_cost(&self, cohort: usize) -> Option<u64> {
+        match &self.privacy {
+            Some(privacy) => privacy.round_cost(self.layout.coords(), cohort as u32),
+            None => Some(0),
+        }
     }
 
     /// True when the aggregator sees masked vectors only.
@@ -207,11 +294,13 @@ mod tests {
             aggregator: AggregatorSpec {
                 did: did(),
                 tls_pin: Digest::of(b"c"),
+                credentials: Vec::new(),
             },
             helpers: vec![HelperSpec {
                 did: helper.did_string(),
                 seal: helper.seal_public().clone(),
                 seal_proof: helper.seal_proof().unwrap(),
+                credentials: Vec::new(),
             }],
             sites: (0..4).map(|_| did()).collect(),
             layout: Layout {
@@ -237,7 +326,63 @@ mod tests {
                 attest_secs: 1,
                 ack_secs: 1,
             },
+            privacy: None,
+            admission: None,
+            sample: None,
         }
+    }
+
+    fn private() -> Plan {
+        let mut plan = plan(1);
+        plan.max_weight = 1;
+        plan.privacy = Some(Privacy {
+            clip: 1 << 18,
+            noise: 1 << 34,
+            colluding: 0,
+            budget: 4 << 40,
+            epsilon: 8.0,
+            delta: 1e-5,
+        });
+        plan
+    }
+
+    #[test]
+    fn a_private_plan_needs_helpers_equal_weights_and_sound_terms() {
+        private().validate().unwrap();
+        assert_eq!(
+            private().round_cost(4),
+            private().privacy.unwrap().round_cost(4, 4)
+        );
+        assert_eq!(plan(1).round_cost(4), Some(0));
+
+        let mut plain = private();
+        plain.helpers.clear();
+        plain.min_cohort = 1;
+        assert_eq!(plain.validate(), Err(PlanError::PrivacyUnmasked));
+
+        let mut weighted = private();
+        weighted.max_weight = 2;
+        assert_eq!(weighted.validate(), Err(PlanError::PrivacyWeights));
+
+        let mut colluding = private();
+        colluding.privacy.as_mut().unwrap().colluding = 2;
+        assert_eq!(
+            colluding.validate(),
+            Err(PlanError::Privacy(PrivacyError::Colluding))
+        );
+    }
+
+    #[test]
+    fn a_plan_without_privacy_keeps_its_old_encoding() {
+        let plain = plan(1);
+        let text = serde_json::to_string(&plain).unwrap();
+        assert!(!text.contains("privacy"));
+        assert_eq!(serde_json::from_str::<Plan>(&text).unwrap(), plain);
+        let with = private();
+        let text = serde_json::to_string(&with).unwrap();
+        let back: Plan = serde_json::from_str(&text).unwrap();
+        assert_eq!(back, with);
+        assert_eq!(serde_json::to_string(&back).unwrap(), text);
     }
 
     #[test]

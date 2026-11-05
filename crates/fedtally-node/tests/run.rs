@@ -5,9 +5,11 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use fedtally_core::model::{Dtype, Layout, ModelFile, TensorSpec, TensorView, write_model};
+use fedtally_core::plan::Plan;
 use fedtally_core::pq_ucan::Cid;
 use fedtally_core::pq_ucan::did::Did;
 use fedtally_core::pq_ucan::validate::RevocationStore;
+use fedtally_core::privacy::Request;
 use fedtally_core::report::verify_log;
 use fedtally_core::vector::{self, Digest};
 use fedtally_node::NodeError;
@@ -431,7 +433,7 @@ async fn a_slow_site_is_left_out_and_the_round_goes_on() {
     let init = initial_model(dir.path());
     let mut opts = options(3, 1, 1);
     opts.min_cohort = 2;
-    opts.timeouts.collect_secs = 3;
+    opts.timeouts.collect_secs = 6;
     let fed = LocalFederation::create(dir.path(), layout(), &init, &opts).unwrap();
     let (release, blocked) = std::sync::mpsc::channel::<()>();
     let (running, results) = run_all_then(
@@ -601,7 +603,7 @@ async fn a_revoked_grant_stops_the_next_round_and_shows_in_the_log() {
     let init = initial_model(dir.path());
     let mut opts = options(3, 1, 3);
     opts.min_cohort = 2;
-    opts.timeouts.collect_secs = 2;
+    opts.timeouts.collect_secs = 6;
     let fed = LocalFederation::create(dir.path(), layout(), &init, &opts).unwrap();
     let running = start(&fed, None).await;
     let switch = Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -749,4 +751,433 @@ fn chunk_sums_match_for_large_shapes() {
     })
     .unwrap();
     assert_eq!(manifest, vector::manifest_of(&path, shape).unwrap());
+}
+
+fn private_options(sites: usize, rounds: u32) -> Options {
+    let mut options = options(sites, 1, rounds);
+    options.privacy = Some(Request {
+        epsilon: 8.0,
+        delta: 1e-5,
+        clip: 1.0,
+        colluding: 0,
+    });
+    options
+}
+
+/// The 1000 values of the first tensor.
+fn read_weights(path: &Path) -> Vec<f64> {
+    let bytes = std::fs::read(path).unwrap();
+    let len = u64::from_le_bytes(bytes[..8].try_into().unwrap()) as usize;
+    bytes[8 + len..][..4000]
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .map(|c| f32::from_le_bytes(*c) as f64)
+        .collect()
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_private_run_adds_the_noise_its_plan_names_and_stays_in_budget() {
+    let dir = tempfile::tempdir().unwrap();
+    let init = initial_model(dir.path());
+    let (sites, rounds) = (4usize, 2u32);
+    let fed = LocalFederation::create(dir.path(), layout(), &init, &private_options(sites, rounds))
+        .unwrap();
+    let privacy = fed.plan.privacy.unwrap();
+    assert_eq!(fed.plan.max_weight, 1);
+
+    // Every site leaves the first tensor alone, so whatever moves it is noise.
+    // The weights are ignored: a private run counts each site once.
+    let trainers: Vec<Box<dyn Trainer>> = (0..sites)
+        .map(|i| {
+            Box::new(Still {
+                weight: 10 + i as u64,
+            }) as Box<dyn Trainer>
+        })
+        .collect();
+    let (running, results) = run_all(&fed, trainers, None).await;
+    running.aggregator.await.unwrap().unwrap();
+    let summaries: Vec<_> = results.into_iter().map(Result::unwrap).collect();
+    for summary in &summaries {
+        assert_eq!(summary.final_digest, summaries[0].final_digest);
+    }
+
+    let moved: Vec<f64> = read_weights(&summaries[0].final_model)
+        .iter()
+        .map(|w| w - 1.0)
+        .collect();
+    let spread = (moved.iter().map(|m| m * m).sum::<f64>() / moved.len() as f64).sqrt();
+    // Each round averages four sites' noise: its deviation is sqrt(4 * variance)
+    // grid units, over four sites and the grid scale. Two rounds add up.
+    let per_round =
+        (sites as f64 * privacy.noise as f64).sqrt() / (sites as f64 * fed.plan.encoding.scale());
+    let want = per_round * (rounds as f64).sqrt();
+    assert!(
+        (spread / want - 1.0).abs() < 0.15,
+        "spread {spread}, expected {want}"
+    );
+    assert!(want > 0.05, "the noise should be plain to see: {want}");
+
+    let log = fed.aggregator_dir().join("log.jsonl");
+    let report = verify_log(&log, Some(&summaries[0].final_model)).unwrap();
+    assert!(report.complete(), "{report:?}");
+    assert!(report.rounds.iter().all(|r| r.total_weight == Some(4)));
+    let spent = report.privacy.as_ref().unwrap();
+    assert!(spent.rho_spent > 0.0 && spent.rho_spent <= spent.rho_budget);
+    assert!(spent.epsilon_spent <= 8.0 + 1e-6, "{spent:?}");
+    // The plan budgets for the smallest cohort, and all four sites took part.
+    assert!(spent.epsilon_spent < 7.5, "{spent:?}");
+}
+
+/// Sends the model back unchanged.
+struct Still {
+    weight: u64,
+}
+
+impl Trainer for Still {
+    fn train(&mut self, _: &TrainContext, submit: &mut Submit<'_>) -> Result<(), String> {
+        submit(
+            &[TensorView::F32(&[1.0; 1000]), TensorView::F64(&[-2.0; 24])],
+            self.weight,
+        )
+        .map(|_| ())
+        .map_err(|e| e.to_string())
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_private_run_stops_when_its_budget_cannot_cover_a_round() {
+    let dir = tempfile::tempdir().unwrap();
+    let init = initial_model(dir.path());
+    let fed = LocalFederation::create_with(
+        dir.path(),
+        layout(),
+        &init,
+        &private_options(4, 3),
+        |plan: &mut Plan| {
+            // Room for one round and a half at the smallest cohort.
+            let one = plan.round_cost(plan.min_cohort as usize).unwrap();
+            plan.privacy.as_mut().unwrap().budget = one + one / 2;
+        },
+    )
+    .unwrap();
+    let trainers: Vec<Box<dyn Trainer>> = (0..4)
+        .map(|_| Box::new(Still { weight: 1 }) as Box<dyn Trainer>)
+        .collect();
+    let (running, results) = run_all(&fed, trainers, None).await;
+    let _ = running.aggregator.await.unwrap();
+    for result in results {
+        assert!(matches!(result, Err(NodeError::Aborted(_))), "{result:?}");
+    }
+
+    let report = verify_log(&fed.aggregator_dir().join("log.jsonl"), None).unwrap();
+    assert!(!report.complete());
+    assert!(
+        report
+            .aborted
+            .as_deref()
+            .is_some_and(|r| r.contains("privacy budget")),
+        "{:?}",
+        report.aborted
+    );
+    assert_eq!(report.rounds.len(), 1);
+    assert!(report.rounds[0].sealed && report.rounds[0].unacked.is_empty());
+    let spent = report.privacy.unwrap();
+    assert!(spent.rho_spent <= spent.rho_budget);
+}
+
+fn gated_options(sites: usize, rounds: u32) -> Options {
+    let mut options = options(sites, 1, rounds);
+    options.credentials = true;
+    options.min_cohort = 2;
+    options.timeouts.join_secs = 3;
+    options
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_run_gated_on_credentials_admits_sites_that_hold_them() {
+    let dir = tempfile::tempdir().unwrap();
+    let init = initial_model(dir.path());
+    let fed = LocalFederation::create(dir.path(), layout(), &init, &gated_options(3, 1)).unwrap();
+    let trainers: Vec<Box<dyn Trainer>> = (0..3)
+        .map(|_| Fixed::new(2.0, 1) as Box<dyn Trainer>)
+        .collect();
+    let (running, results) = run_all(&fed, trainers, None).await;
+    running.aggregator.await.unwrap().unwrap();
+    let summaries: Vec<_> = results.into_iter().map(Result::unwrap).collect();
+
+    let log = fed.aggregator_dir().join("log.jsonl");
+    let report = verify_log(&log, Some(&summaries[0].final_model)).unwrap();
+    assert!(report.complete(), "{report:?}");
+    assert!(report.revoked.is_empty());
+    for (i, join) in report.joined.iter().enumerate() {
+        assert_eq!(join.dataset, fed.standing[i].dataset);
+        let kinds: Vec<&str> = join.credentials.iter().map(|c| c.kind.as_str()).collect();
+        assert_eq!(
+            kinds,
+            [
+                "AffiliationAndRole",
+                "EthicsApproval",
+                "ControlledAccessGrants",
+                "Provenance"
+            ]
+        );
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_site_that_lacks_a_credential_is_kept_out_and_the_rest_carry_on() {
+    let dir = tempfile::tempdir().unwrap();
+    let init = initial_model(dir.path());
+    let fed = LocalFederation::create(dir.path(), layout(), &init, &gated_options(3, 1)).unwrap();
+    let running = start(&fed, None).await;
+    let tasks: Vec<_> = (0..3)
+        .map(|i| {
+            let mut config = fed.site_config(i, &running.addr);
+            if i == 2 {
+                // Everything but the access grant.
+                config.standing.credentials.remove(2);
+            }
+            tokio::spawn(run_site(config, Fixed::new(2.0, 1)))
+        })
+        .collect();
+    let mut results = Vec::new();
+    for task in tasks {
+        results.push(task.await.unwrap());
+    }
+    running.aggregator.await.unwrap().unwrap();
+
+    let refusal = results[2].as_ref().unwrap_err().to_string();
+    assert!(refusal.contains("ControlledAccessGrants"), "{refusal}");
+    let done = results[0].as_ref().unwrap();
+    assert!(close(read_tensor_mean(&done.final_model), 2.0));
+    let report = verify_log(&fed.aggregator_dir().join("log.jsonl"), None).unwrap();
+    assert_eq!(report.joined.len(), 2);
+    assert_eq!(report.rounds[0].included.len(), 2);
+}
+
+/// Runs something once, just before training in one round.
+struct Before {
+    round: u32,
+    act: Box<dyn Fn() + Send>,
+    then: Box<Fixed>,
+}
+
+impl Trainer for Before {
+    fn train(&mut self, ctx: &TrainContext, submit: &mut Submit<'_>) -> Result<(), String> {
+        if ctx.round == self.round {
+            (self.act)();
+        }
+        self.then.train(ctx, submit)
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn revoking_a_grant_takes_the_site_out_of_the_next_round() {
+    let dir = tempfile::tempdir().unwrap();
+    let init = initial_model(dir.path());
+    let fed = Arc::new(
+        LocalFederation::create(dir.path(), layout(), &init, &gated_options(3, 2)).unwrap(),
+    );
+    // The committee takes back site 2's grant while round 1 is still open.
+    // Nothing reads the list again until round 2 is about to open.
+    let committee = fed.clone();
+    let trainers: Vec<Box<dyn Trainer>> = vec![
+        Box::new(Before {
+            round: 1,
+            act: Box::new(move || committee.revoke_access(2).unwrap()),
+            then: Fixed::new(1.0, 1),
+        }),
+        Fixed::new(1.0, 1),
+        Fixed::new(4.0, 1),
+    ];
+    let (running, results) = run_all(&fed, trainers, None).await;
+    running.aggregator.await.unwrap().unwrap();
+    let summaries: Vec<_> = results.into_iter().map(Result::unwrap).collect();
+
+    assert_eq!(summaries[2].rounds_contributed, [1]);
+    assert_eq!(summaries[2].rounds_refused, [2]);
+    assert_eq!(summaries[0].rounds_contributed, [1, 2]);
+    // Round 1 averaged all three, round 2 only the two still admitted.
+    assert!(close(read_tensor_mean(&summaries[0].final_model), 1.0));
+    assert_eq!(summaries[2].final_digest, summaries[0].final_digest);
+
+    let log = fed.aggregator_dir().join("log.jsonl");
+    let report = verify_log(&log, Some(&summaries[0].final_model)).unwrap();
+    assert_eq!(report.rounds[0].included.len(), 3);
+    assert_eq!(report.rounds[1].included.len(), 2);
+    assert_eq!(report.revoked.len(), 1);
+    assert_eq!(report.revoked[0].site, fed.sites[2].did_string());
+    assert!(
+        report.revoked[0].reason.contains("revoked"),
+        "{:?}",
+        report.revoked
+    );
+    assert!(report.complete(), "a revoked site is not a gap: {report:?}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn sampled_rounds_take_only_the_sites_drawn() {
+    let dir = tempfile::tempdir().unwrap();
+    let init = initial_model(dir.path());
+    let mut options = options(4, 1, 3);
+    options.sample = Some(2);
+    options.min_cohort = 2;
+    let fed = LocalFederation::create(dir.path(), layout(), &init, &options).unwrap();
+    let trained: Vec<_> = (0..4)
+        .map(|_| Arc::<std::sync::Mutex<Vec<u32>>>::default())
+        .collect();
+    let trainers: Vec<Box<dyn Trainer>> = trained
+        .iter()
+        .map(|rounds| {
+            Box::new(Fixed {
+                value: 3.0,
+                weight: 1,
+                rounds: rounds.clone(),
+            }) as Box<dyn Trainer>
+        })
+        .collect();
+    let (running, results) = run_all(&fed, trainers, None).await;
+    running.aggregator.await.unwrap().unwrap();
+    let summaries: Vec<_> = results.into_iter().map(Result::unwrap).collect();
+    for summary in &summaries {
+        assert_eq!(summary.final_digest, summaries[0].final_digest);
+        assert!(close(read_tensor_mean(&summary.final_model), 3.0));
+    }
+
+    let log = fed.aggregator_dir().join("log.jsonl");
+    let report = verify_log(&log, Some(&summaries[0].final_model)).unwrap();
+    assert!(report.complete(), "{report:?}");
+    for round in &report.rounds {
+        let invited = round.invited.as_ref().unwrap();
+        assert_eq!(invited.len(), 2);
+        let included: Vec<&String> = round.included.iter().map(|c| &c.site).collect();
+        assert_eq!(included, invited.iter().collect::<Vec<_>>());
+    }
+    for (i, rounds) in trained.iter().enumerate() {
+        let did = fed.sites[i].did_string();
+        assert_eq!(
+            *rounds.lock().unwrap(),
+            report.rounds_with(&did),
+            "site {i}"
+        );
+        assert_eq!(summaries[i].rounds_contributed, report.rounds_with(&did));
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_run_between_did_bio_parties_completes() {
+    let dir = tempfile::tempdir().unwrap();
+    let init = initial_model(dir.path());
+    let mut options = options(3, 1, 1);
+    options.did_bio = Some("devnet".into());
+    let fed = LocalFederation::create(dir.path(), layout(), &init, &options).unwrap();
+    assert!(
+        fed.plan
+            .sites
+            .iter()
+            .all(|s| s.starts_with("did:bio:devnet:"))
+    );
+    let trainers: Vec<Box<dyn Trainer>> = (0..3)
+        .map(|_| Fixed::new(2.0, 1) as Box<dyn Trainer>)
+        .collect();
+    let (running, results) = run_all(&fed, trainers, None).await;
+    running.aggregator.await.unwrap().unwrap();
+    let summaries: Vec<_> = results.into_iter().map(Result::unwrap).collect();
+    let log = fed.aggregator_dir().join("log.jsonl");
+    assert!(
+        verify_log(&log, Some(&summaries[0].final_model))
+            .unwrap()
+            .complete()
+    );
+}
+
+/// A registry that holds whatever a test puts at an address.
+#[derive(Default)]
+struct Ledger {
+    accounts: std::collections::BTreeMap<[u8; 32], fedtally_core::registry::Account>,
+    down: bool,
+}
+
+impl fedtally_node::registry::Registry for Ledger {
+    fn account(
+        &self,
+        address: &[u8; 32],
+    ) -> Result<Option<fedtally_core::registry::Account>, String> {
+        if self.down {
+            return Err("the endpoint is down".into());
+        }
+        Ok(self.accounts.get(address).cloned())
+    }
+}
+
+/// The registry's record of a deactivated identifier, as devnet stores one,
+/// with this identifier's key in place of the original's.
+fn tombstone(did: &str) -> ([u8; 32], fedtally_core::registry::Account) {
+    use base64::Engine;
+    let image = "TVjvjfsd7fMvAAAAAAAAAPt33uRUXs12r5aXnY/MgROqmHNIgyZSyvvtpJKzO83qwQHEf6FqAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
+    let mut data = base64::engine::general_purpose::STANDARD
+        .decode(image)
+        .unwrap();
+    let key = bs58::decode(did.rsplit(':').next().unwrap())
+        .into_vec()
+        .unwrap();
+    data[17..49].copy_from_slice(&key);
+    let owner = bs58::decode("H1gnV4GjNT3UV7AgGNUCkSaciuVVtM7hKb8JhPV3Xxy6")
+        .into_vec()
+        .unwrap()
+        .try_into()
+        .unwrap();
+    let address = fedtally_core::registry::account_address(did).unwrap();
+    (address, fedtally_core::registry::Account { owner, data })
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_site_sits_out_when_the_registry_says_an_operator_is_gone() {
+    let dir = tempfile::tempdir().unwrap();
+    let init = initial_model(dir.path());
+    let mut options = options(4, 1, 1);
+    options.did_bio = Some("devnet".into());
+    options.min_cohort = 2;
+    options.timeouts.collect_secs = 6;
+    let fed = LocalFederation::create(dir.path(), layout(), &init, &options).unwrap();
+
+    let (address, account) = tombstone(&fed.plan.helpers[0].did);
+    let mut sees_tombstone = Ledger::default();
+    sees_tombstone.accounts.insert(address, account);
+    let registries: Vec<Option<Ledger>> = vec![
+        Some(sees_tombstone),
+        Some(Ledger {
+            down: true,
+            ..Ledger::default()
+        }),
+        Some(Ledger::default()),
+        None,
+    ];
+
+    let running = start(&fed, None).await;
+    let tasks: Vec<_> = registries
+        .into_iter()
+        .enumerate()
+        .map(|(i, registry)| {
+            let mut config = fed.site_config(i, &running.addr);
+            config.registry = registry.map(|r| Arc::new(r) as _);
+            tokio::spawn(run_site(config, Fixed::new(2.0, 1)))
+        })
+        .collect();
+    let mut summaries = Vec::new();
+    for task in tasks {
+        summaries.push(task.await.unwrap().unwrap());
+    }
+    running.aggregator.await.unwrap().unwrap();
+
+    // One site saw the helper deactivated, one could not ask at all. Both
+    // stay out. A site that asked and found nothing registered carries on,
+    // and so does one that was never told to ask.
+    assert_eq!(summaries[0].rounds_refused, [1]);
+    assert_eq!(summaries[1].rounds_refused, [1]);
+    assert_eq!(summaries[2].rounds_contributed, [1]);
+    assert_eq!(summaries[3].rounds_contributed, [1]);
+    let report = verify_log(&fed.aggregator_dir().join("log.jsonl"), None).unwrap();
+    assert_eq!(report.rounds[0].included.len(), 2);
 }

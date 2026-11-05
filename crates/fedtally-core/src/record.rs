@@ -36,7 +36,15 @@ pub enum Body {
         at: i64,
         invocation: String,
         proofs: Vec<String>,
+        /// The dataset this site trains on, where the plan's policy asks.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        dataset: Option<String>,
+        /// The credentials that meet the plan's policy.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        credentials: Vec<String>,
     },
+    /// Any party: an issuer's newer revocation list.
+    Status { plan: Digest, list: String },
     /// Aggregator: starts a round from `base`.
     Open {
         plan: Digest,

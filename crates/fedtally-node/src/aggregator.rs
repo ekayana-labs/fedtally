@@ -23,7 +23,7 @@ use tokio_rustls::server::TlsStream;
 
 use crate::net::{Listener, accept_peer, split_stream};
 use crate::wire::{Msg, Object, PING_EVERY, SILENCE_LIMIT, read_msg, write_msg};
-use crate::{Dirs, NodeError, blocking, frame_limit};
+use crate::{Dirs, NodeError, blocking, frame_limit, newer_lists};
 
 const TICK: Duration = Duration::from_millis(100);
 const FILE_CHUNK: usize = 1 << 20;
@@ -50,6 +50,9 @@ pub struct AggregatorConfig {
     pub on_ready: Option<Box<dyn FnOnce(String) + Send>>,
     /// Keep each round's vectors instead of deleting them. For inspection.
     pub keep_spool: bool,
+    /// Where the newest revocation lists are kept, if the plan has a policy.
+    /// Any the log lacks are added before each round opens.
+    pub status_dir: Option<PathBuf>,
 }
 
 struct Upload {
@@ -101,6 +104,7 @@ struct Shared {
     wake: Notify,
     hook: Option<Hook>,
     keep_spool: bool,
+    status_dir: Option<PathBuf>,
 }
 
 impl Shared {
@@ -227,6 +231,7 @@ pub async fn run_aggregator(config: AggregatorConfig) -> Result<Replay, NodeErro
         wake: Notify::new(),
         hook: config.hook,
         keep_spool: config.keep_spool,
+        status_dir: config.status_dir,
     });
     recover_uploads(&shared).await?;
 
@@ -674,12 +679,26 @@ fn try_append(
             }
             shared.apply(&mut state, &record)
         }
+        Body::Join { at, .. } if clock_gap(*at) > JOIN_CLOCK_SLACK => Err(NodeError::Check(
+            "the time in this join is far from the aggregator's clock".into(),
+        )),
         _ => {
             shared.apply(&mut state, &record)?;
             flush_attests(shared, &mut state);
             Ok(())
         }
     }
+}
+
+/// How far a site's stated join time may be from this machine's clock. The
+/// time decides whether its credentials were in date.
+const JOIN_CLOCK_SLACK: u64 = 600;
+
+fn clock_gap(at: i64) -> u64 {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs() as i64);
+    now.abs_diff(at)
 }
 
 /// Logs each waiting attestation that agrees with the fingerprints. One that
@@ -850,7 +869,7 @@ async fn on_chunk(
     };
     let shape = shared.shape;
     let stored = blocking(move || {
-        if data.len() != shape.chunk_bytes(chunk) || Digest::of(&data) != want {
+        if data.len() != shape.chunk_bytes(chunk) || vector::digest_chunk_bytes(&data) != want {
             return Ok(false);
         }
         vector::write_chunk_bytes(&file, shape, chunk, &data)?;
@@ -956,6 +975,7 @@ fn ready_sites(shared: &Shared, state: &State) -> Vec<usize> {
     current
         .contributions
         .iter()
+        .filter(|(site, _)| !state.replay.revoked.contains_key(site))
         .filter(|(site, contribution)| {
             let object = Object::Upload {
                 round,
@@ -998,7 +1018,12 @@ fn decide(shared: &Shared, state: &State, elapsed: Duration) -> Decision {
         }
         Phase::Collecting => {
             let ready = ready_sites(shared, state);
-            let everyone = state.replay.joined.keys().all(|s| ready.contains(s));
+            let everyone = state
+                .replay
+                .expected(plan)
+                .iter()
+                .filter(|s| state.replay.joined.contains_key(s))
+                .all(|s| ready.contains(s));
             if everyone && ready.len() >= min {
                 Decision::Close
             } else if past(plan.timeouts.collect_secs) {
@@ -1113,7 +1138,43 @@ fn abort(shared: &Shared, reason: String) -> Result<(), NodeError> {
     })
 }
 
+/// Adds any revocation list the log lacks. One that the rules refuse, such as
+/// a copy a site got in first, is only logged here.
+fn relay_lists(shared: &Shared) {
+    let Some(dir) = &shared.status_dir else {
+        return;
+    };
+    let lists = newer_lists(dir, &shared.lock().replay);
+    for list in lists {
+        let plan = shared.plan_id;
+        if let Err(e) = shared.append_own(|_| Body::Status { plan, list }) {
+            tracing::warn!("revocation list not added: {e}");
+        }
+    }
+}
+
 fn open_round(shared: &Shared) -> Result<(), NodeError> {
+    relay_lists(shared);
+    if shared.lock().replay.phase == Phase::Aborted {
+        return Ok(());
+    }
+    let (spent, round) = {
+        let state = shared.lock();
+        (state.replay.spent, state.replay.round_number() + 1)
+    };
+    if let Some(privacy) = &shared.plan.privacy {
+        let left = privacy.budget.saturating_sub(spent);
+        let fits = shared
+            .plan
+            .round_cost(shared.plan.min_cohort as usize)
+            .is_some_and(|cost| cost <= left);
+        if !fits {
+            return abort(
+                shared,
+                format!("the privacy budget cannot cover round {round}"),
+            );
+        }
+    }
     let plan = shared.plan_id;
     shared.append_own(|replay| Body::Open {
         plan,

@@ -342,7 +342,9 @@ impl Follower {
             let want = manifest.chunks[chunk as usize];
             let target = file.clone();
             blocking(move || {
-                if Digest::of(&data) != want || data.len() != shape.chunk_bytes(chunk) {
+                if data.len() != shape.chunk_bytes(chunk)
+                    || vector::digest_chunk_bytes(&data) != want
+                {
                     return Err(NodeError::Check(format!("chunk {chunk} does not match")));
                 }
                 vector::write_chunk_bytes(&target, shape, chunk, &data)?;

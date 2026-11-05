@@ -9,9 +9,12 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use fedtally_core::admission;
+use fedtally_core::credential::Credential;
 use fedtally_core::field::{Fp, Fp2, P};
 use fedtally_core::keys::{Identity, random_bytes, seal};
-use fedtally_core::model::{self, EncodeRequest, Encoded, ModelError, PAD, TensorView};
+use fedtally_core::model::{
+    self, EncodeRequest, Encoded, ModelError, PAD, PrivateRequest, TensorView,
+};
 use fedtally_core::pq_ucan::Cid;
 use fedtally_core::pq_ucan::did::Did;
 use fedtally_core::pq_ucan::time::Timestamp;
@@ -24,8 +27,9 @@ use serde::{Deserialize, Serialize};
 use crate::follower::{Follower, Patience, Start};
 use crate::helper::seal_context;
 use crate::net::Client;
+use crate::registry::{self, Registry};
 use crate::wire::{Msg, Object};
-use crate::{NodeError, blocking};
+use crate::{NodeError, blocking, newer_lists};
 
 pub struct TrainContext {
     pub round: u32,
@@ -63,6 +67,19 @@ pub struct SiteConfig {
     /// Delegations this site has taken back. Checked before every round.
     pub revocations: Option<Arc<dyn RevocationStore + Send + Sync>>,
     pub give_up_after: Duration,
+    /// What this site holds for a plan that admits on credentials.
+    pub standing: Standing,
+    /// Where to ask whether `did:bio` operators and issuers still stand.
+    pub registry: Option<Arc<dyn Registry>>,
+}
+
+/// A site's dataset and credentials, and where it keeps the issuers' newest
+/// revocation lists. It brings any list the log lacks before each round.
+#[derive(Clone, Debug, Default)]
+pub struct Standing {
+    pub dataset: Option<String>,
+    pub credentials: Vec<String>,
+    pub status_dir: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone)]
@@ -87,6 +104,9 @@ struct Site {
     invocation: Vec<u8>,
     proofs: Vec<Vec<u8>>,
     revocations: Option<Arc<dyn RevocationStore + Send + Sync>>,
+    standing: Standing,
+    held: Vec<Credential>,
+    registry: Option<Arc<dyn Registry>>,
     trainer: Option<Box<dyn Trainer>>,
     refused: Vec<u32>,
     checks: Option<Checks>,
@@ -117,12 +137,22 @@ pub async fn run_site(
         .plan
         .site_index(&did)
         .ok_or_else(|| NodeError::Refused("this key is not a site in the plan".into()))?;
+    let held = config
+        .standing
+        .credentials
+        .iter()
+        .map(|text| Credential::parse(text))
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| NodeError::Refused(format!("a credential of this site: {e}")))?;
     let mut site = Site {
         f,
         me,
         invocation: config.invocation,
         proofs: config.proofs,
         revocations: config.revocations,
+        standing: config.standing,
+        held,
+        registry: config.registry,
         trainer: Some(trainer),
         refused: Vec::new(),
         checks: None,
@@ -182,6 +212,56 @@ impl Site {
         Ok(())
     }
 
+    /// Whether this site's credentials still meet the plan's policy, by the
+    /// lists in the log and this site's own clock.
+    fn in_standing(&self) -> Result<(), NodeError> {
+        if let Some(why) = self.f.replay.revoked.get(&self.me) {
+            return Err(NodeError::Refused(why.clone()));
+        }
+        self.f
+            .replay
+            .site_meets(
+                &self.f.plan,
+                &self.f.identity.did_string(),
+                self.standing.dataset.as_deref(),
+                &self.held,
+                now()?.as_unix(),
+            )
+            .map_err(NodeError::Refused)
+    }
+
+    /// Asks the registry about every `did:bio` party this site relies on.
+    async fn registry_agrees(&mut self) -> Result<(), NodeError> {
+        let Some(registry) = self.registry.clone() else {
+            return Ok(());
+        };
+        let plan = self.f.plan.clone();
+        blocking(move || registry::check(registry.as_ref(), &plan).map_err(NodeError::Refused))
+            .await
+    }
+
+    /// Brings the log any revocation list this site holds a newer copy of.
+    async fn relay_lists(&mut self, client: &mut Client) -> Result<(), NodeError> {
+        let Some(dir) = self.standing.status_dir.clone() else {
+            return Ok(());
+        };
+        for list in newer_lists(&dir, &self.f.replay) {
+            let body = Body::Status {
+                plan: self.f.plan_id,
+                list,
+            };
+            self.f.offer(client, &body).await?;
+        }
+        // An aggregator that won't log a revocation doesn't get this site's data.
+        if newer_lists(&dir, &self.f.replay).is_empty() {
+            Ok(())
+        } else {
+            Err(NodeError::Refused(
+                "the log lacks a revocation list this site holds".into(),
+            ))
+        }
+    }
+
     async fn session(&mut self) -> Result<(), NodeError> {
         let mut client = self.f.connect().await?;
         self.uploaded = None;
@@ -221,11 +301,14 @@ impl Site {
         {
             return Ok(());
         }
+        self.relay_lists(client).await?;
         let body = Body::Join {
             plan: self.f.plan_id,
             at: now()?.as_unix(),
             invocation: encode_token(&self.invocation),
             proofs: self.proofs.iter().map(|p| encode_token(p)).collect(),
+            dataset: self.standing.dataset.clone(),
+            credentials: self.standing.credentials.clone(),
         };
         self.f.append(client, &body).await
     }
@@ -276,10 +359,18 @@ impl Site {
         let spool = round_dir.join("masked.bin");
 
         if !state.contributions.contains_key(&self.me) {
-            if self.refused.contains(&round) {
+            let drawn = state.invited.as_ref().is_none_or(|i| i.contains(&self.me));
+            if self.refused.contains(&round) || !drawn {
                 return Ok(());
             }
-            if let Err(e) = self.admit() {
+            let mut admitted = self.relay_lists(client).await;
+            if admitted.is_ok() {
+                admitted = self.admit().and_then(|()| self.in_standing());
+            }
+            if admitted.is_ok() {
+                admitted = self.registry_agrees().await;
+            }
+            if let Err(e) = admitted {
                 tracing::warn!("sitting out round {round}: {e}");
                 self.refused.push(round);
                 return Ok(());
@@ -362,17 +453,32 @@ impl Site {
                 if outcome.is_some() {
                     return Err(ModelError::Mismatch("submit called twice".into()));
                 }
-                let encoded = model::encode_update(&EncodeRequest {
-                    layout: &plan.layout,
-                    encoding: plan.encoding,
-                    chunk_coords: plan.chunk_coords,
-                    base: &base,
-                    local: tensors,
-                    weight,
-                    pad,
-                    seeds: &seeds,
-                    out: &spool,
-                })?;
+                // A private run counts every site the same, whatever it trained on.
+                let weight = if plan.privacy.is_some() { 1 } else { weight };
+                let encoded = match &plan.privacy {
+                    Some(privacy) => model::encode_private(&PrivateRequest {
+                        layout: &plan.layout,
+                        frac_bits: plan.encoding.frac_bits,
+                        chunk_coords: plan.chunk_coords,
+                        base: &base,
+                        local: tensors,
+                        privacy,
+                        pad,
+                        seeds: &seeds,
+                        out: &spool,
+                    })?,
+                    None => model::encode_update(&EncodeRequest {
+                        layout: &plan.layout,
+                        encoding: plan.encoding,
+                        chunk_coords: plan.chunk_coords,
+                        base: &base,
+                        local: tensors,
+                        weight,
+                        pad,
+                        seeds: &seeds,
+                        out: &spool,
+                    })?,
+                };
                 outcome = Some((
                     Encoded {
                         manifest: encoded.manifest.clone(),
@@ -385,7 +491,7 @@ impl Site {
             trained.map_err(NodeError::Trainer)?;
             let (encoded, weight) = outcome
                 .ok_or_else(|| NodeError::Trainer("the trainer submitted nothing".into()))?;
-            if encoded.clipped > 0 {
+            if encoded.clipped > 0 && plan.privacy.is_none() {
                 tracing::warn!("{} coordinates were clipped this round", encoded.clipped);
             }
             let file = RoundFile {

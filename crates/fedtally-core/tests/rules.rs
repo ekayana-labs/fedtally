@@ -4,11 +4,13 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use fedtally_core::admission::{self, AdmissionError, Terms};
+use fedtally_core::credential::{Credential, Draft, StatusEntry};
 use fedtally_core::field::{Fp, Fp2};
 use fedtally_core::keys::{Identity, SigAlg};
 use fedtally_core::log::{GENESIS, chain};
 use fedtally_core::model::{Dtype, Encoding, Layout, TensorSpec};
 use fedtally_core::plan::{AggregatorSpec, HelperSpec, Plan, PlanError, Timeouts};
+use fedtally_core::policy::{About, Atom, Policy, Rule};
 use fedtally_core::pq_ucan::Ipld;
 use fedtally_core::pq_ucan::command::Command;
 use fedtally_core::pq_ucan::crypto::Signer;
@@ -16,9 +18,12 @@ use fedtally_core::pq_ucan::delegation::{Delegation, Subject};
 use fedtally_core::pq_ucan::invocation::Invocation;
 use fedtally_core::pq_ucan::nonce::Nonce;
 use fedtally_core::pq_ucan::time::Timestamp;
+use fedtally_core::privacy::{Privacy, rho_units};
 use fedtally_core::record::{Body, Included, Record, encode_token};
 use fedtally_core::replay::{Fault, Phase, Replay};
 use fedtally_core::report::{VerifyError, verify_log};
+use fedtally_core::sampling;
+use fedtally_core::status::StatusList;
 use fedtally_core::vector::Digest;
 
 const NOW: i64 = 1_800_000_000;
@@ -74,9 +79,17 @@ fn numbers() -> Numbers {
 
 impl Run {
     fn new() -> Run {
+        Run::with(|_| {})
+    }
+
+    fn with(edit: impl FnOnce(&mut Plan)) -> Run {
+        Run::of(identity, edit)
+    }
+
+    fn of(identity: fn() -> Id, edit: impl FnOnce(&mut Plan)) -> Run {
         let (sponsor, aggregator, helper) = (identity(), identity(), identity());
         let sites: Vec<Id> = (0..3).map(|_| identity()).collect();
-        let plan = Plan {
+        let mut plan = Plan {
             version: 1,
             nonce: "n".into(),
             purpose: "cardiology".into(),
@@ -84,11 +97,13 @@ impl Run {
             aggregator: AggregatorSpec {
                 did: aggregator.did_string(),
                 tls_pin: Digest::of(b"cert"),
+                credentials: Vec::new(),
             },
             helpers: vec![HelperSpec {
                 did: helper.did_string(),
                 seal: helper.seal_public().clone(),
                 seal_proof: helper.seal_proof().unwrap(),
+                credentials: Vec::new(),
             }],
             sites: sites.iter().map(|s| s.did_string()).collect(),
             layout: Layout {
@@ -114,7 +129,11 @@ impl Run {
                 attest_secs: 1,
                 ack_secs: 1,
             },
+            privacy: None,
+            admission: None,
+            sample: None,
         };
+        edit(&mut plan);
         let record = Record::sign(&sponsor, &Body::Plan(Box::new(plan.clone()))).unwrap();
         let mut replay = Replay::new();
         replay.apply(&record).unwrap();
@@ -167,6 +186,8 @@ impl Run {
             at: NOW,
             invocation: encode_token(invocation.bytes()),
             proofs: chain.iter().map(|d| encode_token(d.bytes())).collect(),
+            dataset: None,
+            credentials: Vec::new(),
         }
     }
 
@@ -256,8 +277,12 @@ impl Run {
     }
 
     fn open_and_close_all(&mut self, round: u32) -> Vec<(usize, Digest)> {
+        self.open_and_close_all_at(round, 10)
+    }
+
+    fn open_and_close_all_at(&mut self, round: u32, weight: u64) -> Vec<(usize, Digest)> {
         self.open(round);
-        let list: Vec<_> = (0..3).map(|s| self.contribute(s, round, 10)).collect();
+        let list: Vec<_> = (0..3).map(|s| self.contribute(s, round, weight)).collect();
         self.close(round, &list);
         list
     }
@@ -375,7 +400,13 @@ impl Run {
     }
 
     fn complete_round(&mut self, round: u32) {
-        self.reach_attesting(round);
+        self.complete_round_at(round, 10);
+    }
+
+    fn complete_round_at(&mut self, round: u32, weight: u64) {
+        self.open_and_close_all_at(round, weight);
+        self.mask_sum(round);
+        self.outcome(round, 3 * weight);
         self.seal(round);
         for i in 0..3 {
             let body = self.ack_body(round);
@@ -393,6 +424,21 @@ impl Run {
         let aggregator = run.aggregator.clone();
         run.apply(&aggregator, body);
         run
+    }
+}
+
+/// Noise multiplier one over three sites, so a full round costs rho = 1/2.
+fn private(budget: u64) -> impl FnOnce(&mut Plan) {
+    move |plan| {
+        plan.max_weight = 1;
+        plan.privacy = Some(Privacy {
+            clip: 1 << 18,
+            noise: (1 << 36) / 3,
+            colluding: 0,
+            budget,
+            epsilon: 8.0,
+            delta: 1e-5,
+        });
     }
 }
 
@@ -1411,4 +1457,791 @@ fn only_the_aggregator_or_a_helper_can_abort() {
         run.refuse(&helper, body),
         Fault::WrongPhase { .. }
     ));
+}
+
+#[test]
+fn a_private_round_is_paid_for_when_it_closes() {
+    let mut run = Run::with(private(4 << 40));
+    run.join(0..3);
+    run.open(1);
+    assert_eq!(run.replay.spent, 0);
+    let list: Vec<_> = (0..3).map(|s| run.contribute(s, 1, 1)).collect();
+    assert_eq!(
+        run.replay.spent, 0,
+        "nothing is released until the cohort is fixed"
+    );
+    run.close(1, &list);
+    let cost = run.plan.round_cost(3).unwrap();
+    assert_eq!(run.replay.spent, cost);
+    assert!((rho_units(cost) - 0.5).abs() < 1e-3);
+
+    let report = run.replay.report().unwrap();
+    let privacy = report.privacy.as_ref().unwrap();
+    assert!((privacy.rho_spent - 0.5).abs() < 1e-3);
+    assert_eq!(privacy.rho_budget, 4.0);
+    assert!(privacy.epsilon_spent > 0.0 && privacy.epsilon_spent < privacy.epsilon_budget);
+    assert!(
+        (privacy.rho_unmasked - 1.5).abs() < 1e-2,
+        "one site alone has a third of the noise"
+    );
+    assert_eq!(report.rounds[0].rho, Some(rho_units(cost)));
+    assert_eq!(
+        report.rho_spent_by(&run.sites[0].did_string()),
+        Some(rho_units(cost))
+    );
+}
+
+#[test]
+fn a_run_that_stops_after_closing_has_still_spent_the_round() {
+    let mut run = Run::with(private(4 << 40));
+    run.join(0..3);
+    run.open_and_close_all_at(1, 1);
+    let aggregator = run.aggregator.clone();
+    run.apply(
+        &aggregator,
+        Body::Abort {
+            plan: run.plan_id,
+            round: 1,
+            reason: "a helper went away".into(),
+        },
+    );
+    assert_eq!(run.replay.spent, run.plan.round_cost(3).unwrap());
+}
+
+#[test]
+fn a_smaller_cohort_has_less_noise_and_costs_more() {
+    let mut run = Run::with(private(4 << 40));
+    run.join(0..3);
+    run.open(1);
+    let list: Vec<_> = (0..2).map(|s| run.contribute(s, 1, 1)).collect();
+    run.close(1, &list);
+    let (two, three) = (
+        run.plan.round_cost(2).unwrap(),
+        run.plan.round_cost(3).unwrap(),
+    );
+    assert_eq!(run.replay.spent, two);
+    assert!(two > three);
+    let report = run.replay.report().unwrap();
+    assert_eq!(report.rho_spent_by(&run.sites[2].did_string()), Some(0.0));
+}
+
+#[test]
+fn a_round_the_budget_cannot_cover_does_not_open() {
+    // Enough for one round at the smallest cohort of two, and a little more.
+    let one = Run::with(private(4 << 40)).plan.round_cost(2).unwrap();
+    let mut run = Run::with(private(one + one / 2));
+    run.join(0..3);
+    run.complete_round_at(1, 1);
+    let left = run.plan.privacy.unwrap().budget - run.replay.spent;
+    assert!(
+        left >= run.plan.round_cost(3).unwrap(),
+        "a full cohort would still fit"
+    );
+    let fault = run.refuse(&run.aggregator.clone(), run.open_body(2));
+    assert!(
+        matches!(fault, Fault::OverBudget { round: 2, cost, left: l } if cost == one && l == left),
+        "{fault}"
+    );
+}
+
+#[test]
+fn a_plan_whose_budget_is_below_one_round_is_refused() {
+    let one = Run::with(private(4 << 40)).plan.round_cost(2).unwrap();
+    let mut plan = Run::new().plan;
+    private(one - 1)(&mut plan);
+    assert!(matches!(plan.validate(), Err(PlanError::Privacy(_))));
+    private(one)(&mut plan);
+    plan.validate().unwrap();
+}
+
+#[test]
+fn a_site_in_a_private_run_counts_once() {
+    let mut run = Run::with(private(4 << 40));
+    run.join(0..3);
+    run.open(1);
+    let fault = run.refuse(&run.site(0), run.contribute_body(1, 2));
+    assert!(matches!(fault, Fault::BadContribution { .. }), "{fault}");
+    run.contribute(0, 1, 1);
+}
+
+#[test]
+fn a_run_without_privacy_spends_nothing_and_reports_none() {
+    let run = Run::complete_run();
+    assert_eq!(run.replay.spent, 0);
+    let report = run.replay.report().unwrap();
+    assert!(report.privacy.is_none());
+    assert_eq!(report.rounds[0].rho, None);
+    assert_eq!(report.rho_spent_by(&run.sites[0].did_string()), None);
+}
+
+const LIST: &str = "urn:example:dac:list";
+
+fn holds(kind: &str, issuer: &Id) -> Atom {
+    Atom {
+        kind: kind.into(),
+        issuers: vec![issuer.did_string()],
+        about: About::Holder,
+        claims: BTreeMap::new(),
+        names_dataset: None,
+        data_use: None,
+    }
+}
+
+/// A run that admits a site on an access grant from `dac` for its dataset.
+fn gated(dac: &Id) -> impl FnOnce(&mut Plan) + use<> {
+    let mut grant = holds("ControlledAccessGrants", dac);
+    grant.names_dataset = Some("dataset".into());
+    let policy = Policy {
+        purpose: Default::default(),
+        sites: Rule::Holds(grant),
+        operators: None,
+    };
+    move |plan| plan.admission = Some(policy)
+}
+
+fn credential(issuer: &Id, kind: &str, subject: &str, dataset: Option<&str>, index: u64) -> String {
+    let mut claims = serde_json::Map::new();
+    if let Some(dataset) = dataset {
+        claims.insert("dataset".into(), dataset.into());
+    }
+    let draft = Draft {
+        kind: kind.into(),
+        subject: subject.into(),
+        claims,
+        valid_from: NOW - 10,
+        valid_until: Some(NOW + 1000),
+        status: Some(StatusEntry {
+            list: LIST.into(),
+            index,
+        }),
+    };
+    Credential::issue(issuer.as_ref(), &draft, NOW - 10)
+        .unwrap()
+        .text
+}
+
+fn dataset(site: usize) -> String {
+    format!("did:example:dataset-{site}")
+}
+
+fn list(issuer: &Id, revoked: &[u64], issued: i64) -> String {
+    StatusList::issue(issuer.as_ref(), LIST, revoked, issued)
+        .unwrap()
+        .text
+}
+
+impl Run {
+    fn status_body(&self, list: String) -> Body {
+        Body::Status {
+            plan: self.plan_id,
+            list,
+        }
+    }
+
+    fn status(&mut self, list: String) {
+        let body = self.status_body(list);
+        let aggregator = self.aggregator.clone();
+        self.apply(&aggregator, body);
+    }
+
+    fn join_holding(&self, site: usize, names: Option<String>, held: Vec<String>) -> Body {
+        let mut body = self.join_body(site, &self.terms());
+        if let Body::Join {
+            dataset,
+            credentials,
+            ..
+        } = &mut body
+        {
+            (*dataset, *credentials) = (names, held);
+        }
+        body
+    }
+
+    /// Site `i` holds a grant for its own dataset at status index `i`.
+    fn grant(&self, dac: &Id, site: usize) -> Vec<String> {
+        let did = self.sites[site].did_string();
+        vec![credential(
+            dac,
+            "ControlledAccessGrants",
+            &did,
+            Some(&dataset(site)),
+            site as u64,
+        )]
+    }
+
+    fn join_gated(&mut self, dac: &Id, sites: std::ops::Range<usize>) {
+        for i in sites {
+            let body = self.join_holding(i, Some(dataset(i)), self.grant(dac, i));
+            let site = self.site(i);
+            self.apply(&site, body);
+        }
+    }
+
+    fn admission_refusal(&mut self, site: usize, body: Body) -> String {
+        match self.refuse(&self.site(site), body) {
+            Fault::Admission(_, why) => why,
+            other => panic!("expected an admission refusal, got {other}"),
+        }
+    }
+}
+
+#[test]
+fn a_site_is_admitted_on_credentials_that_meet_the_policy() {
+    let dac = identity();
+    let mut run = Run::with(gated(&dac));
+    run.status(list(&dac, &[], NOW - 5));
+    run.join_gated(&dac, 0..3);
+    assert_eq!(run.replay.joined.len(), 3);
+    let report = run.replay.report().unwrap();
+    assert_eq!(
+        report.joined[1].dataset.as_deref(),
+        Some("did:example:dataset-1")
+    );
+    let held = &report.joined[1].credentials;
+    assert_eq!(held.len(), 1);
+    assert_eq!(held[0].kind, "ControlledAccessGrants");
+    assert_eq!(held[0].issuer, dac.did_string());
+    assert_eq!(held[0].valid_until, Some(NOW + 1000));
+    assert!(report.revoked.is_empty());
+}
+
+#[test]
+fn a_site_without_the_credential_is_not_admitted() {
+    let dac = identity();
+    let mut run = Run::with(gated(&dac));
+    run.status(list(&dac, &[], NOW - 5));
+    let why = run.admission_refusal(0, run.join_holding(0, Some(dataset(0)), Vec::new()));
+    assert!(why.contains("no ControlledAccessGrants"), "{why}");
+
+    // A grant for another site, another dataset, or from another issuer.
+    let theirs = run.grant(&dac, 1);
+    let why = run.admission_refusal(0, run.join_holding(0, Some(dataset(0)), theirs));
+    assert!(why.contains("someone else"), "{why}");
+    let mine = run.grant(&dac, 0);
+    let why = run.admission_refusal(0, run.join_holding(0, Some(dataset(2)), mine.clone()));
+    assert!(why.contains("another dataset"), "{why}");
+    let why = run.admission_refusal(0, run.join_holding(0, None, mine));
+    assert!(why.contains("another dataset"), "{why}");
+    let stranger = identity();
+    run.refuse(
+        &run.aggregator.clone(),
+        run.status_body(list(&stranger, &[], NOW - 5)),
+    );
+    let unknown = run.grant(&stranger, 0);
+    let why = run.admission_refusal(0, run.join_holding(0, Some(dataset(0)), unknown));
+    assert!(
+        why.contains(&stranger.did_string()) && why.contains("not in the log"),
+        "{why}"
+    );
+
+    let garbage = vec!["{}".to_owned()];
+    run.admission_refusal(0, run.join_holding(0, Some(dataset(0)), garbage));
+    let many = vec![run.grant(&dac, 0)[0].clone(); 65];
+    let why = run.admission_refusal(0, run.join_holding(0, Some(dataset(0)), many));
+    assert!(why.contains("too many"), "{why}");
+}
+
+#[test]
+fn a_credential_counts_only_once_its_issuers_list_is_in_the_log() {
+    let dac = identity();
+    let mut run = Run::with(gated(&dac));
+    let body = run.join_holding(0, Some(dataset(0)), run.grant(&dac, 0));
+    let why = run.admission_refusal(0, body.clone());
+    assert!(
+        why.contains("status list") && why.contains("not in the log"),
+        "{why}"
+    );
+    run.status(list(&dac, &[], NOW - 5));
+    let site = run.site(0);
+    run.apply(&site, body);
+}
+
+#[test]
+fn a_credential_revoked_before_joining_does_not_admit() {
+    let dac = identity();
+    let mut run = Run::with(gated(&dac));
+    run.status(list(&dac, &[1], NOW - 5));
+    run.join_gated(&dac, 0..1);
+    let why = run.admission_refusal(1, run.join_holding(1, Some(dataset(1)), run.grant(&dac, 1)));
+    assert!(why.contains("revoked"), "{why}");
+}
+
+#[test]
+fn a_credential_outside_its_dates_does_not_admit() {
+    let dac = identity();
+    let mut run = Run::with(gated(&dac));
+    run.status(list(&dac, &[], NOW - 5));
+    let mut body = run.join_holding(0, Some(dataset(0)), run.grant(&dac, 0));
+    if let Body::Join { at, .. } = &mut body {
+        *at = NOW + 1000;
+    }
+    let why = run.admission_refusal(0, body);
+    assert!(why.contains("not valid at this time"), "{why}");
+}
+
+#[test]
+fn a_plan_without_a_policy_takes_no_credentials() {
+    let dac = identity();
+    let mut run = Run::new();
+    let why = run.admission_refusal(0, run.join_holding(0, None, run.grant(&dac, 0)));
+    assert!(why.contains("asks for no credentials"), "{why}");
+    let why = run.admission_refusal(0, run.join_holding(0, Some(dataset(0)), Vec::new()));
+    assert!(why.contains("asks for no credentials"), "{why}");
+    let fault = run.refuse(
+        &run.aggregator.clone(),
+        run.status_body(list(&dac, &[], NOW)),
+    );
+    assert!(matches!(fault, Fault::Status(_)), "{fault}");
+}
+
+#[test]
+fn a_revocation_takes_a_site_out_of_later_rounds() {
+    let dac = identity();
+    let mut run = Run::with(gated(&dac));
+    run.status(list(&dac, &[], NOW - 5));
+    run.join_gated(&dac, 0..3);
+    run.complete_round(1);
+
+    run.status(list(&dac, &[2], NOW));
+    assert!(run.replay.revoked[&2].contains("revoked"));
+    assert_eq!(run.replay.revoked.len(), 1);
+
+    run.open(2);
+    let fault = run.refuse(&run.site(2), run.contribute_body(2, 10));
+    assert!(
+        matches!(&fault, Fault::BadContribution { why, .. } if why.contains("no longer admitted")),
+        "{fault}"
+    );
+    let list_of_two: Vec<_> = (0..2).map(|s| run.contribute(s, 2, 10)).collect();
+    run.close(2, &list_of_two);
+
+    let report = run.replay.report().unwrap();
+    assert_eq!(report.revoked.len(), 1);
+    assert_eq!(report.revoked[0].site, run.sites[2].did_string());
+    assert!(
+        report.rounds[1].absent.is_empty(),
+        "a revoked site is not missing"
+    );
+    assert_eq!(report.rounds[0].included.len(), 3);
+}
+
+#[test]
+fn a_site_revoked_while_a_round_collects_cannot_be_closed_into_it() {
+    let dac = identity();
+    let mut run = Run::with(gated(&dac));
+    run.status(list(&dac, &[], NOW - 5));
+    run.join_gated(&dac, 0..3);
+    run.open(1);
+    let all: Vec<_> = (0..3).map(|s| run.contribute(s, 1, 10)).collect();
+    run.status(list(&dac, &[2], NOW));
+    let fault = run.refuse(&run.aggregator.clone(), run.close_body(1, &all));
+    assert!(
+        matches!(&fault, Fault::BadClose(why) if why.contains("no longer admitted")),
+        "{fault}"
+    );
+    run.close(1, &all[..2]);
+}
+
+#[test]
+fn a_site_already_in_a_closed_round_finishes_it() {
+    let dac = identity();
+    let mut run = Run::with(gated(&dac));
+    run.status(list(&dac, &[], NOW - 5));
+    run.join_gated(&dac, 0..3);
+    run.reach_attesting(1);
+    run.status(list(&dac, &[2], NOW));
+    run.seal(1);
+    for i in 0..3 {
+        let body = run.ack_body(1);
+        let site = run.site(i);
+        run.apply(&site, body);
+    }
+    assert_eq!(run.replay.phase, Phase::Acking);
+}
+
+#[test]
+fn a_status_list_only_moves_forward() {
+    let dac = identity();
+    let mut run = Run::with(gated(&dac));
+    run.status(list(&dac, &[1], NOW));
+    let aggregator = run.aggregator.clone();
+    let refused = |run: &mut Run, text: String, needle: &str| {
+        let fault = run.refuse(&aggregator, run.status_body(text));
+        assert!(
+            matches!(&fault, Fault::Status(why) if why.contains(needle)),
+            "{fault}"
+        );
+    };
+    refused(&mut run, list(&dac, &[1, 2], NOW - 1), "newer list");
+    refused(&mut run, list(&dac, &[1], NOW), "newer list");
+    refused(&mut run, list(&dac, &[2], NOW + 1), "cannot be undone");
+    refused(
+        &mut run,
+        list(&identity(), &[1], NOW + 1),
+        "accepts that issuer",
+    );
+    refused(&mut run, "{}".into(), "");
+    run.status(list(&dac, &[1, 2], NOW + 1));
+    assert!(run.replay.list(&dac.did_string(), LIST).unwrap().is_set(2));
+
+    // Anyone in the run may bring a list, and nobody outside it.
+    let site = run.site(0);
+    let body = run.status_body(list(&dac, &[1, 2, 3], NOW + 2));
+    run.apply(&site, body);
+    let fault = run.refuse(
+        &identity(),
+        run.status_body(list(&dac, &[1, 2, 3, 4], NOW + 3)),
+    );
+    assert!(matches!(fault, Fault::WrongSigner { .. }), "{fault}");
+}
+
+#[test]
+fn one_issuer_cannot_take_anothers_list() {
+    let (dac, other) = (identity(), identity());
+    let mut grant = holds("ControlledAccessGrants", &dac);
+    grant.issuers.push(other.did_string());
+    let mut run = Run::with(move |plan| {
+        plan.admission = Some(Policy {
+            purpose: Default::default(),
+            sites: Rule::Holds(grant),
+            operators: None,
+        });
+    });
+    // The second issuer gets a list in first, under the same id.
+    run.status(list(&other, &[], NOW - 6));
+    run.status(list(&dac, &[], NOW - 5));
+    assert!(run.replay.list(&dac.did_string(), LIST).is_some());
+    assert!(run.replay.list(&other.did_string(), LIST).is_some());
+    let did = run.sites[0].did_string();
+    let held = vec![credential(&dac, "ControlledAccessGrants", &did, None, 0)];
+    let body = run.join_holding(0, None, held);
+    let site = run.site(0);
+    run.apply(&site, body);
+
+    // Each issuer's list only speaks for its own credentials.
+    run.status(list(&other, &[0], NOW));
+    assert!(run.replay.revoked.is_empty());
+    run.status(list(&dac, &[0], NOW));
+    assert_eq!(run.replay.revoked.len(), 1);
+}
+
+#[test]
+fn an_issuer_may_revoke_without_changing_the_date() {
+    let dac = identity();
+    let mut run = Run::with(gated(&dac));
+    run.status(list(&dac, &[], NOW - 5));
+    run.join_gated(&dac, 0..3);
+    run.status(list(&dac, &[2], NOW - 5));
+    assert_eq!(run.replay.revoked.len(), 1);
+    let fault = run.refuse(
+        &run.aggregator.clone(),
+        run.status_body(list(&dac, &[2], NOW - 5)),
+    );
+    assert!(
+        matches!(&fault, Fault::Status(why) if why.contains("newer list")),
+        "{fault}"
+    );
+}
+
+#[test]
+fn a_join_cannot_be_dated_before_a_list_in_the_log() {
+    let dac = identity();
+    let mut run = Run::with(gated(&dac));
+    run.status(list(&dac, &[], NOW + 50));
+    let why = run.admission_refusal(0, run.join_holding(0, Some(dataset(0)), run.grant(&dac, 0)));
+    assert!(why.contains("before a revocation list"), "{why}");
+    let mut body = run.join_holding(0, Some(dataset(0)), run.grant(&dac, 0));
+    if let Body::Join { at, .. } = &mut body {
+        *at = NOW + 50;
+    }
+    let site = run.site(0);
+    run.apply(&site, body);
+}
+
+#[test]
+fn two_sites_cannot_train_on_one_dataset() {
+    let dac = identity();
+    let mut run = Run::with(gated(&dac));
+    run.status(list(&dac, &[], NOW - 5));
+    run.join_gated(&dac, 0..1);
+    let did = run.sites[1].did_string();
+    let held = vec![credential(
+        &dac,
+        "ControlledAccessGrants",
+        &did,
+        Some(&dataset(0)),
+        1,
+    )];
+    let why = run.admission_refusal(1, run.join_holding(1, Some(dataset(0)), held));
+    assert!(why.contains("another site trains on that dataset"), "{why}");
+}
+
+#[test]
+fn one_key_under_two_names_is_one_party() {
+    let key = Identity::generate(SigAlg::Ed25519).unwrap();
+    let plain = key.did_string();
+    let bio = key.on_registry("devnet").unwrap().did_string();
+    let mut plan = Run::new().plan;
+    plan.sites[0] = plain.clone();
+    plan.validate().unwrap();
+    plan.sites[1] = bio.clone();
+    assert_eq!(plan.validate(), Err(PlanError::DuplicateParty(bio.clone())));
+    plan.sites[1] = Run::new().plan.sites[1].clone();
+    plan.helpers[0].did = bio.clone();
+    assert!(matches!(plan.validate(), Err(PlanError::DuplicateParty(_))));
+}
+
+/// The aggregator and the helper must each hold a certification from `dac`.
+fn certified(dac: &Id, give_helper: bool) -> impl FnOnce(&mut Plan) + use<> {
+    let dac = dac.clone();
+    move |plan| {
+        plan.admission = Some(Policy {
+            purpose: Default::default(),
+            sites: Rule::All(Vec::new()),
+            operators: Some(Rule::Holds(holds("Certification", &dac))),
+        });
+        let aggregator = plan.aggregator.did.clone();
+        plan.aggregator.credentials =
+            vec![credential(&dac, "Certification", &aggregator, None, 10)];
+        if give_helper {
+            let helper = plan.helpers[0].did.clone();
+            plan.helpers[0].credentials =
+                vec![credential(&dac, "Certification", &helper, None, 11)];
+        }
+    }
+}
+
+#[test]
+fn operators_must_meet_the_policy_before_any_site_joins() {
+    let dac = identity();
+    let mut run = Run::with(certified(&dac, true));
+    run.status(list(&dac, &[], NOW - 5));
+    run.join(0..3);
+    assert_eq!(run.replay.joined.len(), 3);
+
+    let mut bare = Run::with(certified(&dac, false));
+    bare.status(list(&dac, &[], NOW - 5));
+    let why = bare.admission_refusal(0, bare.join_body(0, &bare.terms()));
+    assert!(
+        why.contains(&bare.helper.did_string()) && why.contains("Certification"),
+        "{why}"
+    );
+}
+
+#[test]
+fn an_operator_that_loses_its_credential_ends_the_run() {
+    let dac = identity();
+    let mut run = Run::with(certified(&dac, true));
+    run.status(list(&dac, &[], NOW - 5));
+    run.join(0..3);
+    run.open(1);
+    run.status(list(&dac, &[11], NOW));
+    assert_eq!(run.replay.phase, Phase::Aborted);
+    let reason = run.replay.abort.clone().unwrap();
+    assert!(
+        reason.contains(&run.helper.did_string()) && reason.contains("revoked"),
+        "{reason}"
+    );
+    let fault = run.refuse(&run.site(0), run.contribute_body(1, 10));
+    assert!(matches!(fault, Fault::WrongPhase { .. }), "{fault}");
+}
+
+#[test]
+fn a_plan_cannot_list_a_credential_about_someone_else() {
+    let dac = identity();
+    let mut plan = Run::new().plan;
+    plan.aggregator.credentials = vec![credential(
+        &dac,
+        "Certification",
+        "did:example:other",
+        None,
+        0,
+    )];
+    assert!(
+        matches!(plan.validate(), Err(PlanError::Credential(did)) if did == plan.aggregator.did)
+    );
+    plan.aggregator.credentials = vec!["not a credential".into()];
+    assert!(matches!(plan.validate(), Err(PlanError::Credential(_))));
+    let mut plan = Run::new().plan;
+    plan.admission = Some(Policy {
+        purpose: Default::default(),
+        sites: Rule::Any(Vec::new()),
+        operators: None,
+    });
+    assert!(matches!(plan.validate(), Err(PlanError::Policy(_))));
+}
+
+fn drawn(run: &Run, round: u32) -> Vec<usize> {
+    let beacon = sampling::beacon(&run.plan_id, round, &run.replay.model);
+    sampling::invited(&beacon, 3, 2).0
+}
+
+#[test]
+fn only_the_sites_drawn_for_a_round_may_contribute() {
+    let mut run = Run::with(|plan| plan.sample = Some(2));
+    run.join(0..3);
+    let invited = drawn(&run, 1);
+    run.open(1);
+    assert_eq!(
+        run.replay.current().unwrap().invited.as_ref(),
+        Some(&invited)
+    );
+    let outsider = (0..3).find(|s| !invited.contains(s)).unwrap();
+    let fault = run.refuse(&run.site(outsider), run.contribute_body(1, 10));
+    assert!(
+        matches!(&fault, Fault::BadContribution { why, .. } if why.contains("not drawn")),
+        "{fault}"
+    );
+    let list: Vec<_> = invited.iter().map(|s| run.contribute(*s, 1, 10)).collect();
+    run.close(1, &list);
+
+    let report = run.replay.report().unwrap();
+    let names: Vec<String> = invited.iter().map(|s| run.sites[*s].did_string()).collect();
+    assert_eq!(report.rounds[0].invited.as_ref(), Some(&names));
+    assert!(
+        report.rounds[0].absent.is_empty(),
+        "a site not drawn is not missing"
+    );
+}
+
+#[test]
+fn a_drawn_site_that_stays_away_is_reported() {
+    let mut run = Run::with(|plan| {
+        plan.sample = Some(3);
+    });
+    run.join(0..3);
+    run.open(1);
+    let list: Vec<_> = (0..2).map(|s| run.contribute(s, 1, 10)).collect();
+    let before = run.replay.report().unwrap();
+    assert_eq!(before.rounds[0].absent, [run.sites[2].did_string()]);
+    run.close(1, &list);
+    let after = run.replay.report().unwrap();
+    assert_eq!(after.rounds[0].absent, [run.sites[2].did_string()]);
+    assert!(!after.complete());
+}
+
+#[test]
+fn the_draw_follows_the_model_from_round_to_round() {
+    let mut run = Run::with(|plan| {
+        plan.sample = Some(2);
+        plan.rounds = 5;
+    });
+    run.join(0..3);
+    let mut models = std::collections::BTreeSet::new();
+    for round in 1..=5 {
+        assert!(
+            models.insert(run.replay.model),
+            "each round starts from a new model"
+        );
+        let invited = drawn(&run, round);
+        run.open(round);
+        assert_eq!(
+            run.replay.current().unwrap().invited.as_ref(),
+            Some(&invited)
+        );
+        let list: Vec<_> = invited
+            .iter()
+            .map(|s| run.contribute(*s, round, 10))
+            .collect();
+        run.close(round, &list);
+        run.mask_sum(round);
+        run.outcome(round, 20);
+        // Finish the round by hand: two sites, so the shared numbers do not fit.
+        let (masked, shares) = ([fp(5, 1), fp(7, 2)], [fp(1, 0), fp(2, 0)]);
+        run.helper_attest(round, &shares);
+        for (i, site) in invited.iter().enumerate() {
+            let body = run.attest_body(round, masked[i]);
+            let id = run.site(*site);
+            run.apply(&id, body);
+        }
+        let sum: Fp2 = masked.iter().copied().sum();
+        let total: Fp2 = shares.iter().copied().sum();
+        let body = run.seal_body(round, &masked, sum, sum - total);
+        let aggregator = run.aggregator.clone();
+        run.apply(&aggregator, body);
+        for site in &invited {
+            let body = run.ack_body(round);
+            let id = run.site(*site);
+            run.apply(&id, body);
+        }
+    }
+}
+
+#[test]
+fn a_sample_must_fit_between_the_smallest_cohort_and_the_sites() {
+    let mut plan = Run::new().plan;
+    for (sample, ok) in [(1, false), (2, true), (3, true), (4, false)] {
+        plan.sample = Some(sample);
+        assert_eq!(plan.validate().is_ok(), ok, "sample {sample}");
+        if !ok {
+            assert_eq!(plan.validate(), Err(PlanError::Sample));
+        }
+    }
+}
+
+#[test]
+fn a_site_can_make_privacy_a_condition_of_joining() {
+    let needs = |max_budget: Option<u64>, min_colluding: Option<u32>| Terms {
+        max_budget,
+        min_colluding,
+        ..Terms::default()
+    };
+    let refused = |run: &mut Run, terms: &Terms| {
+        let body = run.join_body(0, terms);
+        match run.refuse(&run.site(0), body) {
+            Fault::Admission(_, why) => assert!(why.contains("rejected"), "{why}"),
+            other => panic!("{other}"),
+        }
+    };
+
+    // A plan that makes no privacy promise meets neither condition.
+    let mut plain = Run::new();
+    refused(&mut plain, &needs(Some(u64::MAX), None));
+    refused(&mut plain, &needs(None, Some(0)));
+
+    let mut private_run = Run::with(private(4 << 40));
+    refused(&mut private_run, &needs(Some((4 << 40) - 1), None));
+    refused(&mut private_run, &needs(None, Some(1)));
+    let body = private_run.join_body(0, &needs(Some(4 << 40), Some(0)));
+    let site = private_run.site(0);
+    private_run.apply(&site, body);
+}
+
+fn on_registry() -> Id {
+    let key = Identity::generate(SigAlg::Ed25519).unwrap();
+    Arc::new(key.on_registry("devnet").unwrap())
+}
+
+#[test]
+fn a_run_between_did_bio_identities_follows_the_same_rules() {
+    let mut run = Run::of(on_registry, |_| {});
+    assert!(
+        run.plan
+            .sites
+            .iter()
+            .all(|s| s.starts_with("did:bio:devnet:"))
+    );
+    assert!(run.plan.aggregator.did.starts_with("did:bio:devnet:"));
+    run.join(0..3);
+    run.complete_round(1);
+    run.complete_round(2);
+    let body = run.finish_body();
+    let aggregator = run.aggregator.clone();
+    run.apply(&aggregator, body);
+    let report = run.replay.report().unwrap();
+    assert!(report.complete(), "{report:?}");
+    assert!(
+        report.joined[0]
+            .admission
+            .invoked_by
+            .starts_with("did:bio:devnet:")
+    );
+
+    // The same key under its did:key name is another party as far as the plan goes.
+    let stranger = Arc::new(Identity::generate(SigAlg::Ed25519).unwrap());
+    let fault = run.refuse(&stranger, run.ack_body(2));
+    assert!(
+        matches!(fault, Fault::WrongSigner { .. } | Fault::WrongPhase { .. }),
+        "{fault}"
+    );
 }

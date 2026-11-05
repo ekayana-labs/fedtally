@@ -12,11 +12,18 @@ use pq_ucan::time::Timestamp;
 use thiserror::Error;
 
 use crate::admission::{self, Admission};
+use crate::credential::Credential;
 use crate::field::Fp2;
 use crate::log::{GENESIS, chain};
 use crate::plan::Plan;
+use crate::policy::{Check, Holder, Policy, Rule};
 use crate::record::{Body, Included, Record, decode_token};
+use crate::sampling;
+use crate::status::StatusList;
 use crate::vector::Digest;
+
+/// More than any policy can ask of one site.
+const MAX_CREDENTIALS: usize = 64;
 
 #[derive(Debug, Error)]
 pub enum Fault {
@@ -72,6 +79,10 @@ pub enum Fault {
     WrongHead,
     #[error("finish before the last round")]
     EarlyFinish,
+    #[error("round {round} would spend {cost}, and only {left} of the privacy budget is left")]
+    OverBudget { round: u32, cost: u64, left: u64 },
+    #[error("status list: {0}")]
+    Status(String),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -136,12 +147,20 @@ pub struct RoundState {
     pub helper_attests: BTreeMap<usize, HelperAttest>,
     pub seal: Option<Seal>,
     pub acks: BTreeSet<usize>,
+    /// What closing the round spent of the privacy budget.
+    pub cost: u64,
+    /// The sites drawn for this round, where the plan samples.
+    pub invited: Option<Vec<usize>>,
+    /// The sites that could have been in the round when it closed.
+    pub expected: Vec<usize>,
 }
 
 #[derive(Clone, Debug)]
 pub struct Joined {
     pub at: i64,
     pub admission: Admission,
+    pub dataset: Option<String>,
+    pub credentials: Vec<Credential>,
 }
 
 #[derive(Clone)]
@@ -155,6 +174,14 @@ pub struct Replay {
     pub joined: BTreeMap<usize, Joined>,
     pub rounds: Vec<RoundState>,
     pub abort: Option<String>,
+    /// Privacy budget spent so far, in units of 2^-40 of rho.
+    pub spent: u64,
+    /// The newest revocation list from each issuer, by list id.
+    pub lists: BTreeMap<(String, String), StatusList>,
+    /// Sites whose credentials no longer meet the policy, and why.
+    pub revoked: BTreeMap<usize, String>,
+    /// The credentials the plan lists for the aggregator and each helper.
+    pub operators: Vec<Vec<Credential>>,
 }
 
 impl Default for Replay {
@@ -177,6 +204,7 @@ fn kind(body: &Body) -> &'static str {
         Body::Seal { .. } => "seal",
         Body::Ack { .. } => "ack",
         Body::Abort { .. } => "abort",
+        Body::Status { .. } => "status",
         Body::Finish { .. } => "finish",
     }
 }
@@ -193,6 +221,10 @@ impl Replay {
             joined: BTreeMap::new(),
             rounds: Vec::new(),
             abort: None,
+            spent: 0,
+            lists: BTreeMap::new(),
+            revoked: BTreeMap::new(),
+            operators: Vec::new(),
         }
     }
 
@@ -241,6 +273,15 @@ impl Replay {
             return Err(Fault::NoPlan);
         }
         plan.validate()?;
+        self.operators = plan
+            .operators()
+            .map(|(did, held)| {
+                held.iter()
+                    .map(|text| Credential::parse(text))
+                    .collect::<Result<Vec<_>, _>>()
+                    .map_err(|e| Fault::Admission(did.to_owned(), e.to_string()))
+            })
+            .collect::<Result<_, _>>()?;
         self.plan_id = record.body_hash;
         self.model = plan.init_model;
         self.plan = Some(Arc::new(plan.clone()));
@@ -257,6 +298,110 @@ impl Replay {
         match state.included.iter().find(|s| !state.acks.contains(s)) {
             Some(site) => Err(Fault::Unacknowledged(plan.sites[*site].clone())),
             None => Ok(()),
+        }
+    }
+
+    /// The newest list an issuer has published under an id. Lists are kept
+    /// per issuer, so one issuer can't take another's id.
+    pub fn list(&self, issuer: &str, id: &str) -> Option<&StatusList> {
+        self.lists.get(&(issuer.to_owned(), id.to_owned()))
+    }
+
+    fn is_revoked(&self, credential: &Credential) -> bool {
+        credential.status.as_ref().is_some_and(|entry| {
+            self.list(&credential.issuer, &entry.list)
+                .is_some_and(|list| list.is_set(entry.index))
+        })
+    }
+
+    /// A credential that can be revoked only counts once its issuer's list is
+    /// in the log, so every replica judges it against the same list.
+    fn unlisted<'a>(&self, held: &'a [Credential]) -> Option<&'a Credential> {
+        held.iter().find(|c| {
+            c.status
+                .as_ref()
+                .is_some_and(|entry| self.list(&c.issuer, &entry.list).is_none())
+        })
+    }
+
+    fn meets(
+        &self,
+        policy: &Policy,
+        rule: &Rule,
+        holder: Holder<'_>,
+        held: &[Credential],
+        now: i64,
+    ) -> Result<(), String> {
+        if let Some(credential) = self.unlisted(held) {
+            return Err(format!(
+                "the status list of {} is not in the log",
+                credential.issuer
+            ));
+        }
+        Check {
+            purpose: &policy.purpose,
+            holder,
+            credentials: held,
+            now,
+            revoked: &|c| self.is_revoked(c),
+        }
+        .meets(rule)
+    }
+
+    /// The first operator that does not meet the policy at `now`, if any.
+    fn operators_meet(&self, plan: &Plan, policy: &Policy, now: i64) -> Result<(), String> {
+        let Some(rule) = &policy.operators else {
+            return Ok(());
+        };
+        for ((did, _), held) in plan.operators().zip(&self.operators) {
+            let holder = Holder { did, dataset: None };
+            self.meets(policy, rule, holder, held, now)
+                .map_err(|why| format!("{did}: {why}"))?;
+        }
+        Ok(())
+    }
+
+    /// Whether a site would be admitted at `now` on the credentials it holds,
+    /// judged against the lists in this log. A plan without a policy admits.
+    pub fn site_meets(
+        &self,
+        plan: &Plan,
+        did: &str,
+        dataset: Option<&str>,
+        held: &[Credential],
+        now: i64,
+    ) -> Result<(), String> {
+        let Some(policy) = &plan.admission else {
+            return Ok(());
+        };
+        let holder = Holder { did, dataset };
+        self.meets(policy, &policy.sites, holder, held, now)?;
+        self.operators_meet(plan, policy, now)
+    }
+
+    /// The sites that may take part in the current round as things stand.
+    pub fn expected(&self, plan: &Plan) -> Vec<usize> {
+        let invited = self.current().and_then(|r| r.invited.clone());
+        invited
+            .unwrap_or_else(|| (0..plan.sites.len()).collect())
+            .into_iter()
+            .filter(|site| !self.revoked.contains_key(site))
+            .collect()
+    }
+
+    /// What a round over `cohort` sites costs, if the budget still covers it.
+    fn affordable(&self, plan: &Plan, round: u32, cohort: usize) -> Result<u64, Fault> {
+        let left = plan
+            .privacy
+            .as_ref()
+            .map_or(u64::MAX, |p| p.budget.saturating_sub(self.spent));
+        match plan.round_cost(cohort) {
+            Some(cost) if cost <= left => Ok(cost),
+            cost => Err(Fault::OverBudget {
+                round,
+                cost: cost.unwrap_or(u64::MAX),
+                left,
+            }),
         }
     }
 
@@ -324,6 +469,8 @@ impl Replay {
                 at,
                 invocation,
                 proofs,
+                dataset,
+                credentials,
             } => {
                 let site = from_site()?;
                 same_run(id)?;
@@ -342,7 +489,54 @@ impl Replay {
                 let now = Timestamp::from_unix(*at).map_err(|e| refused(e.to_string()))?;
                 let admission = admission::check(&did, id, plan, &token, &chain_tokens, now, None)
                     .map_err(|e| refused(e.to_string()))?;
-                self.joined.insert(site, Joined { at: *at, admission });
+                let held = match &plan.admission {
+                    None if dataset.is_some() || !credentials.is_empty() => {
+                        return Err(refused("this plan asks for no credentials".into()));
+                    }
+                    None => Vec::new(),
+                    Some(policy) => {
+                        // A site's word for the time can't be earlier than a
+                        // list already in the log, or an expired credential
+                        // could be backdated past its revocation.
+                        if self.lists.values().any(|list| *at < list.issued) {
+                            return Err(refused(
+                                "it gives a time before a revocation list in the log".into(),
+                            ));
+                        }
+                        let taken = self
+                            .joined
+                            .values()
+                            .any(|other| dataset.is_some() && other.dataset == *dataset);
+                        if taken {
+                            return Err(refused("another site trains on that dataset".into()));
+                        }
+                        if credentials.len() > MAX_CREDENTIALS {
+                            return Err(refused("too many credentials".into()));
+                        }
+                        let held = credentials
+                            .iter()
+                            .map(|text| Credential::parse(text))
+                            .collect::<Result<Vec<_>, _>>()
+                            .map_err(|e| refused(e.to_string()))?;
+                        let holder = Holder {
+                            did: signer,
+                            dataset: dataset.as_deref(),
+                        };
+                        self.meets(policy, &policy.sites, holder, &held, *at)
+                            .map_err(refused)?;
+                        self.operators_meet(plan, policy, *at).map_err(refused)?;
+                        held
+                    }
+                };
+                self.joined.insert(
+                    site,
+                    Joined {
+                        at: *at,
+                        admission,
+                        dataset: dataset.clone(),
+                        credentials: held,
+                    },
+                );
                 Ok(())
             }
 
@@ -367,9 +561,17 @@ impl Replay {
                         want: self.model,
                     });
                 }
+                // The smallest cohort is the dearest a round can be. If that
+                // fits, whatever Close picks fits too.
+                self.affordable(plan, *round, plan.min_cohort as usize)?;
+                let invited = plan.sample.map(|size| {
+                    let beacon = sampling::beacon(&self.plan_id, *round, &self.model);
+                    sampling::invited(&beacon, plan.sites.len(), size as usize).0
+                });
                 self.rounds.push(RoundState {
                     round: *round,
                     base: *base,
+                    invited,
                     ..RoundState::default()
                 });
                 self.phase = Phase::Collecting;
@@ -404,6 +606,13 @@ impl Replay {
                 if *base != self.model {
                     return Err(bad("trained on another model".to_owned()));
                 }
+                if let Some(why) = self.revoked.get(&site) {
+                    return Err(bad(format!("it is no longer admitted: {why}")));
+                }
+                let invited = self.current().and_then(|r| r.invited.as_ref());
+                if invited.is_some_and(|sites| !sites.contains(&site)) {
+                    return Err(bad("it was not drawn for this round".to_owned()));
+                }
                 if sealed.len() != plan.helpers.len() {
                     return Err(bad("wrong number of sealed seeds".to_owned()));
                 }
@@ -437,10 +646,23 @@ impl Replay {
                 this_round(*round)?;
                 let state = self.current().ok_or(Fault::NoPlan)?;
                 let sites = check_included(plan, state, included)?;
+                if let Some(site) = sites.iter().find(|s| self.revoked.contains_key(s)) {
+                    return Err(Fault::BadClose(format!(
+                        "{} is no longer admitted",
+                        plan.sites[*site]
+                    )));
+                }
+                let expected = self.expected(plan);
+                // The sum is as good as released once the cohort is fixed, so
+                // the round is paid for here, whether or not it gets sealed.
+                let cost = self.affordable(plan, *round, sites.len())?;
+                self.spent += cost;
                 let state = self.rounds.last_mut().ok_or(Fault::NoPlan)?;
                 state.included = sites;
                 state.sum = *sum;
                 state.close_head = head_after;
+                state.cost = cost;
+                state.expected = expected;
                 self.phase = Phase::Masking;
                 Ok(())
             }
@@ -628,6 +850,72 @@ impl Replay {
                 }
                 if !state.acks.insert(site) {
                     return Err(Fault::Duplicate(name, signer.to_owned()));
+                }
+                Ok(())
+            }
+
+            Body::Status { plan: id, list } => {
+                if !plan.is_party(signer) {
+                    return Err(wrong_signer());
+                }
+                same_run(id)?;
+                if matches!(self.phase, Phase::Empty | Phase::Done | Phase::Aborted) {
+                    return Err(Fault::WrongPhase {
+                        kind: name,
+                        phase: self.phase,
+                    });
+                }
+                let policy = plan
+                    .admission
+                    .as_ref()
+                    .ok_or_else(|| Fault::Status("this plan asks for no credentials".into()))?;
+                let list = StatusList::parse(list).map_err(|e| Fault::Status(e.to_string()))?;
+                if !policy.relies_on(&list.issuer) {
+                    return Err(Fault::Status(
+                        "no rule in this plan accepts that issuer".into(),
+                    ));
+                }
+                if let Some(old) = self.list(&list.issuer, &list.id) {
+                    if !list.keeps(old) {
+                        return Err(Fault::Status("a revocation cannot be undone".into()));
+                    }
+                    // An issuer may revoke without changing the list's date.
+                    let adds = !old.keeps(&list);
+                    if list.issued < old.issued || (list.issued == old.issued && !adds) {
+                        return Err(Fault::Status("the log already holds a newer list".into()));
+                    }
+                }
+                self.lists
+                    .insert((list.issuer.clone(), list.id.clone()), list);
+
+                let fallen: Vec<(usize, String)> = self
+                    .joined
+                    .iter()
+                    .filter(|(site, _)| !self.revoked.contains_key(site))
+                    .filter_map(|(site, joined)| {
+                        let holder = Holder {
+                            did: &plan.sites[*site],
+                            dataset: joined.dataset.as_deref(),
+                        };
+                        self.meets(
+                            policy,
+                            &policy.sites,
+                            holder,
+                            &joined.credentials,
+                            joined.at,
+                        )
+                        .err()
+                        .map(|why| (*site, why))
+                    })
+                    .collect();
+                self.revoked.extend(fallen);
+                // An operator that loses its standing ends the run for everyone.
+                let first_join = self.joined.values().map(|j| j.at).min();
+                if let Some(at) = first_join
+                    && let Err(why) = self.operators_meet(plan, policy, at)
+                {
+                    self.abort = Some(why);
+                    self.phase = Phase::Aborted;
                 }
                 Ok(())
             }

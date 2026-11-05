@@ -7,12 +7,17 @@ use std::fs::{File, OpenOptions};
 use std::io::{self, Read};
 use std::os::unix::fs::FileExt;
 use std::path::Path;
+use std::sync::{Mutex, PoisonError};
 
+use rand_chacha::ChaCha20Rng;
+use rand_core::{RngCore, SeedableRng};
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::field::Fp;
+use crate::keys::random_bytes;
+use crate::privacy::{Privacy, Sampler};
 use crate::vector::{self, Manifest, Shape};
 
 /// Random coordinates appended to each update. They hide its fingerprint.
@@ -261,13 +266,11 @@ pub struct Encoded {
     pub clipped: u64,
 }
 
-/// Writes weight * (local - base) plus masks, one chunk at a time.
-pub fn encode_update(req: &EncodeRequest<'_>) -> Result<Encoded, ModelError> {
-    let layout = req.layout;
-    if req.local.len() != layout.tensors.len() {
+fn check_views(layout: &Layout, local: &[TensorView<'_>]) -> Result<(), ModelError> {
+    if local.len() != layout.tensors.len() {
         return Err(ModelError::Mismatch("wrong tensor count".into()));
     }
-    for (view, spec) in req.local.iter().zip(&layout.tensors) {
+    for (view, spec) in local.iter().zip(&layout.tensors) {
         if view.len() as u64 != spec.coords() {
             return Err(ModelError::Mismatch(format!(
                 "wrong size for {}",
@@ -275,35 +278,61 @@ pub fn encode_update(req: &EncodeRequest<'_>) -> Result<Encoded, ModelError> {
             )));
         }
     }
-    let base = ModelFile::open(req.base, layout)?;
-    let shape = layout.shape(req.chunk_coords);
-    let plain = layout.coords();
+    Ok(())
+}
+
+/// Calls `each` with local - base for the model coordinates in `start..end`.
+fn for_deltas(
+    base: &ModelFile,
+    local: &[TensorView<'_>],
+    (start, end): (u64, u64),
+    mut each: impl FnMut(f64),
+) -> io::Result<()> {
+    let mut base_values = Vec::new();
+    for run in base.layout.runs(start, end) {
+        base_values.resize(run.len as usize, 0.0);
+        base.read_run(&run, &mut base_values)?;
+        let view = local[run.tensor];
+        for (k, b) in base_values.iter().enumerate() {
+            each(view.get(run.tensor_offset as usize + k) - b);
+        }
+    }
+    Ok(())
+}
+
+/// The pad coordinates that fall in a chunk, then the masks over all of it.
+fn finish_chunk(
+    shape: Shape,
+    plain: u64,
+    chunk: u64,
+    filled: usize,
+    buf: &mut [u64],
+    pad: &[Fp; PAD as usize],
+    seeds: &[[u8; 32]],
+) {
+    let (start, end) = shape.range(chunk);
+    for (n, coord) in (start.max(plain)..end).enumerate() {
+        buf[filled + n] = pad[(coord - plain) as usize].value();
+    }
+    for seed in seeds {
+        vector::apply_mask(seed, chunk, buf);
+    }
+}
+
+/// Writes weight * (local - base) plus masks, one chunk at a time.
+pub fn encode_update(req: &EncodeRequest<'_>) -> Result<Encoded, ModelError> {
+    check_views(req.layout, req.local)?;
+    let base = ModelFile::open(req.base, req.layout)?;
+    let shape = req.layout.shape(req.chunk_coords);
+    let plain = req.layout.coords();
     let clipped = std::sync::atomic::AtomicU64::new(0);
     let manifest = vector::build(req.out, shape, |chunk, buf, _| {
-        let (start, end) = shape.range(chunk);
-        let mut n = 0usize;
-        let mut count = 0;
-        let mut base_values = Vec::new();
-        for run in layout.runs(start, end) {
-            base_values.resize(run.len as usize, 0.0);
-            base.read_run(&run, &mut base_values)?;
-            let view = req.local[run.tensor];
-            for (k, b) in base_values.iter().enumerate() {
-                let local = view.get(run.tensor_offset as usize + k);
-                buf[n] = req
-                    .encoding
-                    .encode(local - b, req.weight, &mut count)
-                    .value();
-                n += 1;
-            }
-        }
-        for coord in start.max(plain)..end {
-            buf[n] = req.pad[(coord - plain) as usize].value();
+        let (mut n, mut count) = (0usize, 0);
+        for_deltas(&base, req.local, shape.range(chunk), |delta| {
+            buf[n] = req.encoding.encode(delta, req.weight, &mut count).value();
             n += 1;
-        }
-        for seed in req.seeds {
-            vector::apply_mask(seed, chunk, buf);
-        }
+        })?;
+        finish_chunk(shape, plain, chunk, n, buf, &req.pad, req.seeds);
         clipped.fetch_add(count, std::sync::atomic::Ordering::Relaxed);
         Ok(())
     })?;
@@ -311,6 +340,89 @@ pub fn encode_update(req: &EncodeRequest<'_>) -> Result<Encoded, ModelError> {
         manifest,
         clipped: clipped.into_inner(),
     })
+}
+
+pub struct PrivateRequest<'a> {
+    pub layout: &'a Layout,
+    pub frac_bits: u32,
+    pub chunk_coords: u64,
+    pub base: &'a Path,
+    pub local: &'a [TensorView<'a>],
+    pub privacy: &'a Privacy,
+    pub pad: [Fp; PAD as usize],
+    pub seeds: &'a [[u8; 32]],
+    pub out: &'a Path,
+}
+
+const TWO_53: f64 = (1u64 << 53) as f64;
+
+/// Writes the update a private run takes from a site: local - base, clipped to
+/// the plan's L2 bound, rounded onto the grid at random so the rounding has no
+/// bias, plus discrete Gaussian noise, plus masks.
+///
+/// The noise and the rounding use fresh randomness that is never stored. Before
+/// returning, the norm of the rounded vector is checked in integers, so the
+/// bound the privacy accounting relies on holds whatever floating point did.
+pub fn encode_private(req: &PrivateRequest<'_>) -> Result<Encoded, ModelError> {
+    check_views(req.layout, req.local)?;
+    let base = ModelFile::open(req.base, req.layout)?;
+    let shape = req.layout.shape(req.chunk_coords);
+    let plain = req.layout.coords();
+    let scale = (1u64 << req.frac_bits) as f64;
+
+    let square_sum: io::Result<f64> = (0..shape.chunks())
+        .into_par_iter()
+        .map(|chunk| {
+            let mut sum = 0.0;
+            for_deltas(&base, req.local, shape.range(chunk), |delta| {
+                if delta.is_finite() {
+                    sum += delta * delta;
+                }
+            })?;
+            Ok(sum)
+        })
+        .try_reduce(|| 0.0, |a, b| Ok(a + b));
+    let norm = square_sum?.sqrt() * scale;
+    let clip = req.privacy.clip as f64;
+    let clipped = norm > clip;
+    let mut factor = if clipped { clip / norm } else { 1.0 } * scale;
+
+    let limit = u128::from(req.privacy.sensitivity(plain)).pow(2);
+    let sampler = Sampler::new(req.privacy.noise);
+    loop {
+        let (rounding_seed, noise_seed) = (random_bytes::<32>(), random_bytes::<32>());
+        let squares = Mutex::new(0u128);
+        let manifest = vector::build(req.out, shape, |chunk, buf, _| {
+            let mut rounding = ChaCha20Rng::from_seed(rounding_seed);
+            rounding.set_stream(chunk);
+            let mut noise = ChaCha20Rng::from_seed(noise_seed);
+            noise.set_stream(chunk);
+            let (mut n, mut sum) = (0usize, 0u128);
+            for_deltas(&base, req.local, shape.range(chunk), |delta| {
+                let exact = if delta.is_finite() {
+                    delta * factor
+                } else {
+                    0.0
+                };
+                let floor = exact.floor();
+                let up = ((rounding.next_u64() >> 11) as f64) < (exact - floor) * TWO_53;
+                let rounded = floor as i64 + i64::from(up);
+                sum += u128::from(rounded.unsigned_abs()).pow(2);
+                buf[n] = Fp::from_i64(rounded + sampler.sample(&mut noise)).value();
+                n += 1;
+            })?;
+            finish_chunk(shape, plain, chunk, n, buf, &req.pad, req.seeds);
+            *squares.lock().unwrap_or_else(PoisonError::into_inner) += sum;
+            Ok(())
+        })?;
+        if squares.into_inner().unwrap_or_else(PoisonError::into_inner) <= limit {
+            return Ok(Encoded {
+                manifest,
+                clipped: u64::from(clipped),
+            });
+        }
+        factor *= 1.0 - 1.0 / 1024.0;
+    }
 }
 
 /// Writes the next model: base + aggregate / (scale * total_weight).
@@ -671,6 +783,162 @@ mod tests {
         assert_eq!(encoded.clipped, 2);
         let shape = layout().shape(4);
         assert!(in_range(&out, shape, 17, ENCODING.bound(1)).unwrap());
+    }
+
+    fn wide() -> Layout {
+        Layout {
+            tensors: vec![TensorSpec {
+                name: "w".into(),
+                dtype: Dtype::F64,
+                shape: vec![20_000],
+            }],
+        }
+    }
+
+    const QUIET: Privacy = Privacy {
+        clip: 1 << 18,
+        noise: 8,
+        colluding: 0,
+        budget: u64::MAX,
+        epsilon: 1.0,
+        delta: 1e-5,
+    };
+
+    /// Encodes `local` against a zero model and returns the plain coordinates.
+    fn private_values(local: &[f64], privacy: &Privacy, seeds: &[[u8; 32]]) -> Vec<i64> {
+        let dir = tempfile::tempdir().unwrap();
+        let d = dir.path();
+        let (base, out) = (d.join("base"), d.join("out"));
+        write_model(&base, &wide(), &[TensorView::F64(&vec![0.0; 20_000])]).unwrap();
+        let shape = wide().shape(4096);
+        encode_private(&PrivateRequest {
+            layout: &wide(),
+            frac_bits: 18,
+            chunk_coords: 4096,
+            base: &base,
+            local: &[TensorView::F64(local)],
+            privacy,
+            pad: [Fp::new(11), Fp::new(13)],
+            seeds,
+            out: &out,
+        })
+        .unwrap();
+        let plain = d.join("plain");
+        if seeds.is_empty() {
+            std::fs::copy(&out, &plain).unwrap();
+        } else {
+            let mask = d.join("mask");
+            vector::build(&mask, shape, |chunk, buf, _| {
+                for seed in seeds {
+                    vector::apply_mask(seed, chunk, buf);
+                }
+                Ok(())
+            })
+            .unwrap();
+            combine(&plain, shape, &[&out], &[&mask]).unwrap();
+        }
+        let file = File::open(&plain).unwrap();
+        let mut all = Vec::new();
+        for chunk in 0..shape.chunks() {
+            let mut buf = Vec::new();
+            vector::read_chunk(&file, shape, chunk, &mut buf).unwrap();
+            all.extend(buf.iter().map(|v| Fp::new(*v).centered()));
+        }
+        assert_eq!(&all[20_000..], &[11, 13], "the pad follows the model");
+        all.truncate(20_000);
+        all
+    }
+
+    fn norm(values: &[i64]) -> f64 {
+        values
+            .iter()
+            .map(|v| (*v as f64).powi(2))
+            .sum::<f64>()
+            .sqrt()
+    }
+
+    #[test]
+    fn a_private_update_is_clipped_to_the_norm_and_keeps_its_direction() {
+        let local: Vec<f64> = (0..20_000)
+            .map(|i| if i % 2 == 0 { 3.0 } else { -1.0 })
+            .collect();
+        let values = private_values(&local, &QUIET, &[]);
+        // The clip is one model unit, 2^18 on the grid. Noise of variance 8
+        // over 20,000 coordinates adds a few hundred to the norm at most.
+        let clip = (1u64 << 18) as f64;
+        assert!(
+            (norm(&values) / clip - 1.0).abs() < 0.01,
+            "{}",
+            norm(&values)
+        );
+        let unit = clip / norm(&local.iter().map(|v| *v as i64).collect::<Vec<_>>());
+        for (got, want) in values.iter().zip(&local).take(200) {
+            assert!((*got as f64 - want * unit).abs() < 40.0, "{got} for {want}");
+        }
+    }
+
+    #[test]
+    fn a_small_update_is_not_scaled_and_rounding_has_no_bias() {
+        // 0.3 of a grid step each: far inside the clip, and never a whole number.
+        let step = 0.3 / (1u64 << 18) as f64;
+        let values = private_values(&vec![step; 20_000], &QUIET, &[]);
+        let mean = values.iter().sum::<i64>() as f64 / 20_000.0;
+        assert!((mean - 0.3).abs() < 0.08, "{mean}");
+        let spread = values
+            .iter()
+            .map(|v| (*v as f64 - mean).powi(2))
+            .sum::<f64>()
+            / 20_000.0;
+        // Noise of variance 8 plus the rounding coin's 0.3 * 0.7.
+        assert!((spread - 8.21).abs() < 0.5, "{spread}");
+    }
+
+    #[test]
+    fn the_noise_has_the_variance_the_plan_names() {
+        let loud = Privacy {
+            noise: 1 << 30,
+            ..QUIET
+        };
+        let values = private_values(&vec![0.0; 20_000], &loud, &[]);
+        let spread = values.iter().map(|v| (*v as f64).powi(2)).sum::<f64>() / 20_000.0;
+        assert!(
+            (spread / (1u64 << 30) as f64 - 1.0).abs() < 0.05,
+            "{spread}"
+        );
+        let again = private_values(&vec![0.0; 20_000], &loud, &[]);
+        assert_ne!(values, again, "noise must be fresh every time");
+    }
+
+    #[test]
+    fn masks_come_off_a_private_update() {
+        let values = private_values(&vec![0.0; 20_000], &QUIET, &[[7u8; 32], [9u8; 32]]);
+        assert!(
+            values.iter().all(|v| v.abs() < 60),
+            "masks left something behind"
+        );
+        assert!(values.iter().any(|v| *v != 0));
+    }
+
+    #[test]
+    fn values_that_are_not_numbers_count_as_zero() {
+        let mut local = vec![0.0; 20_000];
+        (local[0], local[1], local[2]) = (f64::NAN, f64::INFINITY, 0.5);
+        let values = private_values(&local, &QUIET, &[]);
+        assert!(values[0].abs() < 60 && values[1].abs() < 60);
+        assert!((values[2] - (1 << 17)).abs() < 60, "{}", values[2]);
+    }
+
+    #[test]
+    fn the_rounded_norm_never_exceeds_what_the_accounting_assumes() {
+        // With no noise to speak of, the vector that comes out is the rounded one.
+        let local: Vec<f64> = (0..20_000).map(|i| (i as f64).sin() * 1e6).collect();
+        let values = private_values(&local, &QUIET, &[]);
+        let limit = QUIET.sensitivity(20_000) as f64;
+        assert!(
+            norm(&values) < limit + 500.0,
+            "{} over {limit}",
+            norm(&values)
+        );
     }
 
     #[test]

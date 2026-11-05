@@ -4,23 +4,30 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicI64, Ordering};
 use std::time::Duration;
 
 use fedtally_core::admission::{self, Terms};
+use fedtally_core::credential::{Credential, Draft, StatusEntry};
+use fedtally_core::duo::{self, Purpose, Research};
 use fedtally_core::keys::{Identity, SigAlg, random_bytes};
 use fedtally_core::model::{Encoding, Layout};
 use fedtally_core::plan::{AggregatorSpec, HelperSpec, Plan, Timeouts};
+use fedtally_core::policy::{About, Atom, Policy, Rule};
 use fedtally_core::pq_ucan::crypto::Signer;
 use fedtally_core::pq_ucan::time::Timestamp;
+use fedtally_core::privacy;
 use fedtally_core::record::{Body, Record, decode_token, encode_token};
+use fedtally_core::status::StatusList;
 use fedtally_core::vector::Digest;
 use serde::{Deserialize, Serialize};
+use serde_json::json;
 
 use crate::NodeError;
 use crate::aggregator::AggregatorConfig;
 use crate::helper::HelperConfig;
 use crate::net::{generate_tls, tls_pin};
-use crate::site::SiteConfig;
+use crate::site::{SiteConfig, Standing};
 
 const LONG_GRANT_SECS: i64 = 60 * 60 * 24 * 365;
 
@@ -39,6 +46,42 @@ pub struct Options {
     /// The purpose sites grant, if it differs from the one the plan states.
     pub granted_purpose: Option<String>,
     pub sig_alg: SigAlg,
+    /// A privacy target. It replaces `encoding` and `max_weight`.
+    pub privacy: Option<privacy::Request>,
+    /// How many sites each round invites. Everyone, if absent.
+    pub sample: Option<u32>,
+    /// Gate the run on credentials: an affiliation, an ethics approval and an
+    /// access grant for each site, and provenance for each dataset.
+    pub credentials: bool,
+    /// Name every party by `did:bio` on this network, not by `did:key`.
+    pub did_bio: Option<String>,
+}
+
+/// The options a caller may set from outside, such as from Python. Anything
+/// left out keeps the value `Options::new` gives it.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Overrides {
+    sites: usize,
+    helpers: usize,
+    rounds: u32,
+    min_cohort: Option<u32>,
+    chunk_coords: Option<u64>,
+    frac_bits: Option<u32>,
+    clip: Option<f64>,
+    max_weight: Option<u64>,
+    audits: Option<u32>,
+    purpose: Option<String>,
+    granted_purpose: Option<String>,
+    join_secs: Option<u64>,
+    collect_secs: Option<u64>,
+    attest_secs: Option<u64>,
+    ack_secs: Option<u64>,
+    sig_alg: Option<SigAlg>,
+    privacy: Option<privacy::Request>,
+    sample: Option<u32>,
+    credentials: Option<bool>,
+    did_bio: Option<String>,
 }
 
 /// Three quarters of the sites. The aggregator chooses who is in a round, so
@@ -71,7 +114,40 @@ impl Options {
             purpose: "local run".into(),
             granted_purpose: None,
             sig_alg: SigAlg::Ed25519,
+            privacy: None,
+            sample: None,
+            credentials: false,
+            did_bio: None,
         }
+    }
+
+    pub fn from_json(text: &str) -> Result<Options, NodeError> {
+        let given: Overrides =
+            serde_json::from_str(text).map_err(|e| NodeError::Protocol(e.to_string()))?;
+        let mut options = Options::new(given.sites, given.helpers, given.rounds);
+        fn set<T>(slot: &mut T, value: Option<T>) {
+            if let Some(value) = value {
+                *slot = value;
+            }
+        }
+        set(&mut options.min_cohort, given.min_cohort);
+        set(&mut options.chunk_coords, given.chunk_coords);
+        set(&mut options.encoding.frac_bits, given.frac_bits);
+        set(&mut options.encoding.clip, given.clip);
+        set(&mut options.max_weight, given.max_weight);
+        set(&mut options.audits, given.audits);
+        set(&mut options.purpose, given.purpose);
+        set(&mut options.timeouts.join_secs, given.join_secs);
+        set(&mut options.timeouts.collect_secs, given.collect_secs);
+        set(&mut options.timeouts.attest_secs, given.attest_secs);
+        set(&mut options.timeouts.ack_secs, given.ack_secs);
+        set(&mut options.sig_alg, given.sig_alg);
+        set(&mut options.credentials, given.credentials);
+        options.granted_purpose = given.granted_purpose;
+        options.privacy = given.privacy;
+        options.sample = given.sample;
+        options.did_bio = given.did_bio;
+        Ok(options)
     }
 }
 
@@ -102,6 +178,175 @@ impl GrantFile {
     }
 }
 
+/// The bodies that vouch for sites in a federation gated on credentials: a
+/// university for affiliation, a review board for ethics approval, and a data
+/// access committee for access grants and dataset provenance.
+pub struct Issuers {
+    pub university: Identity,
+    pub board: Identity,
+    pub committee: Identity,
+    issued: AtomicI64,
+}
+
+/// Dataset credentials sit above every site's slot in the committee's list.
+const DATASET_SLOTS_FROM: u64 = 1 << 16;
+
+impl Issuers {
+    fn new(now: i64) -> Result<Issuers, NodeError> {
+        let new = || Identity::generate(SigAlg::Ed25519);
+        Ok(Issuers {
+            university: new()?,
+            board: new()?,
+            committee: new()?,
+            // Dated a little back, so a list never postdates a site's Join.
+            issued: AtomicI64::new(now - 3600),
+        })
+    }
+
+    fn list_id(issuer: &Identity) -> String {
+        format!("urn:fedtally:status:{}", issuer.did_string())
+    }
+
+    fn credential(
+        issuer: &Identity,
+        kind: &str,
+        subject: &str,
+        index: u64,
+        claims: serde_json::Value,
+        now: i64,
+    ) -> Result<String, NodeError> {
+        let draft = Draft {
+            kind: kind.to_owned(),
+            subject: subject.to_owned(),
+            claims: claims.as_object().cloned().unwrap_or_default(),
+            valid_from: now - 60,
+            valid_until: Some(now + LONG_GRANT_SECS),
+            status: Some(StatusEntry {
+                list: Issuers::list_id(issuer),
+                index,
+            }),
+        };
+        Credential::issue(issuer, &draft, now)
+            .map(|c| c.text)
+            .map_err(|e| NodeError::Check(e.to_string()))
+    }
+
+    /// What site `index` holds: an affiliation, an ethics approval, a grant
+    /// for its dataset under health research terms, and the dataset's provenance.
+    fn wallet(
+        &self,
+        index: usize,
+        site: &str,
+        dataset: &str,
+        now: i64,
+    ) -> Result<Vec<String>, NodeError> {
+        let visa = |kind: &str, value: &str, by: &str| {
+            json!({"ga4gh_visa_v1": {
+                "type": kind, "value": value, "by": by,
+                "source": "https://issuer.example", "asserted": now - 60,
+            }})
+        };
+        let mut grant = visa("ControlledAccessGrants", dataset, "dac");
+        grant["data_use"] = json!({
+            "permission": duo::HEALTH,
+            "modifiers": [{"term": duo::ETHICS_APPROVAL_REQUIRED}, {"term": duo::NON_COMMERCIAL}],
+        });
+        let slot = index as u64;
+        let affiliation = visa("AffiliationAndRole", "researcher@university.example", "so");
+        Ok(vec![
+            Issuers::credential(
+                &self.university,
+                "AffiliationAndRole",
+                site,
+                slot,
+                affiliation,
+                now,
+            )?,
+            Issuers::credential(&self.board, "EthicsApproval", site, slot, json!({}), now)?,
+            Issuers::credential(
+                &self.committee,
+                "ControlledAccessGrants",
+                site,
+                slot,
+                grant,
+                now,
+            )?,
+            Issuers::credential(
+                &self.committee,
+                "Provenance",
+                dataset,
+                DATASET_SLOTS_FROM + slot,
+                json!({}),
+                now,
+            )?,
+        ])
+    }
+
+    fn policy(&self) -> Policy {
+        let holds = |kind: &str, issuer: &Identity| Atom {
+            kind: kind.to_owned(),
+            issuers: vec![issuer.did_string()],
+            about: About::Holder,
+            claims: Default::default(),
+            names_dataset: None,
+            data_use: None,
+        };
+        let mut grant = holds("ControlledAccessGrants", &self.committee);
+        grant.claims.insert("ga4gh_visa_v1.by".into(), json!("dac"));
+        grant.names_dataset = Some("ga4gh_visa_v1.value".into());
+        grant.data_use = Some("data_use".into());
+        let mut provenance = holds("Provenance", &self.committee);
+        provenance.about = About::Dataset;
+        Policy {
+            purpose: Purpose {
+                research: Research::Health,
+                not_for_profit: true,
+                ethics_approval: true,
+                ..Purpose::default()
+            },
+            sites: Rule::All(vec![
+                Rule::Holds(holds("AffiliationAndRole", &self.university)),
+                Rule::Holds(holds("EthicsApproval", &self.board)),
+                Rule::Holds(grant),
+                Rule::Holds(provenance),
+            ]),
+            operators: None,
+        }
+    }
+
+    /// Writes an issuer's list to `dir`, newer than any written before.
+    fn publish(&self, issuer: &Identity, revoked: &[u64], dir: &Path) -> Result<(), NodeError> {
+        let issued = self.issued.fetch_add(1, Ordering::SeqCst);
+        let list = StatusList::issue(issuer, &Issuers::list_id(issuer), revoked, issued)
+            .map_err(|e| NodeError::Check(e.to_string()))?;
+        let name = format!("{}.json", Digest::of(list.id.as_bytes()).hex());
+        let partial = dir.join(format!("{name}.partial"));
+        std::fs::write(&partial, &list.text)?;
+        std::fs::rename(&partial, dir.join(name))?;
+        Ok(())
+    }
+}
+
+/// What a site holds for a plan with a policy, as a file.
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct StandingFile {
+    pub dataset: Option<String>,
+    pub credentials: Vec<String>,
+}
+
+impl StandingFile {
+    pub fn load(path: &Path, status_dir: Option<PathBuf>) -> Result<Standing, NodeError> {
+        let file: StandingFile = serde_json::from_slice(&std::fs::read(path)?)
+            .map_err(|e| NodeError::Protocol(e.to_string()))?;
+        Ok(Standing {
+            dataset: file.dataset,
+            credentials: file.credentials,
+            status_dir,
+        })
+    }
+}
+
 pub struct LocalFederation {
     pub root: PathBuf,
     pub plan: Arc<Plan>,
@@ -113,6 +358,14 @@ pub struct LocalFederation {
     pub helpers: Vec<Arc<Identity>>,
     pub sites: Vec<Arc<Identity>>,
     pub grants: Vec<Grant>,
+    /// Set when the federation is gated on credentials.
+    pub issuers: Option<Issuers>,
+    /// What each site holds for the plan's policy.
+    pub standing: Vec<Standing>,
+}
+
+fn to_json(value: &impl Serialize) -> Result<Vec<u8>, NodeError> {
+    serde_json::to_vec(value).map_err(|e| NodeError::Protocol(e.to_string()))
 }
 
 fn unix_now() -> i64 {
@@ -129,10 +382,38 @@ impl LocalFederation {
         initial_model: &Path,
         options: &Options,
     ) -> Result<LocalFederation, NodeError> {
+        LocalFederation::create_with(root, layout, initial_model, options, |_| {})
+    }
+
+    /// As `create`, with a last change to the plan before the sponsor signs it.
+    pub fn create_with(
+        root: &Path,
+        layout: Layout,
+        initial_model: &Path,
+        options: &Options,
+        edit: impl FnOnce(&mut Plan),
+    ) -> Result<LocalFederation, NodeError> {
         std::fs::create_dir_all(root)?;
-        let new = || Identity::generate(options.sig_alg).map(Arc::new);
+        let check = |e: &dyn std::fmt::Display| NodeError::Check(e.to_string());
+        let (encoding, max_weight, privacy) = match &options.privacy {
+            Some(request) => {
+                let (encoding, privacy) = request
+                    .terms(layout.coords(), options.rounds, options.min_cohort)
+                    .map_err(|e| check(&e))?;
+                (encoding, 1, Some(privacy))
+            }
+            None => (options.encoding, options.max_weight, None),
+        };
+        let named = || -> Result<Identity, NodeError> {
+            let identity = Identity::generate(options.sig_alg)?;
+            Ok(match &options.did_bio {
+                Some(network) => identity.on_registry(network)?,
+                None => identity,
+            })
+        };
+        let new = || named().map(Arc::new);
         let sponsor = new()?;
-        let mut aggregator = Identity::generate(options.sig_alg)?;
+        let mut aggregator = named()?;
         let credentials = generate_tls()?;
         let pin = tls_pin(&credentials)?;
         aggregator.tls = Some(credentials);
@@ -144,7 +425,29 @@ impl LocalFederation {
             .map(|_| new())
             .collect::<Result<Vec<_>, _>>()?;
 
-        let plan = Plan {
+        let status_dir = root.join("status");
+        let (issuers, standing) = if options.credentials {
+            std::fs::create_dir_all(&status_dir)?;
+            let now = unix_now();
+            let issuers = Issuers::new(now)?;
+            let mut standing = Vec::with_capacity(sites.len());
+            for (i, site) in sites.iter().enumerate() {
+                let dataset = Identity::generate(SigAlg::Ed25519)?.did_string();
+                standing.push(Standing {
+                    credentials: issuers.wallet(i, &site.did_string(), &dataset, now)?,
+                    dataset: Some(dataset),
+                    status_dir: Some(status_dir.clone()),
+                });
+            }
+            for issuer in [&issuers.university, &issuers.board, &issuers.committee] {
+                issuers.publish(issuer, &[], &status_dir)?;
+            }
+            (Some(issuers), standing)
+        } else {
+            (None, vec![Standing::default(); sites.len()])
+        };
+
+        let mut plan = Plan {
             version: 1,
             nonce: hex::encode(random_bytes::<16>()),
             purpose: options.purpose.clone(),
@@ -152,6 +455,7 @@ impl LocalFederation {
             aggregator: AggregatorSpec {
                 did: aggregator.did_string(),
                 tls_pin: pin,
+                credentials: Vec::new(),
             },
             helpers: helpers
                 .iter()
@@ -160,6 +464,7 @@ impl LocalFederation {
                         did: h.did_string(),
                         seal: h.seal_public().clone(),
                         seal_proof: h.seal_proof()?,
+                        credentials: Vec::new(),
                     })
                 })
                 .collect::<Result<_, NodeError>>()?,
@@ -169,13 +474,16 @@ impl LocalFederation {
             rounds: options.rounds,
             min_cohort: options.min_cohort,
             chunk_coords: options.chunk_coords,
-            encoding: options.encoding,
-            max_weight: options.max_weight,
+            encoding,
+            max_weight,
             audits: options.audits,
             timeouts: options.timeouts,
+            privacy,
+            admission: issuers.as_ref().map(Issuers::policy),
+            sample: options.sample,
         };
-        plan.validate()
-            .map_err(|e| NodeError::Check(e.to_string()))?;
+        edit(&mut plan);
+        plan.validate().map_err(|e| check(&e))?;
         let record = Record::sign(&sponsor, &Body::Plan(Box::new(plan.clone())))?;
 
         let expires = Timestamp::from_unix(unix_now() + LONG_GRANT_SECS)
@@ -190,6 +498,7 @@ impl LocalFederation {
             trusted_helpers: plan.helpers.iter().map(|h| h.did.clone()).collect(),
             allow_plain: plan.helpers.is_empty(),
             min_audits: Some(options.audits),
+            max_budget: privacy.map(|p| p.budget),
             ..Terms::default()
         };
         let mut grants = Vec::with_capacity(sites.len());
@@ -222,7 +531,23 @@ impl LocalFederation {
             helpers,
             sites,
             grants,
+            issuers,
+            standing,
         })
+    }
+
+    pub fn status_dir(&self) -> PathBuf {
+        self.root.join("status")
+    }
+
+    /// Has the data access committee take back a site's access grant. The
+    /// newer list reaches the log before the next round opens.
+    pub fn revoke_access(&self, site: usize) -> Result<(), NodeError> {
+        let issuers = self
+            .issuers
+            .as_ref()
+            .ok_or_else(|| NodeError::Check("this federation has no credentials".into()))?;
+        issuers.publish(&issuers.committee, &[site as u64], &self.status_dir())
     }
 
     /// Writes each party's files, ready for separate processes.
@@ -243,9 +568,18 @@ impl LocalFederation {
                     .map(|p| encode_token(p))
                     .collect(),
             };
-            let text =
-                serde_json::to_vec(&grant).map_err(|e| NodeError::Protocol(e.to_string()))?;
-            std::fs::write(self.root.join(format!("site-{i}.grant.json")), text)?;
+            std::fs::write(
+                self.root.join(format!("site-{i}.grant.json")),
+                to_json(&grant)?,
+            )?;
+            if self.issuers.is_some() {
+                let standing = StandingFile {
+                    dataset: self.standing[i].dataset.clone(),
+                    credentials: self.standing[i].credentials.clone(),
+                };
+                let path = self.root.join(format!("site-{i}.standing.json"));
+                std::fs::write(path, to_json(&standing)?)?;
+            }
         }
         Ok(())
     }
@@ -268,6 +602,7 @@ impl LocalFederation {
             hook: None,
             on_ready: None,
             keep_spool: false,
+            status_dir: self.issuers.as_ref().map(|_| self.status_dir()),
         }
     }
 
@@ -292,6 +627,8 @@ impl LocalFederation {
             proofs: self.grants[site].proofs.clone(),
             revocations: None,
             give_up_after: Duration::from_secs(60),
+            standing: self.standing[site].clone(),
+            registry: None,
         }
     }
 }
