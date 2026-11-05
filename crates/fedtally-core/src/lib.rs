@@ -19,6 +19,7 @@ pub mod registry;
 pub mod replay;
 pub mod report;
 pub mod sampling;
+pub mod scoring;
 pub mod status;
 pub mod vector;
 
