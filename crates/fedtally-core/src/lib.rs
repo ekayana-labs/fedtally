@@ -13,6 +13,7 @@ pub mod plan;
 pub mod policy;
 pub mod privacy;
 pub mod record;
+pub mod registry;
 pub mod replay;
 pub mod report;
 pub mod sampling;
