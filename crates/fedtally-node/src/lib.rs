@@ -1,6 +1,7 @@
 //! The three long-running roles. All of them react to the log and nothing
 //! else, so a restarted process picks up from what the log says.
 
+pub mod aggregator;
 mod follower;
 pub mod helper;
 pub mod net;
