@@ -12,7 +12,9 @@ name = "fedtally"
 path = "src/main.rs"
 
 [dependencies]
+bs58 = "0.5"
 clap = { version = "4", features = ["derive"] }
+fedtally-chain.workspace = true
 fedtally-core.workspace = true
 fedtally-node.workspace = true
 hex = "0.4"

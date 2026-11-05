@@ -4,6 +4,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use clap::{Parser, Subcommand, ValueEnum};
+use fedtally_chain::{Anchor, Role, Stakes, Watching};
 use fedtally_core::admission::{self, Terms};
 use fedtally_core::credential::{Credential, Draft, StatusEntry};
 use fedtally_core::keys::{Identity, SigAlg, random_bytes};
@@ -42,6 +43,14 @@ enum Alg {
     Ed25519,
     #[value(name = "ml-dsa-65")]
     MlDsa65,
+}
+
+#[derive(Clone, Copy, ValueEnum)]
+enum Party {
+    Publisher,
+    Aggregator,
+    Site,
+    Watcher,
 }
 
 #[derive(Subcommand)]
@@ -146,6 +155,36 @@ enum Command {
         /// A folder of issuers' revocation lists, added to the log as they change
         #[arg(long)]
         status_dir: Option<PathBuf>,
+        /// A party outside the plan that may read the log and each round's vectors. Repeatable.
+        #[arg(long = "watcher")]
+        watchers: Vec<String>,
+    },
+    /// Post to the ledger what a role owes, as the log calls for it
+    Anchor {
+        #[arg(long, value_enum)]
+        role: Party,
+        #[arg(long)]
+        rpc: String,
+        #[arg(long)]
+        program: String,
+        #[arg(long)]
+        key: PathBuf,
+        #[arg(long)]
+        plan: PathBuf,
+        /// The folder of this party's node, whose log is followed. A watcher keeps its own here.
+        #[arg(long, required_unless_present = "stakes")]
+        dir: Option<PathBuf>,
+        /// As a watcher, the aggregator to follow
+        #[arg(long)]
+        connect: Option<String>,
+        /// Micro-lamports per compute unit to offer on every transaction
+        #[arg(long)]
+        priority_fee: Option<u64>,
+        /// As the publisher, six amounts: the site stake, the aggregator stake, the reward
+        /// per round and the dispute bond in lamports, then the challenge window and the
+        /// stall limit in slots
+        #[arg(long, num_args = 6, value_names = ["SITE", "AGGREGATOR", "REWARD", "BOND", "CHALLENGE", "STALL"])]
+        stakes: Option<Vec<u64>>,
     },
     /// Run a helper until the run ends
     Helper {
@@ -435,6 +474,7 @@ async fn run(command: Command) -> Result<ExitCode, Failure> {
             listen,
             keep_spool,
             status_dir,
+            watchers,
         } => {
             let (plan_line, _, _) = read_plan(&plan)?;
             let replay = run_aggregator(AggregatorConfig {
@@ -447,10 +487,68 @@ async fn run(command: Command) -> Result<ExitCode, Failure> {
                 on_ready: Some(Box::new(|addr| println!("listening on {addr}"))),
                 keep_spool,
                 status_dir,
-                watchers: Vec::new(),
+                watchers,
             })
             .await?;
             println!("final model {}", replay.model);
+        }
+        Command::Anchor {
+            role,
+            rpc,
+            program,
+            key,
+            plan,
+            dir,
+            connect,
+            priority_fee,
+            stakes,
+        } => {
+            let (plan_line, _, _) = read_plan(&plan)?;
+            let program: [u8; 32] = bs58::decode(&program)
+                .into_vec()?
+                .try_into()
+                .map_err(|_| "a program id is 32 bytes")?;
+            let dir = dir.unwrap_or_default();
+            let role = match (role, stakes.as_deref(), connect) {
+                (
+                    Party::Publisher,
+                    Some(&[site, aggregator, reward, bond, challenge, stall]),
+                    _,
+                ) => Role::Publisher(Stakes {
+                    site_stake: site,
+                    aggregator_stake: aggregator,
+                    reward_per_round: reward,
+                    dispute_bond: bond,
+                    challenge_slots: challenge,
+                    stall_slots: stall,
+                }),
+                (Party::Publisher, _, _) => return Err("a publisher sets the --stakes".into()),
+                (Party::Aggregator, _, _) => Role::Aggregator,
+                (Party::Site, _, _) => Role::Site,
+                (Party::Watcher, _, Some(addr)) => Role::Watcher(Watching {
+                    addr,
+                    dir: dir.clone(),
+                    runtime: tokio::runtime::Handle::current(),
+                }),
+                (Party::Watcher, _, None) => {
+                    return Err("a watcher needs the aggregator to follow: --connect".into());
+                }
+            };
+            let mut anchor = Anchor::new(fedtally_chain::Config {
+                role,
+                identity: Arc::new(Identity::load(&key)?),
+                plan_line,
+                log: dir.join("log.jsonl"),
+                rpc,
+                program,
+                price: priority_fee,
+                poll: Duration::from_secs(1),
+                give_up_after: Duration::from_secs(600),
+                sink: None,
+            })?;
+            println!("task {}", bs58::encode(anchor.task()).into_string());
+            let never = std::sync::atomic::AtomicBool::new(false);
+            tokio::task::spawn_blocking(move || anchor.run(&never)).await??;
         }
         Command::Helper {
             key,

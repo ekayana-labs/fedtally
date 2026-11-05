@@ -894,7 +894,9 @@ dependencies = [
 name = "fedtally-cli"
 version = "0.1.0"
 dependencies = [
+ "bs58",
  "clap",
+ "fedtally-chain",
  "fedtally-core",
  "fedtally-node",
  "hex",
