@@ -10,6 +10,7 @@ use std::fs::{File, OpenOptions};
 use std::io::{self, Read};
 use std::os::unix::fs::FileExt;
 use std::path::Path;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use chacha20::ChaCha12Rng;
 use chacha20::rand_core::{Rng, SeedableRng};
@@ -251,18 +252,31 @@ pub fn digest_chunk(data: &[u64]) -> Digest {
     digest_chunk_bytes(bytemuck::cast_slice(data))
 }
 
+/// Transfers hashing a chunk across the pool at this moment.
+static FANNED_OUT: AtomicUsize = AtomicUsize::new(0);
+
+/// With more transfers than this at once, each hashes on its own thread.
+/// Sharing the pool between many of them is slower than not sharing it.
+const FAN_OUT_LIMIT: usize = 4;
+
 /// The Merkle root of one chunk. A caller on the thread pool is already one of
 /// many hashing chunks side by side. Any other caller, such as a transfer
-/// checking one chunk at a time, has its leaves hashed across the pool.
+/// checking one chunk at a time, has its leaves hashed across the pool while
+/// few transfers are running.
 pub fn digest_chunk_bytes(bytes: &[u8]) -> Digest {
-    let alone = rayon::current_thread_index().is_none();
-    let leaves = if alone && bytes.len() >= PARALLEL_HASH_BYTES {
-        bytes
+    let alone = rayon::current_thread_index().is_none() && bytes.len() >= PARALLEL_HASH_BYTES;
+    let leaves = if alone && FANNED_OUT.fetch_add(1, Ordering::Relaxed) < FAN_OUT_LIMIT {
+        let leaves = bytes
             .par_chunks(merkle::LEAF_BYTES)
             .with_min_len(16)
             .map(merkle::leaf)
-            .collect()
+            .collect();
+        FANNED_OUT.fetch_sub(1, Ordering::Relaxed);
+        leaves
     } else {
+        if alone {
+            FANNED_OUT.fetch_sub(1, Ordering::Relaxed);
+        }
         bytes.chunks(merkle::LEAF_BYTES).map(merkle::leaf).collect()
     };
     Digest(merkle::root(leaves))
