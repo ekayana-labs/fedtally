@@ -1,0 +1,363 @@
+//! The ledger's accounts as plain values, and a sender that waits for each
+//! transaction to be confirmed.
+
+use std::sync::Arc;
+use std::time::{Duration, Instant};
+
+use fedtally_ledger::bitmap::{self, SITE_BITMAP_LEN, SiteBitmap};
+use fedtally_ledger::client;
+use fedtally_ledger::state::{Buffer, Dispute, Enrollment, MAX_SITES, Round, TASK_OPEN, Task};
+
+use crate::error::ChainError;
+use crate::rpc::{Account, Rpc, RpcError};
+use crate::tx::{self, Budget, Wallet};
+
+/// A set of sites, as the ledger keeps one: a bit per site index.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub struct Sites(pub SiteBitmap);
+
+impl Default for Sites {
+    fn default() -> Sites {
+        Sites([0; SITE_BITMAP_LEN])
+    }
+}
+
+impl std::fmt::Debug for Sites {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_list().entries(self.members()).finish()
+    }
+}
+
+impl Sites {
+    pub fn has(&self, site: u16) -> bool {
+        (site as usize) < MAX_SITES && bitmap::get(&self.0, site as usize)
+    }
+
+    /// The sites in the set, ascending.
+    pub fn members(&self) -> Vec<u16> {
+        (0..MAX_SITES as u16).filter(|s| self.has(*s)).collect()
+    }
+
+    pub fn len(&self) -> usize {
+        bitmap::count(&self.0) as usize
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+}
+
+impl FromIterator<u16> for Sites {
+    fn from_iter<I: IntoIterator<Item = u16>>(sites: I) -> Sites {
+        Sites(client::site_bitmap(
+            sites.into_iter().filter(|s| (*s as usize) < MAX_SITES),
+        ))
+    }
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct TaskView {
+    pub lamports: u64,
+    pub state: u8,
+    pub backed: bool,
+    pub fraud: bool,
+    pub helpers: u8,
+    pub sites: u16,
+    pub min_cohort: u16,
+    pub sample: u16,
+    pub colluding: u16,
+    pub rounds: u32,
+    pub round: u32,
+    pub settled: u32,
+    pub publisher: [u8; 32],
+    pub aggregator: [u8; 32],
+    pub plan_id: [u8; 32],
+    pub sites_root: [u8; 32],
+    pub coords: u64,
+    pub sensitivity: u64,
+    pub noise: u64,
+    pub budget: u64,
+    pub stake_held: u64,
+    pub owed: u64,
+    pub challenge_slots: u64,
+    pub enrolled: Sites,
+    pub revoked: Sites,
+}
+
+impl TaskView {
+    pub fn is_open(&self) -> bool {
+        self.state == TASK_OPEN
+    }
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct RoundView {
+    pub state: u8,
+    pub disputes: u32,
+    pub beacon: [u8; 32],
+    pub cohort: Sites,
+    pub inputs_root: [u8; 32],
+    pub close_head: [u8; 32],
+    /// One root per helper of the task.
+    pub mask_roots: Vec<[u8; 32]>,
+    pub aggregate_root: [u8; 32],
+    pub next_model: [u8; 32],
+    pub seal_head: [u8; 32],
+    pub posted_slot: u64,
+    pub acked: Sites,
+    pub claimed: Sites,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct EnrollmentView {
+    pub status: u8,
+    pub wallet: [u8; 32],
+    /// The status lists the enrollment names, in its order.
+    pub status_lists: Vec<[u8; 32]>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct DisputeView {
+    pub leaf_index: u64,
+    pub deadline: u64,
+    /// The cohort positions whose input leaf has been given.
+    pub seen_inputs: Sites,
+    pub seen_masks: u8,
+    pub aggregate_given: bool,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct BufferView {
+    pub capacity: u32,
+}
+
+fn program() -> [u8; 32] {
+    *fedtally_ledger::ID.as_array()
+}
+
+/// Accounts of another owner are someone else's: a program address can hold
+/// lamports before the program creates anything there.
+fn ours(account: Option<&Account>) -> Option<&Account> {
+    account.filter(|account| account.owner == program())
+}
+
+pub fn task(account: Option<&Account>) -> Option<TaskView> {
+    let account = ours(account)?;
+    let task = Task::parse(account.data.as_slice()).ok()?;
+    Some(TaskView {
+        lamports: account.lamports,
+        state: task.state(),
+        backed: task.backed(),
+        fraud: task.fraud(),
+        helpers: task.helpers(),
+        sites: task.sites(),
+        min_cohort: task.min_cohort(),
+        sample: task.sample(),
+        colluding: task.colluding(),
+        rounds: task.rounds(),
+        round: task.round(),
+        settled: task.settled(),
+        publisher: *task.publisher(),
+        aggregator: *task.aggregator(),
+        plan_id: *task.plan_id(),
+        sites_root: *task.sites_root(),
+        coords: task.coords(),
+        sensitivity: task.sensitivity(),
+        noise: task.noise(),
+        budget: task.budget(),
+        stake_held: task.stake_held(),
+        owed: task.owed(),
+        challenge_slots: task.challenge_slots(),
+        enrolled: Sites(*task.enrolled()),
+        revoked: Sites(*task.revoked()),
+    })
+}
+
+pub fn round(account: Option<&Account>, helpers: u8) -> Option<RoundView> {
+    let round = Round::parse(ours(account)?.data.as_slice()).ok()?;
+    Some(RoundView {
+        state: round.state(),
+        disputes: round.disputes(),
+        beacon: *round.beacon(),
+        cohort: Sites(*round.cohort()),
+        inputs_root: *round.inputs_root(),
+        close_head: *round.close_head(),
+        mask_roots: (0..helpers as usize)
+            .map(|helper| *round.mask_root(helper))
+            .collect(),
+        aggregate_root: *round.aggregate_root(),
+        next_model: *round.next_model(),
+        seal_head: *round.seal_head(),
+        posted_slot: round.posted_slot(),
+        acked: Sites(*round.acked()),
+        claimed: Sites(*round.claimed()),
+    })
+}
+
+pub fn enrollment(account: Option<&Account>) -> Option<EnrollmentView> {
+    let site = Enrollment::parse(ours(account)?.data.as_slice()).ok()?;
+    Some(EnrollmentView {
+        status: site.status(),
+        wallet: *site.wallet(),
+        status_lists: (0..site.status_ref_count() as usize)
+            .map(|i| *site.status_ref(i).0)
+            .collect(),
+    })
+}
+
+pub fn dispute(account: Option<&Account>) -> Option<DisputeView> {
+    let dispute = Dispute::parse(ours(account)?.data.as_slice()).ok()?;
+    Some(DisputeView {
+        leaf_index: dispute.leaf_index(),
+        deadline: dispute.deadline(),
+        seen_inputs: Sites(*dispute.seen_inputs()),
+        seen_masks: dispute.seen_masks(),
+        aggregate_given: dispute.aggregate_given(),
+    })
+}
+
+pub fn buffer(account: Option<&Account>) -> Option<BufferView> {
+    let buffer = Buffer::parse(ours(account)?.data.as_slice()).ok()?;
+    Some(BufferView {
+        capacity: buffer.capacity() as u32,
+    })
+}
+
+/// A transaction that went through.
+#[derive(Clone, Debug)]
+pub struct Sent {
+    pub what: &'static str,
+    pub round: Option<u32>,
+    pub by: [u8; 32],
+    pub signature: String,
+    pub budget: Budget,
+    pub sent: Instant,
+    pub confirmed: Instant,
+}
+
+pub type Sink = Arc<dyn Fn(Sent) + Send + Sync>;
+
+pub struct Ledger {
+    pub rpc: Rpc,
+    pub wallet: Wallet,
+    /// The priority fee to offer, in micro-lamports per compute unit.
+    pub price: Option<u64>,
+    pub confirm_every: Duration,
+    pub sink: Option<Sink>,
+}
+
+/// The runtime's limit for a transaction that asks for none.
+const DEFAULT_UNITS: u32 = 200_000;
+const MAX_UNITS: u32 = 1_400_000;
+
+impl Ledger {
+    /// Asks for a unit limit only where it matters: when the instruction may
+    /// need more than the default, or when units are paid for.
+    pub fn budget(&self, ceiling: u32) -> Budget {
+        let limited = self.price.is_some() || ceiling > DEFAULT_UNITS;
+        Budget {
+            units: limited.then_some(ceiling.min(MAX_UNITS)),
+            price: self.price,
+        }
+    }
+
+    /// Sends one instruction and waits until it is confirmed.
+    pub fn send(
+        &self,
+        what: &'static str,
+        round: Option<u32>,
+        ix: client::Instruction,
+        ceiling: u32,
+    ) -> Result<(), ChainError> {
+        let budget = self.budget(ceiling);
+        let blockhash = self.rpc.latest_blockhash()?;
+        let signed = tx::sign(&self.wallet, ix, budget, blockhash.hash)?;
+        let sent = Instant::now();
+        let signature = self.rpc.send_transaction(&signed.wire)?;
+        loop {
+            match self.rpc.confirmed(&signature)? {
+                Some(Ok(())) => break,
+                Some(Err(reason)) => {
+                    let logs = Vec::new();
+                    return Err(RpcError::Rejected { reason, logs }.into());
+                }
+                None if self.rpc.block_height()? > blockhash.last_valid_height => {
+                    return Err(ChainError::Expired);
+                }
+                None => std::thread::sleep(self.confirm_every),
+            }
+        }
+        tracing::info!("{what} confirmed: {signature}");
+        if let Some(sink) = &self.sink {
+            sink(Sent {
+                what,
+                round,
+                by: *self.wallet.address(),
+                signature,
+                budget,
+                sent,
+                confirmed: Instant::now(),
+            });
+        }
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use fedtally_ledger::state::{ROUND_POSTED, ROUND_SPACE, TASK_SPACE};
+
+    use super::*;
+
+    fn held(data: Vec<u8>) -> Account {
+        Account {
+            lamports: 5,
+            owner: program(),
+            executable: false,
+            data,
+        }
+    }
+
+    #[test]
+    fn a_round_reads_back_what_the_program_wrote() {
+        let mut data = vec![0u8; ROUND_SPACE];
+        let mut view = Round::init(data.as_mut_slice()).unwrap();
+        view.set_state(ROUND_POSTED);
+        view.set_posted_slot(77);
+        *view.cohort_mut() = client::site_bitmap([1, 9, 700]);
+        *view.aggregate_root_mut() = [4; 32];
+        view.mask_roots_mut()[32..64].copy_from_slice(&[6; 32]);
+        let account = held(data);
+
+        let round = round(Some(&account), 2).unwrap();
+        assert_eq!(round.state, ROUND_POSTED);
+        assert_eq!(round.posted_slot, 77);
+        assert_eq!(round.cohort.members(), [1, 9, 700]);
+        assert_eq!(round.cohort, [700, 1, 9].into_iter().collect());
+        assert_eq!(round.mask_roots, [[0; 32], [6; 32]]);
+        assert_eq!(round.aggregate_root, [4; 32]);
+        assert!(task(Some(&account)).is_none(), "a round was read as a task");
+    }
+
+    #[test]
+    fn only_this_programs_accounts_are_read() {
+        let mut data = vec![0u8; TASK_SPACE];
+        Task::init(data.as_mut_slice()).unwrap().set_rounds(3);
+        let mut account = held(data);
+        assert_eq!(task(Some(&account)).unwrap().rounds, 3);
+        account.owner = [0; 32];
+        assert!(task(Some(&account)).is_none());
+        assert!(task(None).is_none());
+        account.owner = program();
+        account.data.truncate(100);
+        assert!(task(Some(&account)).is_none());
+    }
+
+    #[test]
+    fn a_site_past_the_bitmap_is_not_a_member() {
+        let sites: Sites = [3, 5000].into_iter().collect();
+        assert_eq!(sites.members(), [3]);
+        assert!(!sites.has(5000));
+        assert_eq!(sites.len(), 1);
+    }
+}

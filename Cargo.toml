@@ -1,7 +1,7 @@
 [workspace]
 resolver = "3"
-members = ["crates/fedtally-core", "crates/fedtally-node", "crates/fedtally-cli", "crates/fedtally-py"]
-default-members = ["crates/fedtally-core", "crates/fedtally-node", "crates/fedtally-cli"]
+members = ["crates/fedtally-core", "crates/fedtally-node", "crates/fedtally-chain", "crates/fedtally-cli", "crates/fedtally-py"]
+default-members = ["crates/fedtally-core", "crates/fedtally-node", "crates/fedtally-chain", "crates/fedtally-cli"]
 exclude = ["ledger"]
 
 [workspace.package]
@@ -14,6 +14,7 @@ repository = "https://github.com/ekayana-labs/fedtally"
 [workspace.dependencies]
 fedtally-core = { path = "crates/fedtally-core" }
 fedtally-node = { path = "crates/fedtally-node" }
+fedtally-chain = { path = "crates/fedtally-chain" }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

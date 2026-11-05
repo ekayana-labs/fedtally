@@ -1,0 +1,36 @@
+[package]
+name = "fedtally-chain"
+description = "Posts what a party owes the fedtally ledger, worked out from the log"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+
+[dependencies]
+base64 = "0.22"
+bs58 = "0.5"
+fedtally-core.workspace = true
+fedtally-ledger = { path = "../../ledger/program", features = ["no-entrypoint"] }
+fedtally-node.workspace = true
+serde_json = "1"
+solana-compute-budget-interface = "3"
+solana-hash = "4"
+solana-instruction = "3"
+solana-message = "4"
+solana-pubkey = "4"
+solana-signature = "3"
+solana-transaction = { version = "4", features = ["wincode"] }
+thiserror = "2"
+tokio = { version = "1", features = ["rt", "time"] }
+tracing = "0.1"
+ureq = { version = "2", features = ["json"] }
+wincode = "0.6"
+
+[dev-dependencies]
+bs58 = "0.5"
+tempfile = "3"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync"] }
+
+[lints]
+workspace = true
