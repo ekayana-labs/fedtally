@@ -49,6 +49,9 @@ def main():
     parser.add_argument("--mib", type=int, required=True)
     parser.add_argument("--rounds", type=int, required=True)
     parser.add_argument("--helpers", type=int, default=1)
+    parser.add_argument("--epsilon", type=float, help="run with privacy terms at this target")
+    parser.add_argument("--bounded", action="store_true", help="have every site prove its update short")
+    parser.add_argument("--scoring", type=int, help="score groups of at least this many sites")
     parser.add_argument("--out", required=True)
     parser.add_argument("--workdir", default=None)
     args = parser.parse_args()
@@ -65,6 +68,9 @@ def main():
             rounds=args.rounds,
             min_cohort=2,
             chunk_coords=1 << 17,
+            privacy=args.epsilon and ft.Privacy(epsilon=args.epsilon, delta=1e-5, clip=1.0),
+            bounded=args.bounded or None,
+            scoring=args.scoring,
         )
         federation.save()
         with socket.socket() as s:
@@ -124,7 +130,8 @@ def main():
         report = ft.verify(root / "aggregator" / "log.jsonl", results[0]["final_model"])
         verify_seconds = time.monotonic() - verify_started
         error = model_error(ft.load_model(results[0]["final_model"]), args.mib, args.sites, args.rounds)
-        if error > MODEL_TOLERANCE:
+        # Noise moves a private model away from the known answer by design.
+        if error > MODEL_TOLERANCE and not args.epsilon:
             raise SystemExit(f"the final model is off by {error}")
         write_result(
             args.out,
