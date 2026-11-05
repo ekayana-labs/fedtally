@@ -10,6 +10,7 @@ pub mod log;
 pub mod merkle;
 pub mod model;
 pub mod plan;
+pub mod policy;
 pub mod privacy;
 pub mod record;
 pub mod replay;
