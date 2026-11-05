@@ -1,0 +1,29 @@
+[package]
+name = "fedtally-node"
+description = "The aggregator, helper and site processes"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+
+[dependencies]
+blake3 = "1"
+fedtally-core.workspace = true
+hex = "0.4"
+postcard = { version = "1", default-features = false, features = ["use-std"] }
+rcgen = "0.14"
+rustls = "0.23"
+serde = { version = "1", features = ["derive"] }
+serde_bytes = "0.11"
+serde_json = "1"
+thiserror = "2"
+tokio = { version = "1", features = ["io-util", "macros", "net", "rt-multi-thread", "sync", "time"] }
+tokio-rustls = "0.26"
+tracing = "0.1"
+
+[dev-dependencies]
+tempfile = "3"
+
+[lints]
+workspace = true

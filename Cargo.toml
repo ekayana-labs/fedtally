@@ -1,7 +1,7 @@
 [workspace]
 resolver = "3"
-members = ["crates/fedtally-core"]
-default-members = ["crates/fedtally-core"]
+members = ["crates/fedtally-core", "crates/fedtally-node"]
+default-members = ["crates/fedtally-core", "crates/fedtally-node"]
 
 [workspace.package]
 version = "0.1.0"
