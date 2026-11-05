@@ -15,6 +15,7 @@ pub mod privacy;
 pub mod record;
 pub mod replay;
 pub mod report;
+pub mod sampling;
 pub mod status;
 pub mod vector;
 
