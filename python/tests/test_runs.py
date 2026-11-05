@@ -278,3 +278,32 @@ def test_parties_can_go_by_did_bio(tmp_path):
     assert result.ok, result.sites
     assert result.report["aggregator"].startswith("did:bio:devnet:")
     assert all(j["site"].startswith("did:bio:devnet:") for j in result.report["joined"])
+
+
+def test_a_site_past_the_norm_bound_is_left_out(tmp_path):
+    privacy = ft.Privacy(epsilon=8.0, delta=1e-5, clip=1.0)
+    pull = toward([0.0, 0.0, 0.0, 1e6])
+    honest = fed(tmp_path / "a", sites=4, privacy=privacy, bounded=True, cheats={3: 4096})
+    result = honest.run(pull)
+    assert all(result.sites[i]["ok"] for i in range(3)), result.sites
+    round_ = result.report["rounds"][0]
+    assert round_["total_weight"] == 3
+    assert len(round_["excluded"]) == 1
+    assert np.abs(result.model["w"]).max() < 5.0
+
+    open_ = fed(tmp_path / "b", sites=4, privacy=privacy, cheats={3: 4096}).run(pull)
+    assert open_.report["rounds"][0]["total_weight"] == 4
+    assert np.abs(open_.model["w"]).max() > 50.0
+
+
+def test_scoring_reports_groups_and_rewards(tmp_path):
+    result = fed(tmp_path, sites=4, rounds=2, scoring=2).run(
+        toward([2.0, 2.0, 2.0, -2.0])
+    )
+    assert result.ok, result.sites
+    for round_ in result.report["rounds"]:
+        assert len(round_["groups"]) == 2
+        assert sum(g["share"] for g in round_["groups"]) == 1_000_000
+    rewards = result.report["rewards"]
+    assert len(rewards) == 4
+    assert abs(sum(r["share"] for r in rewards) - 1.0) < 1e-9
