@@ -1,0 +1,626 @@
+//! A site trains on its own data, masks the result, and refuses to acknowledge
+//! a round unless the numbers add up over the bytes it holds.
+//!
+//! A site never receives code from the aggregator. It runs the trainer it was
+//! started with.
+
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+use fedtally_core::admission;
+use fedtally_core::field::{Fp, Fp2, P};
+use fedtally_core::keys::{Identity, random_bytes, seal};
+use fedtally_core::model::{self, EncodeRequest, Encoded, ModelError, PAD, TensorView};
+use fedtally_core::pq_ucan::Cid;
+use fedtally_core::pq_ucan::did::Did;
+use fedtally_core::pq_ucan::time::Timestamp;
+use fedtally_core::pq_ucan::validate::RevocationStore;
+use fedtally_core::record::{Body, encode_token};
+use fedtally_core::replay::{Phase, RoundState};
+use fedtally_core::vector::{self, Digest, Manifest, challenge};
+use serde::{Deserialize, Serialize};
+
+use crate::follower::{Follower, Patience, Start};
+use crate::helper::seal_context;
+use crate::net::Client;
+use crate::wire::{Msg, Object};
+use crate::{NodeError, blocking};
+
+pub struct TrainContext {
+    pub round: u32,
+    pub base_model: PathBuf,
+}
+
+/// Encodes trained tensors and their weight straight to disk.
+pub type Submit<'a> = dyn FnMut(&[TensorView<'_>], u64) -> Result<Encoded, ModelError> + 'a;
+
+/// Local training. `submit` can only be called once.
+pub trait Trainer: Send + 'static {
+    fn train(&mut self, ctx: &TrainContext, submit: &mut Submit<'_>) -> Result<(), String>;
+}
+
+/// Delegation CIDs a site has taken back, one per line. Read fresh each time,
+/// and an unreadable file counts as everything being revoked.
+pub struct RevocationFile(pub PathBuf);
+
+impl RevocationStore for RevocationFile {
+    fn is_revoked(&self, cid: &Cid, _issuers: &[&Did]) -> bool {
+        match std::fs::read_to_string(&self.0) {
+            Ok(text) => text.lines().any(|line| line.trim() == cid.to_string()),
+            Err(e) => e.kind() != std::io::ErrorKind::NotFound,
+        }
+    }
+}
+
+pub struct SiteConfig {
+    pub identity: Arc<Identity>,
+    pub plan_line: Vec<u8>,
+    pub addr: String,
+    pub dir: PathBuf,
+    pub invocation: Vec<u8>,
+    pub proofs: Vec<Vec<u8>>,
+    /// Delegations this site has taken back. Checked before every round.
+    pub revocations: Option<Arc<dyn RevocationStore + Send + Sync>>,
+    pub give_up_after: Duration,
+}
+
+#[derive(Debug, Clone)]
+pub struct SiteSummary {
+    pub final_model: PathBuf,
+    pub final_digest: Digest,
+    pub rounds_contributed: Vec<u32>,
+    pub rounds_refused: Vec<u32>,
+}
+
+#[derive(Serialize, Deserialize)]
+struct RoundFile {
+    seeds: Vec<String>,
+    weight: u64,
+    manifest: Manifest,
+    sealed: Vec<Digest>,
+}
+
+struct Site {
+    f: Follower,
+    me: usize,
+    invocation: Vec<u8>,
+    proofs: Vec<Vec<u8>>,
+    revocations: Option<Arc<dyn RevocationStore + Send + Sync>>,
+    trainer: Option<Box<dyn Trainer>>,
+    refused: Vec<u32>,
+    checks: Option<Checks>,
+    uploaded: Option<u32>,
+}
+
+#[derive(Clone)]
+struct Checks {
+    round: u32,
+    masked: Fp2,
+    aggregate: Fp2,
+    audits: Vec<(usize, Fp2)>,
+}
+
+pub async fn run_site(
+    config: SiteConfig,
+    trainer: Box<dyn Trainer>,
+) -> Result<SiteSummary, NodeError> {
+    let f = Follower::open(Start {
+        identity: config.identity,
+        plan_line: config.plan_line,
+        addr: config.addr,
+        dir: config.dir,
+        give_up_after: config.give_up_after,
+    })?;
+    let did = f.identity.did_string();
+    let me = f
+        .plan
+        .site_index(&did)
+        .ok_or_else(|| NodeError::Refused("this key is not a site in the plan".into()))?;
+    let mut site = Site {
+        f,
+        me,
+        invocation: config.invocation,
+        proofs: config.proofs,
+        revocations: config.revocations,
+        trainer: Some(trainer),
+        refused: Vec::new(),
+        checks: None,
+        uploaded: None,
+    };
+    site.admit()?;
+    let mut patience = Patience::new(config.give_up_after);
+    loop {
+        match site.session().await {
+            Ok(()) => return site.summary(),
+            Err(e) if e.is_transient() && patience.allows(site.f.replay.entries) => {
+                tracing::info!("site reconnecting: {e}");
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+            Err(e) => return Err(e),
+        }
+    }
+}
+
+fn now() -> Result<Timestamp, NodeError> {
+    let secs = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|e| NodeError::Protocol(e.to_string()))?
+        .as_secs() as i64;
+    Timestamp::from_unix(secs).map_err(|e| NodeError::Protocol(e.to_string()))
+}
+
+fn random_field() -> Fp {
+    loop {
+        let v = u64::from_le_bytes(random_bytes::<8>());
+        if v < P {
+            return Fp::new(v);
+        }
+    }
+}
+
+impl Site {
+    /// Checks this site's own grant. Run before joining and before each round,
+    /// so an expiry or a revocation takes effect at the next round.
+    fn admit(&self) -> Result<(), NodeError> {
+        let did = Did::parse(&self.f.identity.did_string())
+            .map_err(|e| NodeError::Protocol(e.to_string()))?;
+        let store = self
+            .revocations
+            .as_ref()
+            .map(|r| r.as_ref() as &dyn RevocationStore);
+        admission::check(
+            &did,
+            &self.f.plan_id,
+            &self.f.plan,
+            &self.invocation,
+            &self.proofs,
+            now()?,
+            store,
+        )
+        .map_err(|e| NodeError::Refused(e.to_string()))?;
+        Ok(())
+    }
+
+    async fn session(&mut self) -> Result<(), NodeError> {
+        let mut client = self.f.connect().await?;
+        self.uploaded = None;
+        let mut wait = true;
+        loop {
+            if wait || client.has_backlog() {
+                let batch = client.entries().await?;
+                self.f.absorb(batch)?;
+            }
+            let before = self.f.replay.entries;
+            match self.f.replay.phase {
+                Phase::Done => {
+                    self.settle(&mut client).await?;
+                    return Ok(());
+                }
+                Phase::Aborted => {
+                    return Err(NodeError::Aborted(
+                        self.f.replay.abort.clone().unwrap_or_default(),
+                    ));
+                }
+                Phase::Empty => {}
+                _ => {
+                    self.join(&mut client).await?;
+                    self.step(&mut client).await?;
+                }
+            }
+            wait = self.f.replay.entries == before;
+        }
+    }
+
+    async fn join(&mut self, client: &mut Client) -> Result<(), NodeError> {
+        if self.f.replay.joined.contains_key(&self.me)
+            || !matches!(
+                self.f.replay.phase,
+                Phase::Joining | Phase::Collecting | Phase::Acking
+            )
+        {
+            return Ok(());
+        }
+        let body = Body::Join {
+            plan: self.f.plan_id,
+            at: now()?.as_unix(),
+            invocation: encode_token(&self.invocation),
+            proofs: self.proofs.iter().map(|p| encode_token(p)).collect(),
+        };
+        self.f.append(client, &body).await
+    }
+
+    async fn step(&mut self, client: &mut Client) -> Result<(), NodeError> {
+        let Some(state) = self.f.replay.current().cloned() else {
+            return Ok(());
+        };
+        match self.f.replay.phase {
+            Phase::Collecting => self.collect(client, &state).await,
+            Phase::Attesting => self.attest(client, &state).await,
+            Phase::Acking => self.acknowledge(client, &state).await,
+            _ => Ok(()),
+        }
+    }
+
+    fn base_path(&self, round: u32) -> PathBuf {
+        self.f.dirs.model(round - 1)
+    }
+
+    /// Makes sure the model the round starts from is on disk. Model 0 and any
+    /// model this site missed come from the aggregator, checked against the log.
+    async fn ensure_model(
+        &mut self,
+        client: &mut Client,
+        round: u32,
+        digest: Digest,
+    ) -> Result<(), NodeError> {
+        let path = self.f.dirs.model(round);
+        if path.exists() && Digest::file(&path)? == digest {
+            return Ok(());
+        }
+        let object = if round == 0 {
+            Object::InitialModel
+        } else {
+            Object::Model { round }
+        };
+        self.f.fetch_file(client, object, digest, &path).await
+    }
+
+    async fn collect(&mut self, client: &mut Client, state: &RoundState) -> Result<(), NodeError> {
+        let round = state.round;
+        if round >= 3 {
+            let _ = std::fs::remove_file(self.f.dirs.model(round - 2));
+        }
+        let round_dir = self.f.dirs.round(round)?;
+        let meta = round_dir.join("round.json");
+        let spool = round_dir.join("masked.bin");
+
+        if !state.contributions.contains_key(&self.me) {
+            if self.refused.contains(&round) {
+                return Ok(());
+            }
+            if let Err(e) = self.admit() {
+                tracing::warn!("sitting out round {round}: {e}");
+                self.refused.push(round);
+                return Ok(());
+            }
+            self.ensure_model(client, round - 1, state.base).await?;
+            if !meta.exists() {
+                self.train_round(round, &meta, &spool).await?;
+            }
+            let file: RoundFile = read_round_file(&meta)?;
+            let body = Body::Contribute {
+                plan: self.f.plan_id,
+                round,
+                base: state.base,
+                masked: file.manifest.root,
+                weight: file.weight,
+                sealed: file.sealed.clone(),
+            };
+            if !self.f.offer(client, &body).await? {
+                self.refused.push(round);
+                return Ok(());
+            }
+        }
+        if !meta.exists() || self.uploaded == Some(round) {
+            return Ok(());
+        }
+        let file = read_round_file(&meta)?;
+        for (h, _) in self.f.plan.helpers.iter().enumerate() {
+            let data = std::fs::read(round_dir.join(format!("sealed-{h}.bin")))?;
+            client
+                .send(&Msg::PutSealed {
+                    round,
+                    helper: h as u32,
+                    data,
+                })
+                .await?;
+        }
+        let object = Object::Upload {
+            round,
+            site: self.me as u32,
+        };
+        self.f
+            .upload(client, object, &spool, &file.manifest)
+            .await?;
+        self.uploaded = Some(round);
+        Ok(())
+    }
+
+    async fn train_round(
+        &mut self,
+        round: u32,
+        meta: &Path,
+        spool: &Path,
+    ) -> Result<(), NodeError> {
+        let plan = self.f.plan.clone();
+        let base = self.base_path(round);
+        let seeds: Vec<[u8; 32]> = plan.helpers.iter().map(|_| random_bytes::<32>()).collect();
+        let mut sealed = Vec::with_capacity(seeds.len());
+        let did = self.f.identity.did_string();
+        let round_dir = self.f.dirs.round(round)?;
+        for (h, (helper, seed)) in plan.helpers.iter().zip(&seeds).enumerate() {
+            let context = seal_context(&self.f.plan_id, round, &did, &helper.did);
+            let boxed = seal(&helper.seal, &context, seed)?;
+            sealed.push(Digest::of(&boxed));
+            std::fs::write(round_dir.join(format!("sealed-{h}.bin")), boxed)?;
+        }
+
+        let mut trainer = self
+            .trainer
+            .take()
+            .ok_or_else(|| NodeError::Trainer("trainer lost after a failed round".into()))?;
+        let (meta, spool) = (meta.to_owned(), spool.to_owned());
+        let task = blocking(move || {
+            let mut outcome: Option<(Encoded, u64)> = None;
+            let ctx = TrainContext {
+                round,
+                base_model: base.clone(),
+            };
+            let pad: [Fp; PAD as usize] = [random_field(), random_field()];
+            let trained = trainer.train(&ctx, &mut |tensors, weight| {
+                if outcome.is_some() {
+                    return Err(ModelError::Mismatch("submit called twice".into()));
+                }
+                let encoded = model::encode_update(&EncodeRequest {
+                    layout: &plan.layout,
+                    encoding: plan.encoding,
+                    chunk_coords: plan.chunk_coords,
+                    base: &base,
+                    local: tensors,
+                    weight,
+                    pad,
+                    seeds: &seeds,
+                    out: &spool,
+                })?;
+                outcome = Some((
+                    Encoded {
+                        manifest: encoded.manifest.clone(),
+                        clipped: encoded.clipped,
+                    },
+                    weight,
+                ));
+                Ok(encoded)
+            });
+            trained.map_err(NodeError::Trainer)?;
+            let (encoded, weight) = outcome
+                .ok_or_else(|| NodeError::Trainer("the trainer submitted nothing".into()))?;
+            if encoded.clipped > 0 {
+                tracing::warn!("{} coordinates were clipped this round", encoded.clipped);
+            }
+            let file = RoundFile {
+                seeds: seeds.iter().map(hex::encode).collect(),
+                weight,
+                manifest: encoded.manifest,
+                sealed,
+            };
+            let text = serde_json::to_vec(&file).map_err(|e| NodeError::Protocol(e.to_string()))?;
+            let partial = meta.with_extension("partial");
+            std::fs::write(&partial, text)?;
+            std::fs::rename(&partial, &meta)?;
+            Ok(trainer)
+        });
+        self.trainer = Some(task.await?);
+        Ok(())
+    }
+
+    /// Works out everything this site will vouch for, over bytes it holds.
+    /// Reused between attesting and acknowledging, and rebuilt after a restart.
+    async fn checks(
+        &mut self,
+        client: &mut Client,
+        state: &RoundState,
+        position: usize,
+    ) -> Result<Checks, NodeError> {
+        let round = state.round;
+        if let Some(checks) = self.checks.as_ref().filter(|c| c.round == round) {
+            return Ok(checks.clone());
+        }
+        let outcome = state
+            .outcome
+            .clone()
+            .ok_or_else(|| NodeError::Protocol("no outcome".into()))?;
+        let round_dir = self.f.dirs.round(round)?;
+        let file = read_round_file(&round_dir.join("round.json"))?;
+        if state.contributions[&self.me].masked != file.manifest.root {
+            return Err(NodeError::Check(
+                "the log holds a different contribution from this site".into(),
+            ));
+        }
+
+        let shape = self.f.shape();
+        let rho = challenge(&outcome.challenge);
+        let seeds = decode_seeds(&file)?;
+        let spool = round_dir.join("masked.bin");
+        let (masked, shares) = blocking(move || {
+            let masked = vector::fingerprint_file(&spool, shape, rho)?;
+            let shares = seeds
+                .iter()
+                .map(|seed| Ok(vector::fingerprint_mask(seed, shape, rho)?))
+                .collect::<Result<Vec<_>, NodeError>>()?;
+            Ok((masked, shares))
+        })
+        .await?;
+        for (h, share) in shares.iter().enumerate() {
+            if state.helper_attests[&h].per_site[position] != *share {
+                return Err(NodeError::Check(format!(
+                    "round {round}: helper {} claims a mask this site's seed did not produce",
+                    self.f.plan.helpers[h].did
+                )));
+            }
+        }
+
+        let aggregate_path = round_dir.join("aggregate.bin");
+        self.f
+            .fetch_vector(
+                client,
+                Object::Aggregate { round },
+                outcome.aggregate,
+                &aggregate_path,
+            )
+            .await?;
+        let plan = self.f.plan.clone();
+        let base = self.base_path(round);
+        let next = self.f.dirs.model(round);
+        let total_weight = outcome.total_weight;
+        let (aggregate, model_digest) = blocking(move || {
+            let aggregate = vector::fingerprint_file(&aggregate_path, shape, rho)?;
+            model::apply_aggregate(
+                &plan.layout,
+                plan.encoding,
+                plan.chunk_coords,
+                &base,
+                &aggregate_path,
+                total_weight,
+                &next,
+            )?;
+            Ok((aggregate, Digest::file(&next)?))
+        })
+        .await?;
+        if model_digest != outcome.model {
+            return Err(NodeError::Check(
+                "the model rebuilt from the aggregate has a different digest".into(),
+            ));
+        }
+
+        let mut audits = Vec::new();
+        let targets = self
+            .f
+            .plan
+            .audit_targets(&outcome.challenge, position, state.included.len());
+        for target in targets {
+            let site = state.included[target];
+            let path = round_dir.join(format!("audit-{site}.bin"));
+            let object = Object::Upload {
+                round,
+                site: site as u32,
+            };
+            let root = state.contributions[&site].masked;
+            self.f.fetch_vector(client, object, root, &path).await?;
+            let reading = path.clone();
+            let print =
+                blocking(move || Ok(vector::fingerprint_file(&reading, shape, rho)?)).await?;
+            std::fs::remove_file(&path)?;
+            audits.push((target, print));
+        }
+
+        let checks = Checks {
+            round,
+            masked,
+            aggregate,
+            audits,
+        };
+        self.checks = Some(checks.clone());
+        Ok(checks)
+    }
+
+    async fn attest(&mut self, client: &mut Client, state: &RoundState) -> Result<(), NodeError> {
+        let Some(position) = state.included.iter().position(|s| *s == self.me) else {
+            return Ok(());
+        };
+        if state.site_attests.contains_key(&self.me)
+            || state.helper_attests.len() < self.f.plan.helpers.len()
+        {
+            return Ok(());
+        }
+        let outcome = state
+            .outcome
+            .clone()
+            .ok_or_else(|| NodeError::Protocol("no outcome".into()))?;
+        let checks = self.checks(client, state, position).await?;
+        let body = Body::Attest {
+            plan: self.f.plan_id,
+            round: state.round,
+            challenge: outcome.challenge,
+            masked: checks.masked,
+        };
+        self.f.offer(client, &body).await?;
+        Ok(())
+    }
+
+    async fn acknowledge(
+        &mut self,
+        client: &mut Client,
+        state: &RoundState,
+    ) -> Result<(), NodeError> {
+        let round = state.round;
+        let Some(position) = state.included.iter().position(|s| *s == self.me) else {
+            self.f.dirs.drop_round(round);
+            return Ok(());
+        };
+        if state.acks.contains(&self.me) {
+            return Ok(());
+        }
+        let seal = state
+            .seal
+            .clone()
+            .ok_or_else(|| NodeError::Protocol("no seal".into()))?;
+        let checks = self.checks(client, state, position).await?;
+        if checks.aggregate != seal.aggregate {
+            return Err(NodeError::Check(format!(
+                "round {round}: the aggregate received does not match the sealed fingerprint"
+            )));
+        }
+        if checks.masked != seal.per_site[position] {
+            return Err(NodeError::Check(format!(
+                "round {round}: the aggregator sealed a different fingerprint for this site"
+            )));
+        }
+        for (target, print) in &checks.audits {
+            if seal.per_site[*target] != *print {
+                return Err(NodeError::Check(format!(
+                    "round {round}: site {} attested to a vector it did not commit to",
+                    self.f.plan.sites[state.included[*target]]
+                )));
+            }
+        }
+        let body = Body::Ack {
+            plan: self.f.plan_id,
+            round,
+            head: seal.head,
+        };
+        self.f.offer(client, &body).await?;
+        self.checks = None;
+        self.f.dirs.drop_round(round);
+        Ok(())
+    }
+
+    /// The final state may have arrived while this site was offline.
+    async fn settle(&mut self, client: &mut Client) -> Result<(), NodeError> {
+        let (round, digest) = (self.f.replay.round_number(), self.f.replay.model);
+        self.ensure_model(client, round, digest).await
+    }
+
+    fn summary(&self) -> Result<SiteSummary, NodeError> {
+        let round = self.f.replay.round_number();
+        Ok(SiteSummary {
+            final_model: self.f.dirs.model(round),
+            final_digest: self.f.replay.model,
+            rounds_contributed: self
+                .f
+                .replay
+                .rounds
+                .iter()
+                .filter(|r| r.included.contains(&self.me))
+                .map(|r| r.round)
+                .collect(),
+            rounds_refused: self.refused.clone(),
+        })
+    }
+}
+
+fn read_round_file(path: &Path) -> Result<RoundFile, NodeError> {
+    serde_json::from_slice(&std::fs::read(path)?).map_err(|e| NodeError::Protocol(e.to_string()))
+}
+
+fn decode_seeds(file: &RoundFile) -> Result<Vec<[u8; 32]>, NodeError> {
+    file.seeds
+        .iter()
+        .map(|text| {
+            let mut seed = [0u8; 32];
+            hex::decode_to_slice(text, &mut seed)
+                .map_err(|e| NodeError::Protocol(e.to_string()))?;
+            Ok(seed)
+        })
+        .collect()
+}
