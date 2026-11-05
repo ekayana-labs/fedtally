@@ -2,6 +2,7 @@
 resolver = "3"
 members = ["crates/fedtally-core", "crates/fedtally-node", "crates/fedtally-cli", "crates/fedtally-py"]
 default-members = ["crates/fedtally-core", "crates/fedtally-node", "crates/fedtally-cli"]
+exclude = ["ledger"]
 
 [workspace.package]
 version = "0.1.0"

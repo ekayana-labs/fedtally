@@ -1,0 +1,48 @@
+[package]
+name = "fedtally-ledger"
+version = "0.1.0"
+description = "The Solana program that anchors and arbitrates a fedtally run"
+authors.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+readme = "../README.md"
+keywords = ["solana", "federated-learning", "pinocchio"]
+categories = ["cryptography"]
+
+[lib]
+crate-type = ["cdylib", "lib"]
+name = "fedtally_ledger"
+
+[features]
+default = []
+no-entrypoint = []
+
+[dependencies]
+pinocchio = "0.11.2"
+pinocchio-system = "0.6.1"
+five8_const = "1.0.0"
+
+[target.'cfg(not(target_os = "solana"))'.dependencies]
+solana-address = { version = "2", features = ["curve25519"] }
+sha2 = "0.11"
+
+[dev-dependencies]
+litesvm = "0.16"
+solana-message = "4"
+solana-transaction = "4"
+solana-signer = "3"
+solana-keypair = "3"
+solana-pubkey = "4"
+solana-instruction = "3"
+solana-compute-budget-interface = "3"
+fedtally-core = { path = "../../crates/fedtally-core" }
+fedtally-node = { path = "../../crates/fedtally-node" }
+hex = "0.4"
+serde_json = "1"
+tempfile = "3"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync"] }
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(target_os, values("solana"))'] }
