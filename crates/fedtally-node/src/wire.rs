@@ -114,6 +114,10 @@ pub enum Msg {
     },
 }
 
+const LENGTH_BYTES: usize = size_of::<u32>();
+/// Room for everything in a message that carries data, other than the data.
+const HEADER_ROOM: usize = 64;
+
 pub async fn read_msg<R: AsyncRead + Unpin>(
     reader: &mut R,
     limit: usize,
@@ -130,11 +134,23 @@ pub async fn read_msg<R: AsyncRead + Unpin>(
 }
 
 pub async fn write_msg<W: AsyncWrite + Unpin>(writer: &mut W, msg: &Msg) -> Result<(), NodeError> {
-    let buf = postcard::to_stdvec(msg).map_err(|e| NodeError::Protocol(e.to_string()))?;
-    let len =
-        u32::try_from(buf.len()).map_err(|_| NodeError::Protocol("frame too large".into()))?;
-    writer.write_u32_le(len).await?;
-    writer.write_all(&buf).await?;
+    let payload = match msg {
+        Msg::PutChunk { data, .. }
+        | Msg::Chunk { data, .. }
+        | Msg::FileChunk { data, .. }
+        | Msg::PutSealed { data, .. } => data.len(),
+        _ => 0,
+    };
+    // The length goes in front in the same buffer, sized so a chunk is
+    // copied into it once and the frame leaves in one write.
+    let mut frame = Vec::with_capacity(LENGTH_BYTES + payload + HEADER_ROOM);
+    frame.extend_from_slice(&[0; LENGTH_BYTES]);
+    let mut frame =
+        postcard::to_extend(msg, frame).map_err(|e| NodeError::Protocol(e.to_string()))?;
+    let len = u32::try_from(frame.len() - LENGTH_BYTES)
+        .map_err(|_| NodeError::Protocol("frame too large".into()))?;
+    frame[..LENGTH_BYTES].copy_from_slice(&len.to_le_bytes());
+    writer.write_all(&frame).await?;
     writer.flush().await?;
     Ok(())
 }

@@ -300,14 +300,7 @@ async fn open_upload(path: &Path, shape: Shape, manifest: Manifest) -> Result<Up
             .truncate(false)
             .open(&path)?;
         file.set_len(shape.coords * 8)?;
-        let mut missing = BTreeSet::new();
-        let mut buf = Vec::new();
-        for chunk in 0..shape.chunks() {
-            vector::read_chunk(&file, shape, chunk, &mut buf)?;
-            if vector::digest_chunk(&buf) != manifest.chunks[chunk as usize] {
-                missing.insert(chunk);
-            }
-        }
+        let missing = vector::missing_chunks(&file, shape, &manifest)?;
         let durable = missing.is_empty();
         if durable {
             file.sync_data()?;
@@ -535,9 +528,7 @@ async fn handle(
             let shape = shared.shape;
             let read = blocking(move || {
                 let file = File::open(path)?;
-                let mut buf = Vec::new();
-                vector::read_chunk(&file, shape, chunk, &mut buf)?;
-                Ok(vector::chunk_bytes(&buf).to_vec())
+                Ok(vector::read_chunk_bytes(&file, shape, chunk)?)
             })
             .await;
             let answer = match read {

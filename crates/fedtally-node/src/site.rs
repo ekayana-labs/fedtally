@@ -596,17 +596,12 @@ impl Site {
             .audit_targets(&outcome.challenge, position, state.included.len());
         for target in targets {
             let site = state.included[target];
-            let path = round_dir.join(format!("audit-{site}.bin"));
             let object = Object::Upload {
                 round,
                 site: site as u32,
             };
             let root = state.contributions[&site].masked;
-            self.f.fetch_vector(client, object, root, &path).await?;
-            let reading = path.clone();
-            let print =
-                blocking(move || Ok(vector::fingerprint_file(&reading, shape, rho)?)).await?;
-            std::fs::remove_file(&path)?;
+            let print = self.f.fetch_fingerprint(client, object, root, rho).await?;
             audits.push((target, print));
         }
 

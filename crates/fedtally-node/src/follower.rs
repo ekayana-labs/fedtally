@@ -3,9 +3,10 @@
 
 use std::fs::{File, OpenOptions};
 use std::path::Path;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
+use fedtally_core::field::Fp2;
 use fedtally_core::keys::Identity;
 use fedtally_core::log::LogFile;
 use fedtally_core::plan::Plan;
@@ -253,17 +254,12 @@ impl Follower {
         let file = Arc::new(File::open(path)?);
         for chunk in chunks {
             let file = file.clone();
-            let data = blocking(move || {
-                let mut buf = Vec::new();
-                vector::read_chunk(&file, shape, chunk, &mut buf)?;
-                Ok(buf)
-            })
-            .await?;
+            let data = blocking(move || Ok(vector::read_chunk_bytes(&file, shape, chunk)?)).await?;
             client
                 .send(&Msg::PutChunk {
                     object,
                     chunk,
-                    data: vector::chunk_bytes(&data).to_vec(),
+                    data,
                 })
                 .await?;
         }
@@ -284,6 +280,55 @@ impl Follower {
         root: Digest,
         out: &Path,
     ) -> Result<(), NodeError> {
+        let manifest = self.fetch_manifest(client, object, root).await?;
+        let shape = self.shape();
+        let file = Arc::new(
+            OpenOptions::new()
+                .create(true)
+                .write(true)
+                .truncate(false)
+                .open(out)?,
+        );
+        file.set_len(shape.coords * 8)?;
+        let target = file.clone();
+        self.fetch_chunks(client, object, manifest, move |chunk, data| {
+            Ok(vector::write_chunk_bytes(&target, shape, chunk, data)?)
+        })
+        .await?;
+        file.sync_data()?;
+        Ok(())
+    }
+
+    /// Downloads a vector, checks it against the digest from the log and
+    /// returns its fingerprint at `rho`. Nothing is written to disk.
+    pub async fn fetch_fingerprint(
+        &self,
+        client: &mut Client,
+        object: Object,
+        root: Digest,
+        rho: Fp2,
+    ) -> Result<Fp2, NodeError> {
+        let manifest = self.fetch_manifest(client, object, root).await?;
+        let prints = vector::Fingerprinter::new(self.shape(), rho);
+        let total = Arc::new(Mutex::new(Fp2::ZERO));
+        let sum = total.clone();
+        self.fetch_chunks(client, object, manifest, move |chunk, data| {
+            let term = prints.chunk_bytes(chunk, data);
+            let mut sum = sum.lock().unwrap_or_else(PoisonError::into_inner);
+            *sum = *sum + term;
+            Ok(())
+        })
+        .await?;
+        let total = *total.lock().unwrap_or_else(PoisonError::into_inner);
+        Ok(total)
+    }
+
+    async fn fetch_manifest(
+        &self,
+        client: &mut Client,
+        object: Object,
+        root: Digest,
+    ) -> Result<Manifest, NodeError> {
         client.send(&Msg::GetManifest { object }).await?;
         let manifest = match client.reply().await? {
             Msg::Manifest { manifest, .. } => manifest,
@@ -296,23 +341,27 @@ impl Follower {
                 )));
             }
         };
-        let shape = self.shape();
         if manifest.root != root
             || Manifest::root_of(&manifest.chunks) != root
-            || manifest.chunks.len() as u64 != shape.chunks()
+            || manifest.chunks.len() as u64 != self.shape().chunks()
         {
             return Err(NodeError::Check(format!(
                 "{object:?} has the wrong manifest"
             )));
         }
-        let file = Arc::new(
-            OpenOptions::new()
-                .create(true)
-                .write(true)
-                .truncate(false)
-                .open(out)?,
-        );
-        file.set_len(shape.coords * 8)?;
+        Ok(manifest)
+    }
+
+    /// Asks for every chunk and hands each to `store` once it matches the manifest.
+    async fn fetch_chunks(
+        &self,
+        client: &mut Client,
+        object: Object,
+        manifest: Manifest,
+        store: impl Fn(u64, &[u8]) -> Result<(), NodeError> + Send + Sync + 'static,
+    ) -> Result<(), NodeError> {
+        let shape = self.shape();
+        let store = Arc::new(store);
         let total = shape.chunks();
         let mut arrived = Arrivals::new(total);
         let (mut next, mut in_flight) = (0u64, 0usize);
@@ -340,20 +389,18 @@ impl Follower {
             };
             arrived.record(chunk)?;
             let want = manifest.chunks[chunk as usize];
-            let target = file.clone();
+            let store = store.clone();
             blocking(move || {
                 if data.len() != shape.chunk_bytes(chunk)
                     || vector::digest_chunk_bytes(&data) != want
                 {
                     return Err(NodeError::Check(format!("chunk {chunk} does not match")));
                 }
-                vector::write_chunk_bytes(&target, shape, chunk, &data)?;
-                Ok(())
+                store(chunk, &data)
             })
             .await?;
             in_flight -= 1;
         }
-        file.sync_data()?;
         Ok(())
     }
 
