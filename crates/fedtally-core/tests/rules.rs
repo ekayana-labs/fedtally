@@ -1359,6 +1359,15 @@ fn a_site_trusting_only_a_removed_helper_is_no_longer_covered() {
 }
 
 #[test]
+fn a_plan_whose_rounds_would_not_fit_a_round_number_is_refused() {
+    let mut plan = Run::with_spare_helper(|_| {}).plan;
+    plan.rounds = u32::MAX;
+    assert_eq!(plan.validate(), Err(PlanError::TooManyRounds));
+    plan.rounds = u32::MAX - 1;
+    assert_eq!(plan.validate(), Ok(()));
+}
+
+#[test]
 fn a_silent_helper_is_removed_and_the_round_is_redone_without_it() {
     let mut run = Run::losing_a_helper_in_masking(|_| {});
     run.remove(1, 2);

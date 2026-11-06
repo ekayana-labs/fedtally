@@ -110,6 +110,8 @@ pub enum PlanError {
     Version(u32),
     #[error("plan needs at least one round")]
     NoRounds,
+    #[error("a plan's rounds and redos must fit in a 32 bit round number")]
+    TooManyRounds,
     #[error("a plan with no noise cannot retry: two sums would give a site's update away")]
     RetriesOpen,
     #[error("a scoring plan cannot retry")]
@@ -171,6 +173,9 @@ impl Plan {
         }
         if self.rounds == 0 {
             return Err(PlanError::NoRounds);
+        }
+        if self.attempts() > u64::from(u32::MAX) {
+            return Err(PlanError::TooManyRounds);
         }
         if self.sites.is_empty() {
             return Err(PlanError::NoSites);
