@@ -85,6 +85,9 @@ pub struct Anchor {
     held: BTreeSet<u32>,
     reported: BTreeSet<u32>,
     quiet_until: Instant,
+    /// When to try fetching ahead again. Apart from `quiet_until`, or a failing
+    /// fetch would keep a round from ever being examined.
+    fetch_again: Instant,
     said: Option<Step>,
     poll: Duration,
     give_up_after: Duration,
@@ -213,6 +216,7 @@ impl Anchor {
             held: BTreeSet::new(),
             reported: BTreeSet::new(),
             quiet_until: Instant::now(),
+            fetch_again: Instant::now(),
             said: None,
             poll: config.poll,
             give_up_after: config.give_up_after,
@@ -355,7 +359,7 @@ impl Anchor {
         let Some(vault) = &mut self.vault else {
             return Ok(());
         };
-        if Instant::now() < self.quiet_until {
+        if Instant::now() < self.fetch_again {
             return Ok(());
         }
         // Only the newest rounds: an aggregator drops a round's vectors once
@@ -373,7 +377,7 @@ impl Anchor {
                 Ok(false) => {}
                 Err(e) => {
                     tracing::debug!("round {number}: its vectors are not to be had: {e}");
-                    self.quiet_until = Instant::now() + self.poll.max(RETRY_FIRST) * 4;
+                    self.fetch_again = Instant::now() + self.poll.max(RETRY_FIRST) * 4;
                 }
             }
         }
