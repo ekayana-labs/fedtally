@@ -11,6 +11,7 @@ pub mod registry;
 pub mod site;
 pub mod wire;
 
+use std::fs::File;
 use std::path::{Path, PathBuf};
 
 use fedtally_core::keys::KeyError;
@@ -114,6 +115,25 @@ pub(crate) fn newer_lists(dir: &Path, replay: &Replay) -> Vec<String> {
 }
 
 pub(crate) struct Dirs(PathBuf);
+
+/// Writes a file a power cut must not lose or leave half written: the data
+/// reaches the disk, and then the name does. For what the log commits to and
+/// nothing can rebuild, such as a site's seeds.
+pub(crate) fn write_durable(path: &Path, data: &[u8]) -> std::io::Result<()> {
+    let partial = path.with_extension("partial");
+    std::fs::write(&partial, data)?;
+    File::open(&partial)?.sync_data()?;
+    std::fs::rename(&partial, path)?;
+    sync_parent(path)
+}
+
+/// A rename or a new file is only safe once its directory has reached the disk.
+pub fn sync_parent(path: &Path) -> std::io::Result<()> {
+    match path.parent() {
+        Some(dir) => File::open(dir)?.sync_all(),
+        None => Ok(()),
+    }
+}
 
 impl Dirs {
     pub fn new(root: &Path) -> std::io::Result<Dirs> {

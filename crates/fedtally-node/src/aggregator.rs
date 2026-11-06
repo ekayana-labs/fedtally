@@ -25,7 +25,7 @@ use tokio_rustls::server::TlsStream;
 
 use crate::net::{Listener, accept_peer, split_stream};
 use crate::wire::{Blob, Msg, Object, PING_EVERY, SILENCE_LIMIT, read_msg, write_msg};
-use crate::{Dirs, NodeError, blocking, frame_limit, newer_lists};
+use crate::{Dirs, NodeError, blocking, frame_limit, newer_lists, write_durable};
 
 const TICK: Duration = Duration::from_millis(100);
 const FILE_CHUNK: usize = 1 << 20;
@@ -751,11 +751,7 @@ fn sum_held_back(state: &State, round: u32) -> bool {
 }
 
 fn write_atomic(path: &Path, data: &[u8]) -> Result<(), NodeError> {
-    let partial = path.with_extension("partial");
-    std::fs::write(&partial, data)?;
-    File::open(&partial)?.sync_data()?;
-    std::fs::rename(&partial, path)?;
-    Ok(())
+    Ok(write_durable(path, data)?)
 }
 
 fn subscribe(shared: &Shared, peer: u64, from: u64, head: Digest) -> Result<(), NodeError> {

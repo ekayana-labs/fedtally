@@ -32,7 +32,7 @@ use crate::helper::seal_context;
 use crate::net::Client;
 use crate::registry::{self, Registry, Unsure};
 use crate::wire::{Blob, Msg, Object};
-use crate::{NodeError, blocking, newer_lists};
+use crate::{NodeError, blocking, newer_lists, write_durable};
 
 pub struct TrainContext {
     pub round: u32,
@@ -541,7 +541,7 @@ impl Site {
             let context = seal_context(&self.f.plan_id, state.round, &did, &helper.did);
             let boxed = seal(&helper.seal, &context, &seed)?;
             sealed[h] = Digest::of(&boxed);
-            std::fs::write(round_dir.join(format!("sealed-{h}.bin")), boxed)?;
+            write_durable(&round_dir.join(format!("sealed-{h}.bin")), &boxed)?;
             seeds.push(seed);
         }
         Ok((seeds, sealed))
@@ -585,9 +585,7 @@ impl Site {
                 proof: None,
             };
             let text = serde_json::to_vec(&file).map_err(|e| NodeError::Protocol(e.to_string()))?;
-            let partial = meta.with_extension("partial");
-            std::fs::write(&partial, text)?;
-            std::fs::rename(&partial, &meta)?;
+            write_durable(&meta, &text)?;
             Ok(())
         })
         .await
@@ -664,7 +662,7 @@ impl Site {
                     };
                     if let Some(bytes) = made {
                         proof = Some(Digest::of(&bytes));
-                        std::fs::write(&proof_path, bytes)?;
+                        write_durable(&proof_path, &bytes)?;
                         break encoded;
                     }
                     // Fresh noise and seeds each time, and each try fails
@@ -699,9 +697,7 @@ impl Site {
                 proof,
             };
             let text = serde_json::to_vec(&file).map_err(|e| NodeError::Protocol(e.to_string()))?;
-            let partial = meta.with_extension("partial");
-            std::fs::write(&partial, text)?;
-            std::fs::rename(&partial, &meta)?;
+            write_durable(&meta, &text)?;
             Ok(trainer)
         });
         self.trainer = Some(task.await?);
