@@ -49,6 +49,8 @@ struct Run {
     sponsor: Id,
     aggregator: Id,
     helper: Id,
+    /// Helpers past the first, in a plan that can lose one.
+    spare: Vec<Id>,
     sites: Vec<Id>,
     plan: Plan,
     plan_id: Digest,
@@ -84,6 +86,27 @@ impl Run {
 
     fn with(edit: impl FnOnce(&mut Plan)) -> Run {
         Run::of(identity, edit)
+    }
+
+    /// Three helpers, of which the run must keep two.
+    fn with_spare_helper(edit: impl FnOnce(&mut Plan)) -> Run {
+        let spare = vec![identity(), identity()];
+        let specs: Vec<HelperSpec> = spare
+            .iter()
+            .map(|helper| HelperSpec {
+                did: helper.did_string(),
+                seal: helper.seal_public().clone(),
+                seal_proof: helper.seal_proof().unwrap(),
+                credentials: Vec::new(),
+            })
+            .collect();
+        let mut run = Run::with(move |plan| {
+            plan.helpers.extend(specs);
+            plan.min_helpers = 2;
+            edit(plan);
+        });
+        run.spare = spare;
+        run
     }
 
     fn of(identity: fn() -> Id, edit: impl FnOnce(&mut Plan)) -> Run {
@@ -135,6 +158,7 @@ impl Run {
             bounded: false,
             scoring: None,
             retries: 0,
+            min_helpers: 0,
         };
         edit(&mut plan);
         let record = Record::sign(&sponsor, &Body::Plan(Box::new(plan.clone()))).unwrap();
@@ -145,6 +169,7 @@ impl Run {
             sponsor,
             aggregator,
             helper,
+            spare: Vec::new(),
             sites,
             plan,
             replay,
@@ -181,6 +206,7 @@ impl Run {
             max_rounds: Some(5),
             max_budget: self.plan.privacy.as_ref().map(|p| p.budget),
             max_retries: (self.plan.retries > 0).then_some(self.plan.retries),
+            min_helpers: (self.plan.min_helpers > 0).then_some(self.plan.min_helpers),
             ..Terms::default()
         }
     }
@@ -1145,6 +1171,86 @@ fn a_plan_that_retries_cannot_be_anchored_yet() {
     let run = Run::with(retrying(4 << 40, 1));
     let refused = run.plan.ledger_terms(run.plan_id).unwrap_err();
     assert!(refused.contains("retries"), "{refused}");
+}
+
+#[test]
+fn a_plan_that_can_lose_helpers_is_refused_unless_it_makes_sense() {
+    let check = |change: &dyn Fn(&mut Plan), want: PlanError| {
+        let mut plan = Run::with_spare_helper(|_| {}).plan;
+        change(&mut plan);
+        assert_eq!(plan.validate().unwrap_err(), want);
+    };
+    check(&|p| p.min_helpers = 1, PlanError::MinHelpers);
+    check(&|p| p.min_helpers = 3, PlanError::MinHelpers);
+    check(
+        &|p| p.scoring = Some(fedtally_core::scoring::Scoring { group: 2 }),
+        PlanError::MinHelpersWith,
+    );
+    check(
+        &|p| {
+            private(4 << 40)(p);
+            p.retries = 1;
+        },
+        PlanError::MinHelpersWith,
+    );
+    // Two rounds and one redo, at most 0.75 rho each.
+    check(&|p| private(2 << 40)(p), PlanError::RetriesBudget);
+    let mut plan = Run::with_spare_helper(|_| {}).plan;
+    private(3 << 40)(&mut plan);
+    assert_eq!(plan.validate(), Ok(()));
+}
+
+#[test]
+fn a_default_grant_refuses_a_plan_that_can_lose_helpers() {
+    let with = |min_helpers| {
+        let mut run = Run::with_spare_helper(|_| {});
+        let site = run.site(0);
+        let terms = Terms {
+            min_helpers,
+            ..run.terms()
+        };
+        let body = run.join_body(0, &terms);
+        (run.replay.apply(&Record::sign(&site, &body).unwrap())).is_ok()
+    };
+    assert!(!with(None));
+    assert!(!with(Some(3)));
+    assert!(with(Some(2)));
+}
+
+#[test]
+fn a_site_limiting_its_rounds_counts_the_redos_of_a_lost_helper() {
+    let with = |max_rounds| {
+        let mut run = Run::with_spare_helper(|_| {});
+        let site = run.site(0);
+        let terms = Terms {
+            max_rounds: Some(max_rounds),
+            ..run.terms()
+        };
+        let body = run.join_body(0, &terms);
+        (run.replay.apply(&Record::sign(&site, &body).unwrap())).is_ok()
+    };
+    // Two rounds, and one helper that can be lost.
+    assert!(!with(2));
+    assert!(with(3));
+}
+
+#[test]
+fn a_plan_that_can_lose_helpers_cannot_be_anchored_yet() {
+    let run = Run::with_spare_helper(|_| {});
+    let refused = run.plan.ledger_terms(run.plan_id).unwrap_err();
+    assert!(refused.contains("lose a helper"), "{refused}");
+}
+
+#[test]
+fn a_plan_that_needs_every_helper_says_nothing_new() {
+    let run = Run::new();
+    assert!(
+        !serde_json::to_string(&run.plan)
+            .unwrap()
+            .contains("min_helpers")
+    );
+    let args = admission::arguments(&run.plan_id, &run.plan);
+    assert!(!args.contains_key("min_helpers"));
 }
 
 #[test]

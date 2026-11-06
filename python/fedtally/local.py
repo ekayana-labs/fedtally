@@ -118,7 +118,9 @@ class LocalFederation:
         update is within the privacy terms, and one that can't is left out),
         `scoring` (split each cohort into groups of at least this many sites
         and score them for rewards), `retries` (how many times a round may be
-        redone without a site that went silent, in a private plan) and `cheats` (a map from a site's number
+        redone without a site that went silent, in a private plan),
+        `min_helpers` (the fewest helpers the run may carry on with, redoing a
+        round without one that went silent) and `cheats` (a map from a site's number
         to how many times past the clip it reaches, for attack tests)."""
         self.root = Path(root)
         self.root.mkdir(parents=True, exist_ok=True)

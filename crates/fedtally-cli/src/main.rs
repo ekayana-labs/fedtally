@@ -113,6 +113,9 @@ enum Command {
         /// Join a plan that may redo a round this many times. Needs --max-epsilon
         #[arg(long)]
         max_retries: Option<u32>,
+        /// Join a plan that can lose helpers, if at least this many must remain
+        #[arg(long)]
+        min_helpers: Option<u32>,
         #[arg(long, default_value_t = 90)]
         days: u32,
         #[arg(long)]
@@ -331,6 +334,8 @@ struct PlanSpec {
     scoring: Option<Scoring>,
     #[serde(default)]
     retries: u32,
+    #[serde(default)]
+    min_helpers: u32,
 }
 
 impl PlanSpec {
@@ -346,9 +351,13 @@ impl PlanSpec {
         if self.encoding.is_some() || self.max_weight.is_some() {
             return Err("a private plan sets its own encoding and weights: leave them out".into());
         }
+        let removals = match self.min_helpers {
+            0 => 0,
+            floor => (self.helpers.len() as u32).saturating_sub(floor),
+        };
         let (encoding, terms) = spec.terms(
             self.layout.coords(),
-            self.rounds + self.retries,
+            self.rounds + self.retries + removals,
             self.scoring.map_or(self.min_cohort, |s| s.group),
         )?;
         Ok((encoding, 1, Some(terms)))
@@ -464,6 +473,7 @@ async fn run(command: Command) -> Result<ExitCode, Failure> {
             delta,
             assume_colluding,
             max_retries,
+            min_helpers,
             days,
             out,
         } => {
@@ -491,6 +501,7 @@ async fn run(command: Command) -> Result<ExitCode, Failure> {
                     .map(|(epsilon, delta)| privacy::budget_for(epsilon, delta)),
                 min_colluding: assume_colluding,
                 max_retries,
+                min_helpers,
             };
             let grant = admission::grant(&site, &Did::parse(&to)?, &terms, expiry(days)?)?;
             std::fs::write(&out, grant.bytes())?;
@@ -528,6 +539,7 @@ async fn run(command: Command) -> Result<ExitCode, Failure> {
                 bounded: spec.bounded,
                 scoring: spec.scoring,
                 retries: spec.retries,
+                min_helpers: spec.min_helpers,
             };
             plan.validate()?;
             let record = Record::sign(&sponsor, &Body::Plan(Box::new(plan)))?;

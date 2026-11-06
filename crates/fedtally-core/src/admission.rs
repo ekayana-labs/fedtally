@@ -43,12 +43,11 @@ fn text(value: &str) -> Ipld {
 /// constrains them with an ordinary UCAN policy.
 pub fn arguments(plan_id: &Digest, plan: &Plan) -> BTreeMap<String, Ipld> {
     // A site's `max_rounds` limits how many sums its data can go into, so a
-    // retry counts as a round.
-    let rounds = u64::from(plan.rounds) + u64::from(plan.retries);
+    // redo counts as a round.
     let mut arguments = BTreeMap::from([
         ("plan".to_owned(), text(&plan_id.hex())),
         ("purpose".to_owned(), text(&plan.purpose)),
-        ("rounds".to_owned(), Ipld::Integer(rounds.into())),
+        ("rounds".to_owned(), Ipld::Integer(plan.attempts().into())),
         (
             "min_cohort".to_owned(),
             Ipld::Integer(plan.min_cohort.into()),
@@ -68,6 +67,10 @@ pub fn arguments(plan_id: &Digest, plan: &Plan) -> BTreeMap<String, Ipld> {
     if plan.retries > 0 {
         let retries = Ipld::Integer(plan.retries.into());
         arguments.insert("retries".to_owned(), retries);
+    }
+    if plan.min_helpers > 0 {
+        let floor = Ipld::Integer(plan.min_helpers.into());
+        arguments.insert("min_helpers".to_owned(), floor);
     }
     arguments
 }
@@ -113,6 +116,10 @@ pub struct Terms {
     /// second sum over nearly the same updates, so a grant refuses any unless
     /// it says so here.
     pub max_retries: Option<u32>,
+    /// Join a plan that can lose helpers, if at least this many must remain.
+    /// Fewer than that many colluding is then what privacy rests on, so a grant
+    /// refuses any such plan unless it says so here.
+    pub min_helpers: Option<u32>,
 }
 
 impl Terms {
@@ -171,6 +178,21 @@ impl Terms {
                 list(vec![
                     no_retries,
                     list(vec![text("<="), text(".retries"), Ipld::Integer(n.into())]),
+                ]),
+            ]),
+        });
+        let no_floor = list(vec![text("=="), text(".min_helpers"), Ipld::Null]);
+        statements.push(match self.min_helpers {
+            None => no_floor,
+            Some(n) => list(vec![
+                text("or"),
+                list(vec![
+                    no_floor,
+                    list(vec![
+                        text(">="),
+                        text(".min_helpers"),
+                        Ipld::Integer(n.into()),
+                    ]),
                 ]),
             ]),
         });

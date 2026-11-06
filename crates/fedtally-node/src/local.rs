@@ -63,6 +63,8 @@ pub struct Options {
     pub scoring: Option<u32>,
     /// How many times a round may be redone without a site that went silent.
     pub retries: u32,
+    /// The fewest helpers a run may carry on with, if it may lose any.
+    pub min_helpers: u32,
     /// Sites that play dishonest, with how many times past the plan's clip
     /// each one reaches. For tests and attack benchmarks.
     pub cheats: BTreeMap<usize, u64>,
@@ -96,6 +98,7 @@ struct Overrides {
     bounded: Option<bool>,
     scoring: Option<u32>,
     retries: Option<u32>,
+    min_helpers: Option<u32>,
     cheats: Option<BTreeMap<usize, u64>>,
 }
 
@@ -136,6 +139,7 @@ impl Options {
             bounded: false,
             scoring: None,
             retries: 0,
+            min_helpers: 0,
             cheats: BTreeMap::new(),
         }
     }
@@ -169,6 +173,7 @@ impl Options {
         set(&mut options.bounded, given.bounded);
         options.scoring = given.scoring;
         set(&mut options.retries, given.retries);
+        set(&mut options.min_helpers, given.min_helpers);
         set(&mut options.cheats, given.cheats);
         Ok(options)
     }
@@ -419,12 +424,16 @@ impl LocalFederation {
     ) -> Result<LocalFederation, NodeError> {
         std::fs::create_dir_all(root)?;
         let check = |e: &dyn std::fmt::Display| NodeError::Check(e.to_string());
+        let removals = match options.min_helpers {
+            0 => 0,
+            floor => (options.helpers as u32).saturating_sub(floor),
+        };
         let (encoding, max_weight, privacy) = match &options.privacy {
             Some(request) => {
                 let (encoding, privacy) = request
                     .terms(
                         layout.coords(),
-                        options.rounds + options.retries,
+                        options.rounds + options.retries + removals,
                         options.scoring.unwrap_or(options.min_cohort),
                     )
                     .map_err(|e| check(&e))?;
@@ -512,6 +521,7 @@ impl LocalFederation {
             bounded: options.bounded,
             scoring: options.scoring.map(|group| Scoring { group }),
             retries: options.retries,
+            min_helpers: options.min_helpers,
         };
         edit(&mut plan);
         plan.validate().map_err(|e| check(&e))?;
@@ -531,6 +541,7 @@ impl LocalFederation {
             min_audits: Some(options.audits),
             max_budget: privacy.map(|p| p.budget),
             max_retries: (plan.retries > 0).then_some(plan.retries),
+            min_helpers: (plan.min_helpers > 0).then_some(plan.min_helpers),
             ..Terms::default()
         };
         let mut grants = Vec::with_capacity(sites.len());

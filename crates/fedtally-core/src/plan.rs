@@ -92,6 +92,12 @@ pub struct Plan {
     /// over nearly the same updates, and pays for it.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub retries: u32,
+    /// The fewest helpers a run may carry on with, if it may lose any. A lost
+    /// helper is dropped and the round redone without it, and the aggregator
+    /// alone decides one is lost, so privacy needs fewer than this many helpers
+    /// to collude. Absent, every helper is needed and one honest helper is enough.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub min_helpers: u32,
 }
 
 fn is_zero(n: &u32) -> bool {
@@ -110,8 +116,12 @@ pub enum PlanError {
     RetriesScoring,
     #[error("a round already at the minimum cohort has nobody to retry without")]
     RetriesCohort,
-    #[error("the privacy budget cannot cover every round and every retry")]
+    #[error("the privacy budget cannot cover every round and every redo")]
     RetriesBudget,
+    #[error("min_helpers must be at least 2 and fewer than the plan's helpers")]
+    MinHelpers,
+    #[error("a plan that can lose a helper cannot also retry, score or prove norms yet")]
+    MinHelpersWith,
     #[error("plan needs at least one site")]
     NoSites,
     #[error("a DID appears in more than one role or twice: {0}")]
@@ -259,6 +269,9 @@ impl Plan {
         if self.retries > 0 {
             self.can_retry()?;
         }
+        if self.min_helpers > 0 {
+            self.can_lose_helpers()?;
+        }
         Ok(())
     }
 
@@ -271,13 +284,42 @@ impl Plan {
         if drawn <= self.min_cohort {
             return Err(PlanError::RetriesCohort);
         }
-        // Burning every retry must not be able to cut a run short.
-        let attempts = u128::from(self.rounds) + u128::from(self.retries);
+        self.budget_covers_redos(privacy)
+    }
+
+    fn can_lose_helpers(&self) -> Result<(), PlanError> {
+        if self.min_helpers < 2 || self.min_helpers as usize >= self.helpers.len() {
+            return Err(PlanError::MinHelpers);
+        }
+        if self.retries > 0 || self.scoring.is_some() || self.bounded {
+            return Err(PlanError::MinHelpersWith);
+        }
+        match &self.privacy {
+            Some(privacy) => self.budget_covers_redos(privacy),
+            None => Ok(()),
+        }
+    }
+
+    /// Using up every redo must not be able to cut a run short.
+    fn budget_covers_redos(&self, privacy: &Privacy) -> Result<(), PlanError> {
         let dearest = self.dearest_round().ok_or(PlanError::RetriesBudget)?;
-        if attempts * u128::from(dearest) > u128::from(privacy.budget) {
+        if u128::from(self.attempts()) * u128::from(dearest) > u128::from(privacy.budget) {
             return Err(PlanError::RetriesBudget);
         }
         Ok(())
+    }
+
+    /// How many helpers the run may lose.
+    pub fn removals(&self) -> u32 {
+        match self.min_helpers {
+            0 => 0,
+            floor => (self.helpers.len() as u32).saturating_sub(floor),
+        }
+    }
+
+    /// How many rounds can close, and be paid for, in the whole run.
+    pub fn attempts(&self) -> u64 {
+        u64::from(self.rounds) + u64::from(self.retries) + u64::from(self.removals())
     }
 
     pub fn shape(&self) -> Shape {
@@ -430,6 +472,7 @@ mod tests {
             bounded: false,
             scoring: None,
             retries: 0,
+            min_helpers: 0,
         }
     }
 
