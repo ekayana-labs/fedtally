@@ -25,7 +25,9 @@ use tokio_rustls::server::TlsStream;
 
 use crate::net::{Listener, accept_peer, split_stream};
 use crate::wire::{Blob, Msg, Object, PING_EVERY, SILENCE_LIMIT, read_msg, write_msg};
-use crate::{Dirs, NodeError, blocking, frame_limit, newer_lists, replay_own, write_durable};
+use crate::{
+    Dirs, NodeError, blocking, frame_limit, newer_lists, replay_own, sync_parent, write_durable,
+};
 
 const TICK: Duration = Duration::from_millis(100);
 const FILE_CHUNK: usize = 1 << 20;
@@ -266,6 +268,7 @@ pub async fn run_aggregator(config: AggregatorConfig) -> Result<Replay, NodeErro
         std::fs::copy(&config.initial_model, &partial)?;
         File::open(&partial)?.sync_data()?;
         std::fs::rename(&partial, &first_model)?;
+        sync_parent(&first_model)?;
     }
 
     let shared = Arc::new(Shared {
@@ -365,6 +368,7 @@ async fn open_upload(path: &Path, shape: Shape, manifest: Manifest) -> Result<Up
         let durable = missing.is_empty();
         if durable {
             file.sync_data()?;
+            sync_parent(&path)?;
         }
         Ok(Upload {
             manifest,
@@ -513,7 +517,12 @@ async fn handle(
             if missing.is_empty()
                 && let Some(file) = file
             {
-                blocking(move || Ok(file.sync_data()?)).await?;
+                let path = shared.upload_path(object);
+                blocking(move || {
+                    file.sync_data()?;
+                    Ok(sync_parent(&path)?)
+                })
+                .await?;
                 if let Some(upload) = shared.lock().uploads.get_mut(&object) {
                     upload.durable = true;
                 }
@@ -1839,6 +1848,10 @@ async fn outcome_round(shared: &Arc<Shared>) -> Result<(), NodeError> {
                 &next_model,
             )?,
         }
+        // Sites fetch these once the Outcome is logged, and they have only one source.
+        File::open(&next_model)?.sync_data()?;
+        sync_parent(&next_model)?;
+        sync_parent(&aggregate)?;
         Ok((manifest.root, Digest::file(&next_model)?, manifest, moments))
     })
     .await?;
@@ -1878,7 +1891,9 @@ async fn outcome_round(shared: &Arc<Shared>) -> Result<(), NodeError> {
         let manifest = blocking(move || {
             let add: Vec<&Path> = add.iter().map(PathBuf::as_path).collect();
             let sub: Vec<&Path> = sub.iter().map(PathBuf::as_path).collect();
-            Ok(vector::combine(&out, shape, &add, &sub)?)
+            let manifest = vector::combine(&out, shape, &add, &sub)?;
+            sync_parent(&out)?;
+            Ok(manifest)
         })
         .await?;
         groups.push(manifest.root);

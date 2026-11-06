@@ -567,7 +567,6 @@ pub fn apply_aggregate(
         })
     });
     result?;
-    target.sync_data()?;
     Ok(())
 }
 
@@ -668,7 +667,6 @@ pub fn apply_aggregate_adam(
         })
     });
     result?;
-    target.sync_data()?;
     Ok(())
 }
 

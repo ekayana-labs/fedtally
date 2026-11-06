@@ -171,7 +171,10 @@ impl Dirs {
 
     pub fn round(&self, round: u32) -> std::io::Result<PathBuf> {
         let dir = self.round_path(round);
-        std::fs::create_dir_all(&dir)?;
+        if !dir.exists() {
+            std::fs::create_dir_all(&dir)?;
+            sync_parent(&dir)?;
+        }
         Ok(dir)
     }
 
