@@ -171,6 +171,10 @@ pub struct RoundState {
     pub invited: Option<Vec<usize>>,
     /// The sites that could have been in the round when it closed.
     pub expected: Vec<usize>,
+    /// The sealed round this one starts from, 0 for the initial model.
+    pub from: u32,
+    /// Which model this round would make. Numbers count attempts, steps don't.
+    pub step: u32,
 }
 
 #[derive(Clone, Debug)]
@@ -200,6 +204,8 @@ pub struct Replay {
     pub revoked: BTreeMap<usize, String>,
     /// The credentials the plan lists for the aggregator and each helper.
     pub operators: Vec<Vec<Credential>>,
+    /// Round numbers given up so far. Each one is an attempt that made no model.
+    pub retried: u32,
 }
 
 impl Default for Replay {
@@ -245,6 +251,7 @@ impl Replay {
             lists: BTreeMap::new(),
             revoked: BTreeMap::new(),
             operators: Vec::new(),
+            retried: 0,
         }
     }
 
@@ -582,7 +589,7 @@ impl Replay {
                 self.wants(&[Phase::Joining, Phase::Acking], body)?;
                 self.all_acknowledged(plan)?;
                 let next = self.round_number() + 1;
-                if *round != next || *round > plan.rounds {
+                if *round != next || *round > plan.rounds + self.retried {
                     return Err(Fault::WrongRound(name, *round, next));
                 }
                 if *base != self.model {
@@ -593,14 +600,17 @@ impl Replay {
                 }
                 // If the dearest round fits, whatever Close picks fits too.
                 self.affordable(plan, *round, plan.dearest_round())?;
+                let step = *round - self.retried;
                 let invited = plan.sample.map(|size| {
-                    let beacon = sampling::beacon(&self.plan_id, *round, &self.model);
+                    let beacon = sampling::beacon(&self.plan_id, step, &self.model);
                     sampling::invited(&beacon, plan.sites.len(), size as usize).0
                 });
                 self.rounds.push(RoundState {
                     round: *round,
                     base: *base,
                     invited,
+                    from: next - 1,
+                    step,
                     ..RoundState::default()
                 });
                 self.phase = Phase::Collecting;
@@ -1066,7 +1076,7 @@ impl Replay {
                 chained(prev)?;
                 self.wants(&[Phase::Acking], body)?;
                 self.all_acknowledged(plan)?;
-                if self.round_number() != plan.rounds {
+                if self.round_number() != plan.rounds + self.retried {
                     return Err(Fault::EarlyFinish);
                 }
                 self.phase = Phase::Done;

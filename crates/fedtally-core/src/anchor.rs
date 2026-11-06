@@ -135,7 +135,7 @@ impl Replay {
             .iter()
             .map(|site| state.contributions[site].masked)
             .collect();
-        let beacon = sampling::beacon(&self.plan_id, round, &state.base);
+        let beacon = sampling::beacon(&self.plan_id, state.step, &state.base);
         let threshold = plan.sample.map_or([0; 32], |size| {
             sampling::invited(&beacon, plan.sites.len(), size as usize).1
         });

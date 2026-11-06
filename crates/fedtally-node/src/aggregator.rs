@@ -1373,14 +1373,24 @@ fn open_round(shared: &Shared) -> Result<(), NodeError> {
 }
 
 fn next_round(shared: &Arc<Shared>) -> Result<(), NodeError> {
-    let (round, rounds) = (shared.lock().replay.round_number(), shared.plan.rounds);
+    let (round, from, step) = {
+        let state = shared.lock();
+        let current = state.replay.current();
+        let (from, step) = current.map_or((0, 0), |r| (r.from, r.step));
+        (state.replay.round_number(), from, step)
+    };
     if !shared.keep_spool {
-        shared.dirs.drop_round(round);
+        for spent in from + 1..=round {
+            shared.dirs.drop_round(spent);
+        }
     }
-    if round > 1 {
-        let _ = std::fs::remove_file(shared.dirs.model(round - 1));
+    if from > 0 {
+        let _ = std::fs::remove_file(shared.dirs.model(from));
     }
-    if round >= rounds {
+    for given_up in from + 1..round {
+        let _ = std::fs::remove_file(shared.dirs.model(given_up));
+    }
+    if step >= shared.plan.rounds {
         let plan = shared.plan_id;
         return shared.append_own(|replay| Body::Finish {
             plan,
@@ -1651,7 +1661,7 @@ async fn outcome_round(shared: &Arc<Shared>) -> Result<(), NodeError> {
         .collect();
     let aggregate = dir.join("aggregate.bin");
     let next_model = shared.dirs.model(round);
-    let base = shared.dirs.model(round - 1);
+    let base = shared.dirs.model(state_copy.from);
     let plan = shared.plan.clone();
     let total_weight: u64 = state_copy
         .included

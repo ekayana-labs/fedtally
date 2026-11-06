@@ -584,7 +584,13 @@ fn a_round_remembers_what_it_started_from() {
     run.join(0..3);
     run.complete_round(1);
     run.open(2);
-    assert_eq!(run.replay.current().unwrap().base, Digest::of(b"model 1"));
+    let second = run.replay.current().unwrap();
+    assert_eq!(second.base, Digest::of(b"model 1"));
+    assert_eq!((second.from, second.step), (1, 2));
+    assert_eq!(
+        (run.replay.rounds[0].from, run.replay.rounds[0].step),
+        (0, 1)
+    );
 }
 
 #[test]

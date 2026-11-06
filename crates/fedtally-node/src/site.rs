@@ -335,10 +335,6 @@ impl Site {
         }
     }
 
-    fn base_path(&self, round: u32) -> PathBuf {
-        self.f.dirs.model(round - 1)
-    }
-
     /// Makes sure the model the round starts from is on disk. Model 0 and any
     /// model this site missed come from the aggregator, checked against the log.
     async fn ensure_model(
@@ -359,11 +355,27 @@ impl Site {
         self.f.fetch_file(client, object, digest, &path).await
     }
 
+    /// Drops what no round will read again: the model before the one this
+    /// round starts from, and whatever attempts since then left behind.
+    fn tidy(&self, state: &RoundState) {
+        let rounds = &self.f.replay.rounds;
+        let before = state
+            .from
+            .checked_sub(1)
+            .and_then(|i| rounds.get(i as usize))
+            .map_or(0, |sealed| sealed.from);
+        if before > 0 {
+            let _ = std::fs::remove_file(self.f.dirs.model(before));
+        }
+        for given_up in state.from + 1..state.round {
+            self.f.dirs.drop_round(given_up);
+            let _ = std::fs::remove_file(self.f.dirs.model(given_up));
+        }
+    }
+
     async fn collect(&mut self, client: &mut Client, state: &RoundState) -> Result<(), NodeError> {
         let round = state.round;
-        if round >= 3 {
-            let _ = std::fs::remove_file(self.f.dirs.model(round - 2));
-        }
+        self.tidy(state);
         let round_dir = self.f.dirs.round(round)?;
         let meta = round_dir.join("round.json");
         let spool = round_dir.join("masked.bin");
@@ -385,9 +397,9 @@ impl Site {
                 self.refused.push(round);
                 return Ok(());
             }
-            self.ensure_model(client, round - 1, state.base).await?;
+            self.ensure_model(client, state.from, state.base).await?;
             if !meta.exists() {
-                self.train_round(round, &meta, &spool).await?;
+                self.train_round(state, &meta, &spool).await?;
             }
             let file: RoundFile = read_round_file(&meta)?;
             let body = Body::Contribute {
@@ -439,12 +451,13 @@ impl Site {
 
     async fn train_round(
         &mut self,
-        round: u32,
+        state: &RoundState,
         meta: &Path,
         spool: &Path,
     ) -> Result<(), NodeError> {
+        let (round, step) = (state.round, state.step);
         let plan = self.f.plan.clone();
-        let base = self.base_path(round);
+        let base = self.f.dirs.model(state.from);
         let seeds: Vec<[u8; 32]> = plan.helpers.iter().map(|_| random_bytes::<32>()).collect();
         let mut sealed = Vec::with_capacity(seeds.len());
         let did = self.f.identity.did_string();
@@ -469,7 +482,7 @@ impl Site {
             let terms = cheat.as_ref().or(plan.privacy.as_ref());
             let bound = plan.norm();
             let ctx = TrainContext {
-                round,
+                round: step,
                 base_model: base.clone(),
             };
             let pad: [Fp; PAD as usize] = [random_field(), random_field()];
@@ -615,7 +628,7 @@ impl Site {
             )
             .await?;
         let plan = self.f.plan.clone();
-        let base = self.base_path(round);
+        let base = self.f.dirs.model(state.from);
         let next = self.f.dirs.model(round);
         let total_weight = outcome.total_weight;
         let (aggregate, model_digest) = blocking(move || {
