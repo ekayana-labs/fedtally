@@ -62,6 +62,12 @@ fn spawn_aggregator(root: &Path, init: &Path, addr: &str) -> Child {
         .unwrap()
 }
 
+fn damage(path: &Path) {
+    let mut bytes = std::fs::read(path).unwrap();
+    bytes[100] ^= 1;
+    std::fs::write(path, bytes).unwrap();
+}
+
 fn log_kinds(root: &Path) -> Vec<String> {
     let Ok(text) = std::fs::read_to_string(root.join("aggregator/log.jsonl")) else {
         return Vec::new();
@@ -262,6 +268,69 @@ async fn an_aggregator_restarts_on_a_torn_log_and_a_lost_sum() {
     assert!(status.success());
     let report = verify_log(&log, Some(&summaries[0].final_model)).unwrap();
     assert!(report.complete(), "{report:?}");
+}
+
+/// The run ended in an Abort naming the file, with no Outcome before it.
+fn stopped_on(root: &Path, why: &str) {
+    let kinds = log_kinds(root);
+    assert!(!kinds.iter().any(|k| k == "outcome"));
+    assert_eq!(kinds.last().map(String::as_str), Some("abort"));
+    let log = std::fs::read_to_string(root.join("aggregator/log.jsonl")).unwrap();
+    assert!(log.lines().last().unwrap().contains(why), "{log}");
+}
+
+/// A bit gone wrong in an upload and in the sum made from it must not reach a model.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_damaged_upload_stops_the_aggregator_rather_than_reaching_a_model() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    let (fed, init, addr, mut aggregator, sites) = waiting_for_a_mask(root, 1).await;
+    until_in_log(root, "close").await;
+    aggregator.kill().unwrap();
+    aggregator.wait().unwrap();
+
+    for name in ["sum.bin", "site-0.bin"] {
+        damage(&root.join("aggregator/round-1").join(name));
+    }
+
+    let mut aggregator = spawn_aggregator(root, &init, &addr);
+    let _helper = tokio::spawn(run_helper(fed.helper_config(0, &addr)));
+    let status = tokio::task::spawn_blocking(move || aggregator.wait().unwrap())
+        .await
+        .unwrap();
+    assert!(status.success(), "it ends the run in the log");
+    stopped_on(root, "sum.bin no longer matches");
+    for site in sites {
+        let ended = site.await.unwrap().err().unwrap().to_string();
+        assert!(ended.contains("no longer matches"), "{ended}");
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_damaged_mask_stops_the_aggregator_rather_than_reaching_a_model() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    let (fed, init, addr, mut aggregator, sites) = waiting_for_a_mask(root, 2).await;
+    let first = tokio::spawn(run_helper(fed.helper_config(0, &addr)));
+    until_in_log(root, "mask_sum").await;
+    aggregator.kill().unwrap();
+    aggregator.wait().unwrap();
+    damage(&root.join("aggregator/round-1/mask-0.bin"));
+
+    let mut aggregator = spawn_aggregator(root, &init, &addr);
+    let second = tokio::spawn(run_helper(fed.helper_config(1, &addr)));
+    let status = tokio::task::spawn_blocking(move || aggregator.wait().unwrap())
+        .await
+        .unwrap();
+    assert!(status.success(), "it ends the run in the log");
+    stopped_on(root, "mask-0.bin no longer matches");
+    for party in [first, second] {
+        assert!(party.await.unwrap().is_err());
+    }
+    for site in sites {
+        let ended = site.await.unwrap().err().unwrap().to_string();
+        assert!(ended.contains("no longer matches"), "{ended}");
+    }
 }
 
 #[tokio::test(flavor = "multi_thread")]

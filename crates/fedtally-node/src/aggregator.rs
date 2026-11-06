@@ -1377,7 +1377,11 @@ async fn drive(shared: &Arc<Shared>) -> Result<(), NodeError> {
             Decision::Open => open_round(shared)?,
             Decision::Screen => screen_round(shared)?,
             Decision::Close => close_round(shared).await?,
-            Decision::Outcome => outcome_round(shared).await?,
+            // What its signers committed to is gone, and they won't send it again.
+            Decision::Outcome => match outcome_round(shared).await {
+                Err(NodeError::Check(reason)) => abort(shared, reason)?,
+                done => done?,
+            },
             Decision::Fingerprints => fingerprints(shared).await?,
             Decision::Seal => seal_round(shared)?,
             Decision::Retry => retry_round(shared)?,
@@ -1749,6 +1753,17 @@ fn ensure_vector(
     Ok(())
 }
 
+/// A stored vector is what its signer committed to, or nothing may come of it.
+fn check_stored(path: &Path, shape: Shape, expected: Digest) -> Result<(), NodeError> {
+    match vector::manifest_of(path, shape).map(|manifest| manifest.root) {
+        Ok(root) if root == expected => Ok(()),
+        _ => Err(NodeError::Check(format!(
+            "{} no longer matches the digest in the log",
+            path.display()
+        ))),
+    }
+}
+
 async fn outcome_round(shared: &Arc<Shared>) -> Result<(), NodeError> {
     let (round, state_copy) = {
         let state = shared.lock();
@@ -1792,6 +1807,19 @@ async fn outcome_round(shared: &Arc<Shared>) -> Result<(), NodeError> {
             })
         })
         .collect();
+    let held: Vec<Digest> = state_copy
+        .active
+        .iter()
+        .map(|h| state_copy.masks[h])
+        .collect();
+    let stored = masks.clone();
+    blocking(move || {
+        for (path, expected) in stored.iter().zip(held) {
+            check_stored(path, shape, expected)?;
+        }
+        Ok(())
+    })
+    .await?;
     let aggregate = dir.join("aggregate.bin");
     let next_model = shared.dirs.model(round);
     let base = shared.dirs.model(state_copy.from);
@@ -1886,9 +1914,15 @@ async fn outcome_round(shared: &Arc<Shared>) -> Result<(), NodeError> {
                 })
             })
             .collect();
+        let held: Vec<Digest> = (0..sub.len())
+            .map(|helper| state_copy.group_masks[&helper][group as usize])
+            .collect();
         let object = Object::GroupAggregate { round, group };
         let out = shared.upload_path(object);
         let manifest = blocking(move || {
+            for (path, expected) in sub.iter().zip(held) {
+                check_stored(path, shape, expected)?;
+            }
             let add: Vec<&Path> = add.iter().map(PathBuf::as_path).collect();
             let sub: Vec<&Path> = sub.iter().map(PathBuf::as_path).collect();
             let manifest = vector::combine(&out, shape, &add, &sub)?;
