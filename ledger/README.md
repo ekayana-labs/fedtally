@@ -35,7 +35,7 @@ bitmap is 128 bytes, and bit `i` is bit `i % 8` of byte `i / 8`.
 | --- | --- | --- | --- |
 | Task | `"task", publisher, plan_id` | 561 | The terms, the budget spent, the latest round and model, the enrolled and revoked bitmaps. Above its rent: the reward escrow and the aggregator's stake. |
 | Enrollment | `"site", task, index u16` | 261 | A site's wallet, index, status, admission digest and up to 4 status references. Above its rent: the site's stake. |
-| Round | `"round", task, round u32` | 780 | State, the number of open disputes, beacon, cohort, the committed and posted roots, the acked and claimed bitmaps, the share. |
+| Round | `"round", task, round u32` | 788 | State, the number of open disputes, beacon, cohort, the committed and posted roots, the acked and claimed bitmaps, the share and when it settled. |
 | Dispute | `"dispute", task, round u32, challenger` | 2275 | Challenger, disputed leaf, deadline, the running sum and the aggregate leaf. Above its rent: the bond. |
 | Demand | `"demand", task, challenger, round u32 + kind + position u16 + leaf u64` | 101 + proof | Who asks for which leaf, the deadline, and the proof once it is answered. Above its rent: the bond. |
 | StatusList | `"status", issuer, list u32` | 57 + bits / 8 | Issuer, size, sequence and the bitmap, up to 80,000 bits. |
@@ -67,7 +67,7 @@ Errors are custom codes from 6000, listed in
 | `demand_open` | challenger (signer), task, round, demand, system program | round u32, kind u8, position u16, leaf index u64 | Demands one leaf of one vector and takes the bond. |
 | `demand_answer` | responder (signer), task, round, demand, buffer | | Checks the proof in the responder's buffer, keeps it in the demand, and pays the responder its fee. |
 | `demand_close` | task, round, demand, challenger | | Closes a demand. An unanswered one past its deadline slashes the aggregator. |
-| `round_close` | aggregator, task, round | | Returns the rent of a final round that is paid out and isn't the latest. |
+| `round_close` | aggregator, task, round | | Returns the rent of a round nothing will read again. A final round closes once it is paid out, or 16 challenge windows after it settled, and what was not claimed stops being owed. The latest round closes only when the task is over, the aggregator's stake is gone and no dispute is open. |
 | `status_init` | issuer (signer), status list, system program | list u32, bits u32 | Creates a status list. |
 | `revoke` | issuer (signer), status list | bit u32 | Sets a bit, once. |
 | `revoke_check` | task, enrollment, then the status lists it names | | Revokes the enrollment if a named bit is set. |
@@ -100,7 +100,7 @@ Some behaviour worth knowing before writing a client:
   task, and the others on that round then close with their bonds returned.
 - A fraud proof needs the vectors, so anyone refused a leaf during the challenge window can demand it. Anyone holding the leaf answers, with the proof a dispute takes. The answer pays a fee of 50,000 lamports, about the cost of its transactions, so withholding earns nothing, and the rest of the bond returns at the close. If nobody answers by the deadline, the round becomes Fraud and the aggregator's stake goes to the challenger. Deadlines on a round queue at least 64 slots apart, so a burst of demands can't outrun an honest aggregator. A demand holds the round open until it closes, and an answered one lets its challenger open a dispute over that leaf past the window.
 - An aggregator therefore has to keep every round's vectors until the round settles. Run it with `--keep-spool`. Its anchor deletes a round's folder once it has settled.
-- Getting a whole withheld chunk means one demand per leaf. Each holds a bond and rent until it closes, so a plan that may be anchored should use small chunks, and a long enough window for it.
+- A wrong leaf can be proven with the rest of a vector missing, so a watcher that holds that leaf of every vector disputes it at once. Getting a whole withheld chunk still means one demand per leaf. Each holds a bond and rent until it closes, so a plan that may be anchored should use small chunks, and a long enough window for it.
 - `publish` refuses a task whose `stall_slots` is not longer than its
   `challenge_slots`.
 - `abort` is for the aggregator or the publisher, or for anyone once nothing
@@ -166,10 +166,10 @@ address. The binary is about 109 KB.
 | `dispute_leaf` (input of 16, full leaf, 20-level path) | 9608 |
 | `dispute_close` (aggregate upheld) | 1308 |
 | `dispute_close` (fraud) | 1312 |
-| `demand_open` | 3013 |
+| `demand_open` | 3028 |
 | `demand_answer` (input of 3, full leaf) | 3328 |
-| `demand_close` (answered) | 1196 |
-| `round_close` | 751 |
+| `demand_close` (answered) | 1205 |
+| `round_close` | 3935 |
 | `status_init` (80000 bits) | 2738 |
 | `status_init` (64 bits) | 2032 |
 | `revoke` | 414 |
@@ -197,10 +197,10 @@ steps, so it can be stopped and started at any point.
 
 | Role | Sends |
 | --- | --- |
-| `publisher` | `publish` with the plan's terms and the stakes given, and `withdraw` once the task is over. |
-| `aggregator` | `back`, then per round `open_round`, `commit_root` and `post_aggregate` as the log reaches them, and `settle` after every ack and the window. `demand_answer` for any demand, from its spool. `round_close` once a round is paid out. `abort` if the log was aborted, and `withdraw` at the end. |
+| `publisher` | `publish` with the plan's terms and the stakes given, and `withdraw` once the task is over. It stays until every share is claimed or expired, and sends `round_close` itself for an expired round. |
+| `aggregator` | `back`, then per round `open_round`, `commit_root` and `post_aggregate` as the log reaches them, and `settle` after every ack and the window. `demand_answer` for any demand, from its spool. `round_close` once a round is spent, the last one at the very end. `abort` if the log was aborted, and `withdraw` at the end. |
 | `site` | `enroll` with the digest of its Join record. `ack` for a round it acknowledged in its own log, and only while the ledger holds that round's roots. `claim` for each final round, and `withdraw` at the end. |
-| `watcher` | Nothing while rounds add up. It is not in the plan, so the aggregator has to name it with `--watcher`. It fetches each round's vectors, checks them against the ledger's roots and adds them up. For a wrong leaf it sends `buffer_init`, `dispute_open`, then `buffer_write` and `dispute_leaf` for every part, and `dispute_close`. Halfway through the window it sends `demand_open` for any leaf it still can't fetch, and `demand_close` when that's settled. It also sends `revoke_check` for a site the log has revoked, again until the bit lands. |
+| `watcher` | Nothing while rounds add up. It is not in the plan, so the aggregator has to name it with `--watcher`. It fetches each round's vectors, checks them against the ledger's roots and adds them up. For a wrong leaf it sends `buffer_init`, `dispute_open`, then `buffer_write` and `dispute_leaf` for every part, and `dispute_close`. Refused a vector, it keeps the chunks it can check and adds up those it holds of every vector. Halfway through the window it sends `demand_open` for the leaves it still can't fetch, those missing from the fewest vectors first, and `demand_close` when that's settled. It stops asking once it has a wrong leaf. It also sends `revoke_check` for a site the log has revoked, again until the bit lands. |
 | `issuer` | `status_init` and `revoke`, for its own lists in the log, up to 80,000 bits. |
 
 A site that finds other roots on the ledger than in its log does not
@@ -235,9 +235,9 @@ cargo test -p fedtally-chain --test validator -- --ignored --nocapture
 - Rewards and stakes are lamports. There are no token rewards.
 - A dispute is over one leaf, and a challenger has one dispute per round at
   a time. Different challengers dispute a round side by side.
-- Task and enrollment accounts are never closed, nor is the latest round, so
-  their rent stays locked. Other rounds return theirs with `round_close` once
-  every share is claimed. A share nobody claims keeps its round open.
+- Task and enrollment accounts are never closed, so their rent stays locked.
+  Rounds return theirs with `round_close`. A share nobody claims in 16 challenge
+  windows goes back to the publisher.
 - `revoke_check` only sees the status references a site chose to give when
   it enrolled. A site that gives none cannot be revoked here.
 - Nothing here checks a site's credentials. An enrollment records the
