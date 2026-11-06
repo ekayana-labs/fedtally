@@ -17,13 +17,15 @@ use fedtally_core::privacy::Request;
 use fedtally_core::replay::{Phase, Replay};
 use fedtally_core::report::verify_log;
 use fedtally_core::vector::{self, Digest};
-use fedtally_node::NodeError;
 use fedtally_node::aggregator::{Hook, Stage, run_aggregator};
 use fedtally_node::helper::{ShareHook, run_helper};
 use fedtally_node::local::{LocalFederation, Options};
+use fedtally_node::net::Client;
 use fedtally_node::observer::{ObserverConfig, fetch_vector};
 use fedtally_node::site::{SiteConfig, SiteSummary, Submit, TrainContext, Trainer, run_site};
+use fedtally_node::wire::Msg;
 use fedtally_node::wire::Object;
+use fedtally_node::{NodeError, frame_limit};
 use tokio::sync::oneshot;
 use tokio::task::{AbortHandle, JoinHandle};
 
@@ -127,6 +129,62 @@ async fn a_site_back_after_the_end_with_its_model_needs_nobody() {
     // Nobody is listening at this address any more.
     let back = run_site(fed.site_config(0, "127.0.0.1:1"), Fixed::new(1.0, 1)).await;
     assert_eq!(back.unwrap().final_digest, first.final_digest);
+}
+
+/// Hands over a mask, then tries to swap the file under it with its signature
+/// already in the log, while the other helper's mask is still to come.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_helper_cannot_swap_a_mask_it_has_signed_for() {
+    let dir = tempfile::tempdir().unwrap();
+    let init = initial_model(dir.path());
+    let mut opts = options(2, 2, 1);
+    opts.timeouts.collect_secs = 30;
+    let fed = LocalFederation::create(dir.path(), layout(), &init, &opts).unwrap();
+    let (tx, rx) = oneshot::channel();
+    let mut config = fed.aggregator_config("127.0.0.1:0");
+    config.on_ready = Some(Box::new(move |addr| {
+        let _ = tx.send(addr);
+    }));
+    let aggregator = tokio::spawn(run_aggregator(config));
+    let addr = rx.await.unwrap();
+    let helper = tokio::spawn(run_helper(fed.helper_config(0, &addr)));
+    let sites: Vec<_> = (0..2)
+        .map(|i| tokio::spawn(run_site(fed.site_config(i, &addr), Fixed::new(i as f32, 1))))
+        .collect();
+    let log = fed.aggregator_dir().join("log.jsonl");
+    while !std::fs::read_to_string(&log).is_ok_and(|text| text.contains("\"kind\":\"mask_sum\"")) {
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+
+    let shape = fed.plan.shape();
+    let other = dir.path().join("other.bin");
+    let manifest = vector::build(&other, shape, |_, buf, _| {
+        buf.fill(7);
+        Ok(())
+    })
+    .unwrap();
+    let mut client = Client::connect(
+        &addr,
+        fed.plan.aggregator.tls_pin,
+        fed.plan_id,
+        &fed.helpers[0],
+        frame_limit(&fed.plan),
+    )
+    .await
+    .unwrap();
+    let object = Object::Mask {
+        round: 1,
+        helper: 0,
+    };
+    let swap = Msg::PutManifest { object, manifest };
+    client.send(&swap).await.unwrap();
+    assert!(client.reply().await.is_err(), "the connection is dropped");
+
+    aggregator.abort();
+    helper.abort();
+    for site in sites {
+        site.abort();
+    }
 }
 
 async fn run_all(

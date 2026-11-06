@@ -974,6 +974,21 @@ async fn on_manifest(
         }
     }
 
+    // A helper can't swap the file under a mask it has already signed for.
+    let signed = shared.lock().replay.current().and_then(|r| match object {
+        Object::Mask { helper, .. } => r.masks.get(&(helper as usize)).copied(),
+        Object::GroupMask { helper, group, .. } => r
+            .group_masks
+            .get(&(helper as usize))
+            .and_then(|groups| groups.get(group as usize).copied()),
+        _ => None,
+    });
+    if signed.is_some_and(|root| root != manifest.root) {
+        return Err(NodeError::Protocol(
+            "that upload is not the mask its helper signed".into(),
+        ));
+    }
+
     let existing = {
         let state = shared.lock();
         state.uploads.get(&object).map(|u| u.manifest.root)
