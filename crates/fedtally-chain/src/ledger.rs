@@ -85,6 +85,8 @@ pub struct TaskView {
     pub stake_held: u64,
     pub owed: u64,
     pub challenge_slots: u64,
+    pub stall_slots: u64,
+    pub last_change: u64,
     pub enrolled: Sites,
     pub revoked: Sites,
 }
@@ -195,6 +197,8 @@ pub fn task(account: Option<&Account>) -> Option<TaskView> {
         stake_held: task.stake_held(),
         owed: task.owed(),
         challenge_slots: task.challenge_slots(),
+        stall_slots: task.stall_slots(),
+        last_change: task.last_change(),
         enrolled: Sites(*task.enrolled()),
         revoked: Sites(*task.revoked()),
     })

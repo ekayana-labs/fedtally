@@ -471,7 +471,18 @@ fn aggregator(run: &RunView, ledger: &Snapshot) -> Result<Step, Divergence> {
         },
         ROUND_POSTED if log.posted.is_none() => return Err(Divergence::Ahead(number)),
         ROUND_POSTED if round.disputes > 0 => Step::Wait(Wait::Dispute),
-        ROUND_POSTED if round.acked != round.cohort => Step::Wait(Wait::Acks),
+        ROUND_POSTED if round.acked != round.cohort => {
+            // A site acknowledges here only what it acknowledged in its log. So
+            // an aborted log that is short of acks will never see them here,
+            // and once a log is over, a site that stays quiet is gone.
+            let quiet = task.last_change.saturating_add(task.stall_slots);
+            let short = round.cohort.members().iter().any(|s| !log.acks.contains(s));
+            match run.ending {
+                Ending::Aborted if short => Step::Abort,
+                Ending::Aborted | Ending::Finished if ledger.slot > quiet => Step::Abort,
+                _ => Step::Wait(Wait::Acks),
+            }
+        }
         ROUND_POSTED if ledger.slot < window_end(task, round) => {
             Step::Wait(Wait::Window(window_end(task, round)))
         }
@@ -1519,6 +1530,46 @@ mod tests {
             after: None,
         };
         assert_eq!(found, Ok(dispute));
+    }
+
+    #[test]
+    fn a_log_that_is_over_stops_the_wait_for_acks_that_cannot_come() {
+        let mut run = run(3, 2);
+        run.rounds.push(sealed(1, &[0, 1, 2]));
+        let mut held = task(&run);
+        (held.round, held.stall_slots, held.last_change) = (1, 1_000, 100);
+        let mut ledger = snapshot(held, 200);
+        let mut posted = mirrored(&run.rounds[0], ROUND_POSTED, 100);
+        posted.acked = [0, 1].into_iter().collect();
+        ledger.rounds.insert(1, posted);
+        let waiting = Ok(Step::Wait(Wait::Acks));
+
+        // Every ack is in the log, so the last one may still arrive here.
+        assert_eq!(decide(Party::Aggregator, &run, &ledger), waiting);
+        run.ending = Ending::Finished;
+        assert_eq!(decide(Party::Aggregator, &run, &ledger), waiting);
+        run.ending = Ending::Aborted;
+        assert_eq!(decide(Party::Aggregator, &run, &ledger), waiting);
+
+        // The site is quiet for as long as the ledger lets anyone stop a task.
+        ledger.slot = 1_101;
+        assert_eq!(decide(Party::Aggregator, &run, &ledger), Ok(Step::Abort));
+        run.ending = Ending::Finished;
+        assert_eq!(decide(Party::Aggregator, &run, &ledger), Ok(Step::Abort));
+        // A run still going may yet catch up.
+        run.ending = Ending::Running;
+        assert_eq!(decide(Party::Aggregator, &run, &ledger), waiting);
+
+        // The log was aborted with this ack missing: it can never come.
+        ledger.slot = 200;
+        run.rounds[0].acks.remove(&2);
+        run.ending = Ending::Aborted;
+        assert_eq!(decide(Party::Aggregator, &run, &ledger), Ok(Step::Abort));
+
+        // A dispute is settled first.
+        ledger.rounds.get_mut(&1).unwrap().disputes = 1;
+        let dispute = Ok(Step::Wait(Wait::Dispute));
+        assert_eq!(decide(Party::Aggregator, &run, &ledger), dispute);
     }
 
     #[test]
