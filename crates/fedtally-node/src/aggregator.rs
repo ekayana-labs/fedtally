@@ -25,7 +25,7 @@ use tokio_rustls::server::TlsStream;
 
 use crate::net::{Listener, accept_peer, split_stream};
 use crate::wire::{Blob, Msg, Object, PING_EVERY, SILENCE_LIMIT, read_msg, write_msg};
-use crate::{Dirs, NodeError, blocking, frame_limit, newer_lists, write_durable};
+use crate::{Dirs, NodeError, blocking, frame_limit, newer_lists, replay_own, write_durable};
 
 const TICK: Duration = Duration::from_millis(100);
 const FILE_CHUNK: usize = 1 << 20;
@@ -244,12 +244,7 @@ pub async fn run_aggregator(config: AggregatorConfig) -> Result<Replay, NodeErro
 
     let dirs = Dirs::new(&config.dir)?;
     let mut log = LogFile::open(&dirs.log())?;
-    let existing = log.read_all()?;
-    let mut replay = Replay::new();
-    for line in &existing {
-        replay.apply_line(line)?;
-    }
-    let mut lines = existing;
+    let (mut replay, mut lines) = replay_own(&mut log)?;
     if lines.is_empty() {
         replay.apply(&record)?;
         log.append(&record.line)?;

@@ -15,6 +15,7 @@ use std::fs::File;
 use std::path::{Path, PathBuf};
 
 use fedtally_core::keys::KeyError;
+use fedtally_core::log::LogFile;
 use fedtally_core::model::ModelError;
 use fedtally_core::plan::Plan;
 use fedtally_core::record::RecordError;
@@ -127,6 +128,25 @@ pub(crate) fn write_durable(path: &Path, data: &[u8]) -> std::io::Result<()> {
     sync_parent(path)
 }
 
+/// Replays a party's own log. A last line that doesn't parse is a write a power
+/// cut tore, which nobody can have acted on, so it is cut off. Anything else
+/// wrong means the log is not what this party wrote, and stops it.
+pub(crate) fn replay_own(log: &mut LogFile) -> Result<(Replay, Vec<Vec<u8>>), NodeError> {
+    let mut lines = log.read_all()?;
+    let mut replay = Replay::new();
+    for at in 0..lines.len() {
+        match replay.apply_line(&lines[at]) {
+            Err(Fault::Record(RecordError::Malformed(_))) if at + 1 == lines.len() => {
+                log.cut_last(&lines[at])?;
+                lines.pop();
+                break;
+            }
+            result => result.map(|_| ())?,
+        }
+    }
+    Ok((replay, lines))
+}
+
 /// A rename or a new file is only safe once its directory has reached the disk.
 pub fn sync_parent(path: &Path) -> std::io::Result<()> {
     match path.parent() {
@@ -167,5 +187,63 @@ impl Dirs {
 
     pub fn drop_round(&self, round: u32) {
         let _ = std::fs::remove_dir_all(self.round_path(round));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use fedtally_core::model::{Dtype, Layout, TensorSpec, TensorView, write_model};
+
+    use super::*;
+    use crate::local::{LocalFederation, Options};
+
+    fn plan_line(root: &Path) -> Vec<u8> {
+        let layout = Layout {
+            tensors: vec![TensorSpec {
+                name: "w".into(),
+                dtype: Dtype::F32,
+                shape: vec![4],
+            }],
+        };
+        let init = root.join("init.safetensors");
+        write_model(&init, &layout, &[TensorView::F32(&[0.0; 4])]).unwrap();
+        let options = Options::new(2, 1, 1);
+        LocalFederation::create(root, layout, &init, &options)
+            .unwrap()
+            .plan_line
+    }
+
+    #[test]
+    fn only_a_torn_last_line_is_cut_off() {
+        let dir = tempfile::tempdir().unwrap();
+        let plan = plan_line(dir.path());
+        let path = dir.path().join("log.jsonl");
+        let mut log = LogFile::open(&path).unwrap();
+        log.append(&plan).unwrap();
+        log.append(b"{\"body\":\0\0\0").unwrap();
+
+        let (replay, lines) = replay_own(&mut log).unwrap();
+        assert_eq!((lines.len(), replay.entries), (1, 1));
+        let left = std::fs::metadata(&path).unwrap().len();
+        assert_eq!(left, plan.len() as u64 + 1);
+
+        log.append(b"{\"body\":\0\0\0").unwrap();
+        log.append(&plan).unwrap();
+        assert!(
+            replay_own(&mut log).is_err(),
+            "the bad line is not the last"
+        );
+    }
+
+    #[test]
+    fn a_last_line_with_a_bad_signature_is_not_a_tear() {
+        let dir = tempfile::tempdir().unwrap();
+        let plan = plan_line(dir.path());
+        let mut forged = plan.clone();
+        let at = forged.windows(7).position(|w| w == b"\"sig\":\"").unwrap() + 7;
+        forged[at] = if forged[at] == b'A' { b'B' } else { b'A' };
+        let mut log = LogFile::open(&dir.path().join("log.jsonl")).unwrap();
+        log.append(&forged).unwrap();
+        assert!(replay_own(&mut log).is_err());
     }
 }

@@ -43,6 +43,13 @@ impl LogFile {
         self.file.sync_data()
     }
 
+    /// Removes the last line, which `read_all` returned as `line`.
+    pub fn cut_last(&mut self, line: &[u8]) -> io::Result<()> {
+        let len = self.file.metadata()?.len();
+        self.file.set_len(len - line.len() as u64 - 1)?;
+        self.file.sync_data()
+    }
+
     /// Reads every complete line. A torn final line from a crash is cut off,
     /// so the next append starts clean.
     pub fn read_all(&mut self) -> io::Result<Vec<Vec<u8>>> {

@@ -16,7 +16,7 @@ use fedtally_core::vector::{self, Digest, Manifest, Shape};
 
 use crate::net::Client;
 use crate::wire::{Msg, Object};
-use crate::{Dirs, NodeError, blocking, frame_limit};
+use crate::{Dirs, NodeError, blocking, frame_limit, replay_own};
 
 const FETCH_WINDOW: usize = 8;
 const RETRY_FIRST: Duration = Duration::from_millis(100);
@@ -120,11 +120,7 @@ impl Follower {
         let plan = Arc::new((**plan).clone());
         let dirs = Dirs::new(&start.dir)?;
         let mut log = LogFile::open(&dirs.log())?;
-        let lines = log.read_all()?;
-        let mut replay = Replay::new();
-        for line in &lines {
-            replay.apply_line(line)?;
-        }
+        let (replay, lines) = replay_own(&mut log)?;
         if !lines.is_empty() && replay.plan_id != record.body_hash {
             return Err(NodeError::Protocol("local log is for another run".into()));
         }
