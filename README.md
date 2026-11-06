@@ -70,7 +70,7 @@ The ledger program has its own workspace and needs the Solana tools. See [ledger
 | **Who may take part** | A rule over W3C Verifiable Credentials, for sites, their datasets and the operators. GA4GH visas are carried as issued. Dataset terms in GA4GH DUO codes must allow the run's stated purpose | `credential.rs`, `policy.rs`, `duo.rs` |
 | **Taking permission back** | Issuers sign W3C Bitstring Status Lists. A revoked site is out from the next round, and the log shows when and why | `status.rs`, `replay.rs` |
 | **What a site agrees to** | The site's own key signs its conditions as a UCAN grant: purpose, helpers, cohort size, privacy budget. Its machine refuses any plan outside them | `admission.rs` |
-| **Who can read an update** | Nobody, unless the aggregator colludes with every helper | `vector.rs`, `model.rs` |
+| **Who can read an update** | Nobody, unless the aggregator colludes with every helper, or with `min_helpers` of them in a plan that sets it | `vector.rs`, `model.rs` |
 | **What the model reveals** | Each site clips its update and adds discrete Gaussian noise. The budget is one integer in the log, and a round that would overspend it doesn't open | `privacy.rs` |
 | **What a dishonest site can send** | Each site proves a bound on the length of its masked update to the aggregator and helpers together. One that can't is left out of the round | `norm.rs` |
 | **Whether the sum is right** | Linear fingerprints over vectors committed before the challenge exists, checked and signed by every site in the round | `replay.rs` |
@@ -86,7 +86,7 @@ The ledger program has its own workspace and needs the Solana tools. See [ledger
 
 | | NVFlare | Flower | fedtally |
 |---|---|---|---|
-| **Who can read an update** | The server, by default. Homomorphic encryption is an option. No secure aggregation found | The server, by default. SecAgg+ needs the legacy API, and seeds its masks from 32 bits (`secaggplus_utils.py:87-92`) | Nobody, unless the aggregator colludes with every helper |
+| **Who can read an update** | The server, by default. Homomorphic encryption is an option. No secure aggregation found | The server, by default. SecAgg+ needs the legacy API, and seeds its masks from 32 bits (`secaggplus_utils.py:87-92`) | Nobody, unless the aggregator colludes with every helper, or with `min_helpers` of them in a plan that sets it |
 | **Can a site check the aggregate** | No mechanism found | No mechanism found | Yes |
 | **Differential privacy** | Filters a site applies to its own output | Clipping and noise added by the server, or by each client alone | Noise added by every site under masking, so no server is trusted to add it, with one budget every party enforces |
 | **Server killed mid-round** (*measured*) | The job doesn't resume, and stays `RUNNING` | Default flags lose the run. Process isolation with `--database` recovers if the ServerApp survives and the outage stays under about a minute | Recovered in 8 of 8 trials, outages up to 300 s, with no site training twice |
@@ -105,7 +105,7 @@ The difference underneath is that **the log is the only control state**. Aggrega
 - Scores for single sites, which would contradict the privacy guarantee. Scored groups can't be anchored on the ledger yet, which pays equal shares.
 - Run on a public cluster. The ledger program and its clients are tested on a local validator only.
 - Dropouts after a round is closed, by default. A site that drops then must return within the deadline or the run stops, and any single site or helper can stop a run this way. A private plan can opt in to a few retries without the silent site, at a privacy cost set out in [docs/design.md](docs/design.md), but such a plan can't be anchored to the ledger yet.
-- Failover. The aggregator is one process, and restarting it is the only recovery. A helper needs durable disk.
+- Failover. The aggregator is one process, and restarting it is the only recovery. A helper needs durable disk. A plan can set `min_helpers` to survive losing a helper, by redoing the round without it, at a cost in how many helpers can collude. See [docs/design.md](docs/design.md).
 - Cross device use. It's built for tens of sites.
 - Fed-Camelyon16 from the paper's evaluation. The tabular FLamby tasks and the attack suite are in `benchmarks/`.
 - Windows, GPU aware transfer, compression, dashboards, or Kubernetes.
