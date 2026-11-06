@@ -115,6 +115,20 @@ fn options(sites: usize, helpers: usize, rounds: u32) -> Options {
     options
 }
 
+#[tokio::test(flavor = "multi_thread")]
+async fn a_site_back_after_the_end_with_its_model_needs_nobody() {
+    let dir = tempfile::tempdir().unwrap();
+    let init = initial_model(dir.path());
+    let fed = LocalFederation::create(dir.path(), layout(), &init, &options(2, 1, 1)).unwrap();
+    let trainers: Vec<Box<dyn Trainer>> = vec![Fixed::new(1.0, 1), Fixed::new(2.0, 1)];
+    let (running, results) = run_all(&fed, trainers, None).await;
+    let first = results.into_iter().next().unwrap().unwrap();
+    running.aggregator.await.unwrap().unwrap();
+    // Nobody is listening at this address any more.
+    let back = run_site(fed.site_config(0, "127.0.0.1:1"), Fixed::new(1.0, 1)).await;
+    assert_eq!(back.unwrap().final_digest, first.final_digest);
+}
+
 async fn run_all(
     fed: &LocalFederation,
     trainers: Vec<Box<dyn Trainer>>,

@@ -297,6 +297,14 @@ impl Site {
     }
 
     async fn session(&mut self) -> Result<(), NodeError> {
+        // Back after the end with nothing missing: the aggregator may be long gone.
+        if self.f.replay.phase == Phase::Done {
+            let last = self.f.dirs.model(self.f.replay.round_number());
+            if last.exists() && Digest::file(&last)? == self.f.replay.model {
+                self.tidy_given_up();
+                return Ok(());
+            }
+        }
         let mut client = self.f.connect().await?;
         self.uploaded = None;
         let mut wait = true;
