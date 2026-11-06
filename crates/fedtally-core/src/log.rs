@@ -25,6 +25,10 @@ pub struct LogFile {
 impl LogFile {
     pub fn open(path: &Path) -> io::Result<LogFile> {
         let file = OpenOptions::new().create(true).append(true).open(path)?;
+        // The file itself has to survive a power cut, not only what's in it.
+        if let Some(dir) = path.parent().filter(|dir| !dir.as_os_str().is_empty()) {
+            File::open(dir)?.sync_all()?;
+        }
         Ok(LogFile {
             file,
             path: path.to_owned(),
