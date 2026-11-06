@@ -1162,7 +1162,9 @@ fn ready_sites(shared: &Shared, state: &State) -> Vec<usize> {
         .collect()
 }
 
-fn decide(shared: &Shared, state: &State, elapsed: Duration) -> Decision {
+/// `sites_given` is how long sites have had to attest, since they can't before
+/// every helper has.
+fn decide(shared: &Shared, state: &State, elapsed: Duration, sites_given: Duration) -> Decision {
     let plan = &shared.plan;
     let past = |secs: u64| elapsed > Duration::from_secs(secs);
     let min = plan.min_cohort as usize;
@@ -1272,18 +1274,19 @@ fn decide(shared: &Shared, state: &State, elapsed: Duration) -> Decision {
                 .filter(|s| !current.site_attests.contains_key(s))
                 .map(|s| plan.sites[*s].as_str())
                 .collect();
+            let attest_for = Duration::from_secs(plan.timeouts.attest_secs);
             if helpers_in && silent.is_empty() {
                 Decision::Seal
-            } else if past(plan.timeouts.attest_secs) {
-                if state.replay.retry_cohort(plan).is_ok() {
-                    return Decision::Retry;
+            } else if helpers_in && sites_given > attest_for {
+                match state.replay.retry_cohort(plan) {
+                    Ok(_) => Decision::Retry,
+                    Err(_) => {
+                        Decision::Abort(format!("no valid attestation from {}", silent.join(", ")))
+                    }
                 }
-                if helpers_in {
-                    Decision::Abort(format!("no valid attestation from {}", silent.join(", ")))
-                } else {
-                    let long_past = past(plan.timeouts.attest_secs * 2);
-                    helper_late(state, long_past, "a helper did not attest")
-                }
+            } else if !helpers_in && past(plan.timeouts.attest_secs) {
+                let long_past = past(plan.timeouts.attest_secs * 2);
+                helper_late(state, long_past, "a helper did not attest")
             } else {
                 Decision::Wait
             }
@@ -1321,6 +1324,7 @@ fn helper_late(state: &State, long_past: bool, reason: &str) -> Decision {
 
 async fn drive(shared: &Arc<Shared>) -> Result<(), NodeError> {
     let mut clock = (Phase::Empty, 0u32, Instant::now());
+    let mut helpers_in: Option<(u32, Instant)> = None;
     loop {
         let decision = {
             let state = shared.lock();
@@ -1331,7 +1335,16 @@ async fn drive(shared: &Arc<Shared>) -> Result<(), NodeError> {
             if (clock.0, clock.1) != key {
                 clock = (key.0, key.1, Instant::now());
             }
-            decide(shared, &state, clock.2.elapsed())
+            let current = state.replay.current();
+            let all_in = current.filter(|r| {
+                state.replay.phase == Phase::Attesting && r.helper_attests.len() == r.active.len()
+            });
+            helpers_in = all_in.map(|r| match helpers_in {
+                Some((round, since)) if round == r.round => (round, since),
+                _ => (r.round, Instant::now()),
+            });
+            let sites_given = helpers_in.map_or(Duration::ZERO, |(_, since)| since.elapsed());
+            decide(shared, &state, clock.2.elapsed(), sites_given)
         };
         match decision {
             Decision::Wait => {

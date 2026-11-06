@@ -2046,6 +2046,26 @@ async fn a_removed_helper_that_comes_back_only_follows_the_log() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn a_helper_late_within_its_grace_still_leaves_sites_time_to_attest() {
+    let dir = tempfile::tempdir().unwrap();
+    let init = initial_model(dir.path());
+    let fed =
+        LocalFederation::create(dir.path(), layout(), &init, &spare_helper_options(1)).unwrap();
+    let late = AtomicBool::new(false);
+    let hook: ShareHook = Arc::new(move |_| {
+        if !late.swap(true, Ordering::SeqCst) {
+            std::thread::sleep(Duration::from_secs(4));
+        }
+    });
+    let losing =
+        start_losing_with(&fed, fixed_trainers(3), Vec::new(), Vec::new(), Some(hook)).await;
+    let (replay, _) = losing.finish().await;
+    assert_eq!(replay.phase, Phase::Done, "{:?}", replay.abort);
+    assert!(replay.removed.is_empty());
+    assert_eq!(replay.rounds.len(), 1);
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn a_site_outside_a_redo_drops_what_it_kept_of_the_given_up_round() {
     struct Slow;
     impl Trainer for Slow {
