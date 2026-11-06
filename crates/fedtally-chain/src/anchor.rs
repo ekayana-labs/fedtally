@@ -696,7 +696,9 @@ impl Anchor {
                 for one in wanted.iter_mut() {
                     one.taken |= one.part == part && one.leaf == leaf;
                 }
-                self.notes.verdicts.remove(&round);
+                if !matches!(self.notes.verdicts.get(&round), Some(Verdict::Wrong(_))) {
+                    self.notes.verdicts.remove(&round);
+                }
                 self.quiet_until = Instant::now();
                 return Ok(());
             }

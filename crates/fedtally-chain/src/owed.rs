@@ -638,6 +638,8 @@ fn demanding(
     ledger: &Snapshot,
     notes: &Notes,
 ) -> Option<Step> {
+    // A leaf proven wrong needs no more data, and the window may be closing.
+    let settled = matches!(notes.verdicts.get(&number), Some(Verdict::Wrong(_)));
     let mut pending = false;
     for demand in ledger.demands.iter().filter(|demand| !demand.answered) {
         if ledger.slot > demand.deadline || (demand.round == number && posted.is_none()) {
@@ -657,7 +659,7 @@ fn demanding(
             .find(|demand| demand.round == number && demand.part == part && demand.leaf == leaf);
         let round = number;
         match demand {
-            None if !wanted.opened && posted.is_some() => {
+            None if !wanted.opened && !settled && posted.is_some() => {
                 return Some(Step::OpenDemand { round, part, leaf });
             }
             Some(demand) if demand.answered && !wanted.taken => {
@@ -666,7 +668,7 @@ fn demanding(
             _ => {}
         }
     }
-    pending.then_some(Step::Wait(Wait::Dispute))
+    (pending && !settled).then_some(Step::Wait(Wait::Dispute))
 }
 
 fn issuer(run: &RunView, ledger: &Snapshot, notes: &Notes) -> Step {
@@ -1464,6 +1466,58 @@ mod tests {
         round.state = ROUND_COMMITTED;
         assert_eq!(differences(&round, &log), [Differs::Cohort]);
         assert_eq!(differences(&round, &RoundLog::default()), []);
+    }
+
+    #[test]
+    fn a_leaf_proven_wrong_stops_the_demands_and_goes_to_dispute() {
+        let mut run = run(2, 1);
+        run.rounds = vec![sealed(1, &[0, 1])];
+        let mut held = task(&run);
+        held.round = 1;
+        let mut ledger = snapshot(held, 10);
+        ledger
+            .rounds
+            .insert(1, mirrored(&run.rounds[0], ROUND_POSTED, 5));
+        ledger.buffer = Some(BufferView {
+            capacity: proof_capacity(&run),
+        });
+        ledger.demands = vec![DemandView {
+            round: 1,
+            part: ProofPart::Input(0),
+            leaf: 2,
+            answered: false,
+            deadline: 100,
+            address: [0; 32],
+            challenger: ME,
+            proof: Vec::new(),
+        }];
+        let want = |leaf| Wanted {
+            part: ProofPart::Input(0),
+            leaf,
+            opened: false,
+            taken: false,
+        };
+        let mut notes = Notes::default();
+        notes.wanted.insert(1, vec![want(2), want(1)]);
+
+        // Still looking: another leaf is asked for.
+        let asking = owed(Party::Watcher, &ME, &run, &ledger, &notes);
+        let another = Step::OpenDemand {
+            round: 1,
+            part: ProofPart::Input(0),
+            leaf: 1,
+        };
+        assert_eq!(asking, Ok(another));
+
+        // Found: the demand still open doesn't hold up the dispute.
+        notes.verdicts.insert(1, Verdict::Wrong(0));
+        let found = owed(Party::Watcher, &ME, &run, &ledger, &notes);
+        let dispute = Step::OpenDispute {
+            round: 1,
+            leaf: 0,
+            after: None,
+        };
+        assert_eq!(found, Ok(dispute));
     }
 
     #[test]
