@@ -686,16 +686,16 @@ fn honest(runtime: &tokio::runtime::Runtime, validator: &Validator, price: Optio
     units(&costs)
 }
 
-fn flip(path: &Path, shape: vector::Shape) -> vector::Digest {
+fn flip(path: &Path, shape: vector::Shape, chunk_at: u64) -> vector::Digest {
     let file = std::fs::OpenOptions::new()
         .read(true)
         .write(true)
         .open(path)
         .unwrap();
     let mut chunk = Vec::new();
-    vector::read_chunk(&file, shape, 1, &mut chunk).unwrap();
+    vector::read_chunk(&file, shape, chunk_at, &mut chunk).unwrap();
     chunk[17] ^= 1;
-    vector::write_chunk_bytes(&file, shape, 1, vector::chunk_bytes(&chunk)).unwrap();
+    vector::write_chunk_bytes(&file, shape, chunk_at, vector::chunk_bytes(&chunk)).unwrap();
     file.sync_data().unwrap();
     vector::manifest_of(path, shape).unwrap().root
 }
@@ -851,23 +851,23 @@ fn revoked(runtime: &tokio::runtime::Runtime, validator: &Validator) {
     }
 }
 
-fn fraud(runtime: &tokio::runtime::Runtime, validator: &Validator, price: Option<u64>) -> Units {
-    let running = start(runtime, validator, price, 150, true);
-    let fed = &running.fed;
-    let before = running.balance(&running.watcher);
-    let (mut anchors, watcher) = running.anchors(runtime);
-
-    // The aggregator's side, by hand: an honest round up to the aggregate.
+/// The aggregator's side, by hand: an honest round up to the aggregate, and
+/// then the root of one whose leaf 1 is not the sum.
+fn post_wrong_aggregate(running: &Running, price: Option<u64>) {
     let aggregator = Ledger {
         rpc: running.rpc(),
-        wallet: Wallet::new(fed.aggregator.clone()).unwrap(),
+        wallet: Wallet::new(running.fed.aggregator.clone()).unwrap(),
         price,
         confirm_every: POLL,
         sink: Some(running.sink()),
     };
     let me = *aggregator.wallet.address();
     let task = running.task_address();
-    let mut run = Run::open(&fed.plan_line, &fed.aggregator_dir().join("log.jsonl")).unwrap();
+    let mut run = Run::open(
+        &running.fed.plan_line,
+        &running.fed.aggregator_dir().join("log.jsonl"),
+    )
+    .unwrap();
     let (committed, posted) = eventually("the first round in the log", || {
         run.refresh().unwrap();
         let log = run.view().round(1)?;
@@ -896,8 +896,8 @@ fn fraud(runtime: &tokio::runtime::Runtime, validator: &Validator, price: Option
     );
     send("commit_root", commit, 10_000);
 
-    let spool = fed.aggregator_dir().join("round-1/aggregate.bin");
-    let wrong = flip(&spool, fed.plan.shape());
+    let spool = running.fed.aggregator_dir().join("round-1/aggregate.bin");
+    let wrong = flip(&spool, running.fed.plan.shape(), 1);
     assert_ne!(wrong, posted.aggregate_root);
     let masks: Vec<[u8; 32]> = posted.mask_roots.iter().map(|m| m.0).collect();
     let post = client::post_aggregate(
@@ -910,6 +910,46 @@ fn fraud(runtime: &tokio::runtime::Runtime, validator: &Validator, price: Option
         &posted.seal_head.0,
     );
     send("post_aggregate", post, 10_000);
+}
+
+/// The aggregator cheats at leaf 1 and spoils another chunk of a site's vector
+/// so that no vector can be had whole. The watcher proves the wrong leaf from
+/// the chunks it did get, without asking the ledger for anything.
+fn partly_withheld(runtime: &tokio::runtime::Runtime, validator: &Validator) {
+    let running = start(runtime, validator, None, 150, true);
+    let mut anchors = Anchors::new();
+    anchors.start("publisher", running.publisher());
+    for site in 0..SITES {
+        anchors.start("site", running.site(site));
+    }
+    post_wrong_aggregate(&running, None);
+    let vector = running.fed.aggregator_dir().join("round-1/site-0.bin");
+    flip(&vector, running.fed.plan.shape(), 0);
+    anchors.start("watcher", running.watching(runtime));
+
+    let ended = eventually("the dispute", || {
+        running.task().filter(|task| !task.is_open())
+    });
+    assert_eq!(
+        (ended.state, ended.fraud, ended.stake_held),
+        (TASK_ABORTED, true, 0)
+    );
+    assert_eq!(running.round(1).unwrap().state, ROUND_FRAUD);
+    assert!(
+        running.was_sent("demand_open").is_none(),
+        "it had no need to ask"
+    );
+    running.gate.open();
+    anchors.finish();
+}
+
+fn fraud(runtime: &tokio::runtime::Runtime, validator: &Validator, price: Option<u64>) -> Units {
+    let running = start(runtime, validator, price, 150, true);
+    let fed = &running.fed;
+    let before = running.balance(&running.watcher);
+    let (mut anchors, watcher) = running.anchors(runtime);
+
+    post_wrong_aggregate(&running, price);
 
     // The watcher dies in the middle of its proof, and a new one finishes it.
     eventually("the first leaf of the proof", || {
@@ -1005,6 +1045,12 @@ fn an_aggregator_that_cannot_answer_a_demand_loses_its_stake() {
 #[ignore = "needs solana-test-validator and the built program"]
 fn a_watcher_cut_off_from_the_aggregator_gets_what_it_needs_through_the_ledger() {
     with_validator(answered);
+}
+
+#[test]
+#[ignore = "needs solana-test-validator and the built program"]
+fn a_wrong_leaf_is_proven_though_no_vector_can_be_had_whole() {
+    with_validator(partly_withheld);
 }
 
 #[test]
