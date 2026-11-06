@@ -75,6 +75,8 @@ pub struct TaskView {
     pub publisher: [u8; 32],
     pub aggregator: [u8; 32],
     pub plan_id: [u8; 32],
+    /// The model of the last settled round.
+    pub model: [u8; 32],
     pub sites_root: [u8; 32],
     pub coords: u64,
     pub sensitivity: u64,
@@ -107,6 +109,7 @@ pub struct RoundView {
     pub next_model: [u8; 32],
     pub seal_head: [u8; 32],
     pub posted_slot: u64,
+    pub settled_slot: u64,
     pub acked: Sites,
     pub claimed: Sites,
 }
@@ -183,6 +186,7 @@ pub fn task(account: Option<&Account>) -> Option<TaskView> {
         publisher: *task.publisher(),
         aggregator: *task.aggregator(),
         plan_id: *task.plan_id(),
+        model: *task.model(),
         sites_root: *task.sites_root(),
         coords: task.coords(),
         sensitivity: task.sensitivity(),
@@ -212,6 +216,7 @@ pub fn round(account: Option<&Account>, helpers: u8) -> Option<RoundView> {
         next_model: *round.next_model(),
         seal_head: *round.seal_head(),
         posted_slot: round.posted_slot(),
+        settled_slot: round.settled_slot(),
         acked: Sites(*round.acked()),
         claimed: Sites(*round.claimed()),
     })
