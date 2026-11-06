@@ -83,7 +83,17 @@ SIGKILL during round 2 of a 4-round run, with 4 sites and a 32 MiB model, then a
 
 Flower's process-isolation setup does recover, as long as the ServerApp survives the crash and the SuperLink returns within a heartbeat window, which the code suggests is 60 s. That's a real capability, and fedtally's advantage over it is narrower than over the default. fedtally's limit on an outage is a setting on the sites, `give_up_secs`, 10 minutes by default and tested to 300 s, and it has no separate process whose loss ends the run.
 
-**Not tested:** real power loss, since SIGKILL leaves the page cache intact. fedtally syncs its log and uploads, but that hasn't been exercised on a machine losing power. Also not tested: Docker or multi-host deployments, or a network partition.
+**Faults.** `crates/fedtally-node/tests/faults.rs` puts a proxy between each party and the aggregator. A site or helper cut off for a moment carries on, as does a whole network going down mid round, and a link that keeps dropping. A site cut off past a deadline stops the run with no model, and one cut off for a whole round is left out and rejoins. `crates/fedtally-cli/tests/crash.rs` restarts on a torn log and a lost sum. A bit flipped in a stored mask, or in an upload and the sum made from it, ends the run with an Abort before any Outcome. A bit flipped in an upload alone doesn't reach a model, since the sum is checked and the upload isn't read again, though an audit of that upload then fails. These all run on loopback.
+
+**Not tested:** real power loss, since SIGKILL leaves the page cache intact. The tests damage files the way a power cut could, which isn't the same thing. fedtally syncs what the log commits to and nothing can rebuild, then the directory, but that hasn't been exercised on a machine losing power. Also not tested: separate machines.
+
+**In separate containers.** `benchmarks/containers/run.py` gives each of 3 sites, 2 helpers and the aggregator a container and network stack of its own, with 40 ms of delay, 10 ms of jitter and 1% packet loss on every link, connecting by name over TLS. It runs 6 rounds of 65,536 coordinates. All of it shares one kernel on one laptop, and killing a container isn't a power cut. Each row is one run, and the times move by tens of seconds between runs, more than either fault adds: the undisturbed row took 85 s on a build a few fixes earlier. So the last column is the result, not the seconds.
+
+| What happened | Seconds | Afterwards |
+|---|---|---|
+| Nothing | 111 | `verify` passes, every site in every round, same model at every site |
+| Aggregator container killed with SIGKILL during round 1, after its Outcome, started again 2 s later | 124 | Same |
+| A site taken off the network for 5 s after round 1's seal, with the delay put back when it returns | 86 | Same |
 
 ## Accuracy under privacy
 
