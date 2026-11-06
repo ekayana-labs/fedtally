@@ -108,7 +108,7 @@ The difference underneath is that **the log is the only control state**. Aggrega
 - Failover. The aggregator is one process, and restarting it is the only recovery. A helper needs durable disk. A plan can set `min_helpers` to survive losing a helper, by redoing the round without it, at a cost in how many helpers can collude. See [docs/design.md](docs/design.md).
 - Cross device use. It's built for tens of sites.
 - Fed-Camelyon16 from the paper's evaluation. The tabular FLamby tasks and the attack suite are in `benchmarks/`.
-- Windows, GPU aware transfer, compression, dashboards, or Kubernetes.
+- Windows, GPU aware transfer, compression of masked uploads, dashboards, or Kubernetes.
 
 ## Layout
 

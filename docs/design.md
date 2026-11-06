@@ -305,7 +305,7 @@ A chunk's root is checked on arrival, and an upload is synced before it can be c
 - **One party can stop a run.** Any site or helper can, though a plan that retries gets past a silent site a few times, and a plan with `min_helpers` gets past a silent helper. This trades liveness for the guarantee that nobody takes a model some party couldn't check.
 - **A helper's disk must survive.** "Once per round number" rests on the helper's replica.
 - **All helpers are needed**, unless a plan sets `min_helpers` and pays for it in collusion tolerance. The aggregator is one process. A restart resumes it, but there's no failover.
-- **Fixed point costs bandwidth.** Coordinates are 8 bytes on the wire, twice float32.
+- **Fixed point costs bandwidth.** Coordinates are 8 bytes on the wire, twice float32. Masked vectors look uniform and can't shrink. A private plan's aggregate is sent at the bits each leaf's values take, since noise covers what the lengths show, and `--no-pack` turns that off. It costs nothing elsewhere: the log, roots and ledger all commit to the unpacked bytes.
 - **Time is each party's own.** The time in a Join is the site's word, held near the aggregator's clock. Credential dates are checked against it once, at joining, and each site checks its own before every round. A site and an aggregator together can backdate a Join.
 - **Sampling is public.** Who was drawn is in the log, so the privacy accounting takes no credit for it.
 - **The sampler isn't constant-time.** How long noise takes to draw depends a little on its size. It's drawn locally, alongside training.

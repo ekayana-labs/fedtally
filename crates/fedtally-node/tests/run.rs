@@ -142,6 +142,103 @@ async fn a_weight_the_plan_refuses_fails_the_site_instead_of_leaving_it_out() {
     }
 }
 
+/// What a site is sent for the aggregate's first chunk, held just before the
+/// seal, and whether the bytes it unpacks to are the chunk's own.
+async fn chunk_as_sent(privacy: bool, pack: bool) -> (Msg, bool) {
+    let dir = tempfile::tempdir().unwrap();
+    let init = initial_model(dir.path());
+    let mut opts = options(2, 1, 1);
+    opts.chunk_coords = 1024;
+    if privacy {
+        opts.privacy = Some(Request {
+            epsilon: 8.0,
+            delta: 1e-5,
+            clip: 1.0,
+            colluding: 0,
+        });
+    }
+    let fed = LocalFederation::create(dir.path(), layout(), &init, &opts).unwrap();
+    let (reached, release) = (
+        Arc::new(AtomicBool::new(false)),
+        Arc::new(AtomicBool::new(false)),
+    );
+    let (held, go) = (reached.clone(), release.clone());
+    let hook: Hook = Arc::new(move |stage, _| {
+        if stage == (Stage::BeforeSeal { round: 1 }) {
+            held.store(true, Ordering::SeqCst);
+            while !go.load(Ordering::SeqCst) {
+                std::thread::sleep(Duration::from_millis(5));
+            }
+        }
+    });
+    let (tx, rx) = oneshot::channel();
+    let mut config = fed.aggregator_config("127.0.0.1:0");
+    config.hook = Some(hook);
+    config.pack_aggregates = pack;
+    config.on_ready = Some(Box::new(move |addr| {
+        let _ = tx.send(addr);
+    }));
+    let aggregator = tokio::spawn(run_aggregator(config));
+    let addr = rx.await.unwrap();
+    let helper = tokio::spawn(run_helper(fed.helper_config(0, &addr)));
+    let sites: Vec<_> = (0..2)
+        .map(|i| tokio::spawn(run_site(fed.site_config(i, &addr), Fixed::new(i as f32, 1))))
+        .collect();
+    while !reached.load(Ordering::SeqCst) {
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+
+    let shape = fed.plan.shape();
+    let mut client = Client::connect(
+        &addr,
+        fed.plan.aggregator.tls_pin,
+        fed.plan_id,
+        &fed.sites[0],
+        frame_limit(&fed.plan),
+    )
+    .await
+    .unwrap();
+    let object = Object::Aggregate { round: 1 };
+    client
+        .send(&Msg::GetChunk { object, chunk: 0 })
+        .await
+        .unwrap();
+    let sent = client.reply().await.unwrap();
+    let stored = fed.aggregator_dir().join("round-1/aggregate.bin");
+    let file = std::fs::File::open(&stored).unwrap();
+    let raw = vector::read_chunk_bytes(&file, shape, 0).unwrap();
+    let same = match &sent {
+        Msg::PackedChunk { data, .. } => {
+            data.len() < raw.len() && vector::unpack(data, raw.len()).as_ref() == Some(&raw)
+        }
+        Msg::Chunk { data, .. } => *data == raw,
+        _ => false,
+    };
+
+    drop(client);
+    release.store(true, Ordering::SeqCst);
+    let replay = aggregator.await.unwrap().unwrap();
+    for site in sites {
+        let summary = site.await.unwrap().unwrap();
+        assert_eq!(summary.final_digest, replay.model);
+    }
+    helper.await.unwrap().unwrap();
+    (sent, same)
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn only_a_private_aggregate_goes_out_packed_and_every_run_ends_the_same() {
+    let (sent, same) = chunk_as_sent(true, true).await;
+    assert!(matches!(sent, Msg::PackedChunk { .. }), "{sent:?}");
+    assert!(same);
+    let (sent, same) = chunk_as_sent(true, false).await;
+    assert!(matches!(sent, Msg::Chunk { .. }), "{sent:?}");
+    assert!(same);
+    let (sent, same) = chunk_as_sent(false, true).await;
+    assert!(matches!(sent, Msg::Chunk { .. }), "{sent:?}");
+    assert!(same);
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn a_site_back_after_the_end_with_its_model_needs_nobody() {
     let dir = tempfile::tempdir().unwrap();

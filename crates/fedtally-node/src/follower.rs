@@ -386,8 +386,9 @@ impl Follower {
                 next += 1;
                 in_flight += 1;
             }
-            let (chunk, data) = match client.reply().await? {
-                Msg::Chunk { chunk, data, .. } => (chunk, data),
+            let (chunk, data, packed) = match client.reply().await? {
+                Msg::Chunk { chunk, data, .. } => (chunk, data, false),
+                Msg::PackedChunk { chunk, data, .. } => (chunk, data, true),
                 Msg::Unavailable { .. } => {
                     return Err(NodeError::Disconnected(format!("{object:?} went away")));
                 }
@@ -401,10 +402,15 @@ impl Follower {
             let want = manifest.chunks[chunk as usize];
             let store = store.clone();
             blocking(move || {
+                let wrong = || NodeError::Check(format!("chunk {chunk} does not match"));
+                let data = match packed {
+                    true => vector::unpack(&data, shape.chunk_bytes(chunk)).ok_or_else(wrong)?,
+                    false => data,
+                };
                 if data.len() != shape.chunk_bytes(chunk)
                     || vector::digest_chunk_bytes(&data) != want
                 {
-                    return Err(NodeError::Check(format!("chunk {chunk} does not match")));
+                    return Err(wrong());
                 }
                 store(chunk, &data)
             })

@@ -63,6 +63,10 @@ pub struct AggregatorConfig {
     /// of a round once its outcome is in the log. Only a spool that is kept
     /// stays readable after its round.
     pub watchers: Vec<String>,
+    /// Send aggregates at the bits their values take. Someone watching the
+    /// network then sees how large each part of an aggregate is, which only a
+    /// private plan's noise covers, so no other plan's are packed.
+    pub pack_aggregates: bool,
 }
 
 struct Upload {
@@ -118,6 +122,7 @@ struct Shared {
     wake: Notify,
     hook: Option<Hook>,
     keep_spool: bool,
+    pack_aggregates: bool,
     status_dir: Option<PathBuf>,
     watchers: Vec<String>,
 }
@@ -271,6 +276,7 @@ pub async fn run_aggregator(config: AggregatorConfig) -> Result<Replay, NodeErro
         sync_parent(&first_model)?;
     }
 
+    let pack_aggregates = config.pack_aggregates && plan.privacy.is_some();
     let shared = Arc::new(Shared {
         identity: config.identity.clone(),
         shape: plan.shape(),
@@ -294,6 +300,7 @@ pub async fn run_aggregator(config: AggregatorConfig) -> Result<Replay, NodeErro
         wake: Notify::new(),
         hook: config.hook,
         keep_spool: config.keep_spool,
+        pack_aggregates,
         status_dir: config.status_dir,
         watchers: config.watchers,
     });
@@ -652,19 +659,29 @@ async fn handle(
             }
             let path = shared.upload_path(object);
             let shape = shared.shape;
+            let packing = shared.pack_aggregates
+                && matches!(
+                    object,
+                    Object::Aggregate { .. } | Object::GroupAggregate { .. }
+                );
             let read = blocking(move || {
                 let file = File::open(path)?;
-                Ok(vector::read_chunk_bytes(&file, shape, chunk)?)
+                let bytes = vector::read_chunk_bytes(&file, shape, chunk)?;
+                Ok(match packing.then(|| vector::pack(&bytes)).flatten() {
+                    Some(data) => Msg::PackedChunk {
+                        object,
+                        chunk,
+                        data,
+                    },
+                    None => Msg::Chunk {
+                        object,
+                        chunk,
+                        data: bytes,
+                    },
+                })
             })
             .await;
-            let answer = match read {
-                Ok(bytes) => Msg::Chunk {
-                    object,
-                    chunk,
-                    data: bytes,
-                },
-                Err(_) => Msg::Unavailable { object },
-            };
+            let answer = read.unwrap_or(Msg::Unavailable { object });
             reply(data, answer).await
         }
         Msg::GetFile { object } => {

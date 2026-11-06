@@ -159,6 +159,13 @@ pub enum Msg {
         blob: Blob,
         data: Option<serde_bytes::ByteBuf>,
     },
+    /// A `Chunk` made smaller by `vector::pack`.
+    PackedChunk {
+        object: Object,
+        chunk: u64,
+        #[serde(with = "serde_bytes")]
+        data: Vec<u8>,
+    },
 }
 
 const LENGTH_BYTES: usize = size_of::<u32>();
@@ -184,6 +191,7 @@ pub async fn write_msg<W: AsyncWrite + Unpin>(writer: &mut W, msg: &Msg) -> Resu
     let payload = match msg {
         Msg::PutChunk { data, .. }
         | Msg::Chunk { data, .. }
+        | Msg::PackedChunk { data, .. }
         | Msg::FileChunk { data, .. }
         | Msg::PutSealed { data, .. } => data.len(),
         _ => 0,

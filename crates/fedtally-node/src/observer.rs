@@ -157,16 +157,21 @@ pub async fn salvage(
         if client.send(&Msg::GetChunk { object, chunk }).await.is_err() {
             break;
         }
-        match client.reply().await {
-            Ok(Msg::Chunk { chunk, data, .. })
-                if data.len() == shape.chunk_bytes(chunk)
-                    && vector::digest_chunk_bytes(&data) == manifest.chunks[chunk as usize] =>
-            {
-                vector::write_chunk_bytes(&file, shape, chunk, &data)?;
-                salvaged.held.insert(chunk);
+        let answer = match client.reply().await {
+            Ok(Msg::Chunk { chunk, data, .. }) => Some((chunk, data)),
+            Ok(Msg::PackedChunk { chunk, data, .. }) if chunk < shape.chunks() => {
+                vector::unpack(&data, shape.chunk_bytes(chunk)).map(|data| (chunk, data))
             }
-            Ok(_) => {}
+            Ok(_) => None,
             Err(_) => break,
+        };
+        if let Some((chunk, data)) = answer
+            && chunk < shape.chunks()
+            && data.len() == shape.chunk_bytes(chunk)
+            && vector::digest_chunk_bytes(&data) == manifest.chunks[chunk as usize]
+        {
+            vector::write_chunk_bytes(&file, shape, chunk, &data)?;
+            salvaged.held.insert(chunk);
         }
     }
     Ok(())

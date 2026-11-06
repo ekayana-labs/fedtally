@@ -197,6 +197,9 @@ enum Command {
         listen: String,
         #[arg(long)]
         keep_spool: bool,
+        /// Send aggregates at full size, whatever the plan
+        #[arg(long)]
+        no_pack: bool,
         /// A folder of issuers' revocation lists, added to the log as they change
         #[arg(long)]
         status_dir: Option<PathBuf>,
@@ -624,6 +627,7 @@ async fn run(command: Command) -> Result<ExitCode, Failure> {
             dir,
             listen,
             keep_spool,
+            no_pack,
             status_dir,
             watchers,
         } => {
@@ -637,6 +641,7 @@ async fn run(command: Command) -> Result<ExitCode, Failure> {
                 hook: None,
                 on_ready: Some(Box::new(|addr| println!("listening on {addr}"))),
                 keep_spool,
+                pack_aggregates: !no_pack,
                 status_dir,
                 watchers,
             })

@@ -652,6 +652,7 @@ impl LocalFederation {
             hook: None,
             on_ready: None,
             keep_spool: false,
+            pack_aggregates: true,
             status_dir: self.issuers.as_ref().map(|_| self.status_dir()),
             watchers: Vec::new(),
         }
