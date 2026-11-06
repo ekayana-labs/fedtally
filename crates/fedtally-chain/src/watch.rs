@@ -139,7 +139,8 @@ impl Vault {
         let refused = || NodeError::Disconnected(format!("{object:?} is not to be had whole"));
         if self.partials.contains_key(&object) {
             self.salvage(object, root)?;
-            return if path.exists() {
+            // A file there may hold what the log named, not what the ledger does.
+            return if self.is_whole(object, root) {
                 Ok(path)
             } else {
                 Err(refused())
@@ -453,10 +454,11 @@ impl Vault {
             .iter()
             .find(|(held, ..)| *held == part)
             .ok_or_else(gone)?;
-        let path = self.path(*object);
-        if path.exists() {
+        let (object, root) = (*object, *root);
+        if self.is_whole(object, root) {
             return Ok(());
         }
+        let path = self.path(object);
         let sparse = path.with_extension("sparse");
         if let Some(dir) = sparse.parent() {
             std::fs::create_dir_all(dir)?;
@@ -478,12 +480,12 @@ impl Vault {
         let per_chunk = self.shape.chunk_coords / LEAF_COORDS;
         let chunk = leaf / per_chunk;
         let end = ((chunk + 1) * per_chunk).min(self.shape.leaves());
-        let partial = self.partials.entry(*object).or_default();
+        let partial = self.partials.entry(object).or_default();
         partial.answers.insert(leaf, proof.to_vec());
         if (chunk * per_chunk..end).all(|leaf| partial.answers.contains_key(&leaf)) {
             partial.salvaged.held.insert(chunk);
         }
-        self.finish_if_whole(*object, *root)?;
+        self.finish_if_whole(object, root)?;
         Ok(())
     }
 
@@ -520,7 +522,7 @@ impl Vault {
             .filter(|salvaged| salvaged.held.contains(&(leaf / per_chunk)))
             .and_then(|salvaged| salvaged.manifest.clone());
         let (path, manifest) = match salvaged {
-            Some(manifest) if !self.path(object).exists() => {
+            Some(manifest) if !self.is_whole(object, root) => {
                 (self.path(object).with_extension("sparse"), manifest)
             }
             _ => {
@@ -693,6 +695,21 @@ mod tests {
         let verdict = held.vault.examine(ROUND, &held.round, &held.log).unwrap();
         assert!(matches!(verdict, Some(Verdict::Wrong(1))), "{verdict:?}");
         held.proof(ProofPart::Mask(0), 1);
+    }
+
+    #[test]
+    fn a_file_under_another_root_is_not_the_vector_the_ledger_holds() {
+        let mut held = fixture(None);
+        held.round.aggregate_root = [9; 32];
+        let object = Object::Aggregate { round: ROUND };
+        held.vault.partials.entry(object).or_default();
+        let examined = held.vault.examine(ROUND, &held.round, &held.log);
+        assert!(examined.is_err(), "{examined:?}");
+
+        // An answer for the ledger's vector still has somewhere to go.
+        let values = vec![0; LEAF_COORDS as usize * 8];
+        held.patch(ProofPart::Aggregate, 0, &values);
+        assert!(held.vault.path(object).with_extension("sparse").exists());
     }
 
     #[test]
