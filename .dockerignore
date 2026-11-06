@@ -1,0 +1,8 @@
+target
+ledger/target
+.venv
+.git
+benchmarks/results
+notebooks
+python
+**/__pycache__

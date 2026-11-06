@@ -1,0 +1,86 @@
+{
+ "sites": 3,
+ "helpers": 2,
+ "rounds": 6,
+ "coords": 65536,
+ "min_cohort": 2,
+ "link": {
+  "delay": "40ms",
+  "jitter": "10ms",
+  "loss": "1%"
+ },
+ "results": {
+  "undisturbed": {
+   "seconds": 110.8,
+   "exit_codes": {
+    "aggregator": 0,
+    "helper-0": 0,
+    "helper-1": 0,
+    "site-0": 0,
+    "site-1": 0,
+    "site-2": 0
+   },
+   "verify_exit": 0,
+   "verify_error": "",
+   "rounds": 6,
+   "cohorts": [
+    3,
+    3,
+    3,
+    3,
+    3,
+    3
+   ],
+   "same_model": true,
+   "ok": true
+  },
+  "aggregator_killed": {
+   "seconds": 124.3,
+   "exit_codes": {
+    "aggregator": 0,
+    "helper-0": 0,
+    "helper-1": 0,
+    "site-0": 0,
+    "site-1": 0,
+    "site-2": 0
+   },
+   "verify_exit": 0,
+   "verify_error": "",
+   "rounds": 6,
+   "cohorts": [
+    3,
+    3,
+    3,
+    3,
+    3,
+    3
+   ],
+   "same_model": true,
+   "ok": true
+  },
+  "site_cut_off": {
+   "seconds": 85.7,
+   "exit_codes": {
+    "aggregator": 0,
+    "helper-0": 0,
+    "helper-1": 0,
+    "site-0": 0,
+    "site-1": 0,
+    "site-2": 0
+   },
+   "verify_exit": 0,
+   "verify_error": "",
+   "rounds": 6,
+   "cohorts": [
+    3,
+    3,
+    3,
+    3,
+    3,
+    3
+   ],
+   "same_model": true,
+   "ok": true
+  }
+ }
+}
