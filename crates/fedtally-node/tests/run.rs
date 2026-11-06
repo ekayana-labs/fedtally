@@ -2065,6 +2065,58 @@ async fn a_helper_late_within_its_grace_still_leaves_sites_time_to_attest() {
     assert_eq!(replay.rounds.len(), 1);
 }
 
+async fn wait_in_log(log: &Path, kind: &str) {
+    let want = format!(r#""kind":"{kind}""#);
+    let waited = tokio::time::timeout(Duration::from_secs(120), async {
+        while !std::fs::read_to_string(log).is_ok_and(|text| text.contains(&want)) {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    });
+    waited.await.expect("the record never reached the log");
+}
+
+/// A site reading the sum before a removal could pick its redo input knowing it.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_sum_is_not_served_until_every_helper_attests_or_once_given_up() {
+    let dir = tempfile::tempdir().unwrap();
+    let init = initial_model(dir.path());
+    let fed =
+        LocalFederation::create(dir.path(), layout(), &init, &spare_helper_options(3)).unwrap();
+    let lost = vec![(stage_outcome(1), 2)];
+    let losing = start_losing_with(&fed, fixed_trainers(3), Vec::new(), lost, None).await;
+    let log = fed.aggregator_dir().join("log.jsonl");
+
+    let read_sum = async |dir: PathBuf| {
+        let mut replay = Replay::new();
+        let text = std::fs::read(&log).unwrap();
+        for line in text.split(|b| *b == b'\n').filter(|l| !l.is_empty()) {
+            replay.apply_line(line).unwrap();
+        }
+        let root = replay.rounds[0].outcome.as_ref().unwrap().aggregate;
+        let out = dir.join("aggregate.bin");
+        let source = ObserverConfig {
+            identity: fed.sites[0].clone(),
+            plan_line: fed.plan_line.clone(),
+            addr: losing.addr.clone(),
+            dir,
+            give_up_after: Duration::from_secs(10),
+        };
+        fetch_vector(&source, Object::Aggregate { round: 1 }, root, &out)
+            .await
+            .unwrap_err()
+            .to_string()
+    };
+    wait_in_log(&log, "outcome").await;
+    let before = read_sum(dir.path().join("before")).await;
+    assert!(before.contains("not ready"), "{before}");
+    wait_in_log(&log, "remove_helper").await;
+    let after = read_sum(dir.path().join("after")).await;
+    assert!(after.contains("not ready"), "{after}");
+
+    let (replay, _) = losing.finish().await;
+    assert_eq!(replay.phase, Phase::Done, "{:?}", replay.abort);
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn a_site_outside_a_redo_drops_what_it_kept_of_the_given_up_round() {
     struct Slow;

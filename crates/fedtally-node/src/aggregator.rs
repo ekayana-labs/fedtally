@@ -662,7 +662,12 @@ async fn handle(
             };
             reply(data, answer).await
         }
-        Msg::GetFile { object } => send_file(shared, object, data).await,
+        Msg::GetFile { object } => {
+            if !readable(shared, role, object) {
+                return reply(data, Msg::Unavailable { object }).await;
+            }
+            send_file(shared, object, data).await
+        }
         Msg::Ping => Ok(()),
         other => Err(NodeError::Protocol(format!("unexpected message {other:?}"))),
     }
@@ -681,10 +686,10 @@ fn readable(shared: &Shared, role: Role, object: Object) -> bool {
         return watchable(shared, object);
     }
     match object {
-        Object::Aggregate { .. }
-        | Object::GroupAggregate { .. }
-        | Object::Model { .. }
-        | Object::InitialModel => true,
+        Object::Aggregate { round }
+        | Object::GroupAggregate { round, .. }
+        | Object::Model { round } => !sum_held_back(&shared.lock(), round),
+        Object::InitialModel => true,
         // A masked vector is noise to a site, so it's safe to audit, but only the
         // assigned auditor gets it. A site working with every helper could unmask
         // what it reads, so this keeps that to the vectors it was given.
@@ -721,14 +726,25 @@ fn watchable(shared: &Shared, object: Object) -> bool {
         | Object::Mask { round, .. }
         | Object::Aggregate { round }
         | Object::GroupMask { round, .. }
-        | Object::GroupAggregate { round, .. } => round,
-        Object::Model { .. } | Object::InitialModel => return true,
+        | Object::GroupAggregate { round, .. }
+        | Object::Model { round } => round,
+        Object::InitialModel => return true,
     };
     let state = shared.lock();
     let known = round.checked_sub(1).map(|i| i as usize);
-    known
-        .and_then(|i| state.replay.rounds.get(i))
-        .is_some_and(|r| r.outcome.is_some())
+    !sum_held_back(&state, round)
+        && known
+            .and_then(|i| state.replay.rounds.get(i))
+            .is_some_and(|r| r.outcome.is_some())
+}
+
+/// A round's sum stays in until every helper has stood behind it, and a round
+/// given up keeps it for good. A site could otherwise read a sum that may yet
+/// be voided, and choose what it sends in the redo knowing it.
+fn sum_held_back(state: &State, round: u32) -> bool {
+    let at = round.checked_sub(1).map(|i| i as usize);
+    at.and_then(|i| state.replay.rounds.get(i))
+        .is_some_and(|r| r.voided || r.helper_attests.len() < r.active.len())
 }
 
 fn write_atomic(path: &Path, data: &[u8]) -> Result<(), NodeError> {
