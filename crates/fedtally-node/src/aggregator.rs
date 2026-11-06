@@ -1021,6 +1021,12 @@ async fn manifest_for(
     if !path.exists() {
         return Ok(None);
     }
+    // An upload's manifest is what was committed to, so a reader can still
+    // check the chunks that are good if the file is damaged.
+    let kept = std::fs::read(manifest_path(&path)).ok();
+    if let Some(manifest) = kept.and_then(|text| serde_json::from_slice(&text).ok()) {
+        return Ok(Some(manifest));
+    }
     let shape = shared.shape;
     let manifest = blocking(move || Ok(vector::manifest_of(&path, shape)?)).await?;
     // A watcher is told what the disk holds now, so nothing is kept for it.
