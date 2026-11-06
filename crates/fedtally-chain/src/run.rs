@@ -9,8 +9,8 @@ use std::path::{Path, PathBuf};
 
 use fedtally_core::anchor::{self, Committed, Posted, Terms};
 use fedtally_core::credential::Credential;
-use fedtally_core::record::{Body, Record};
-use fedtally_core::replay::{Phase, Replay};
+use fedtally_core::record::{Body, Record, RecordError};
+use fedtally_core::replay::{Fault, Phase, Replay};
 use fedtally_core::vector::{Digest, Shape};
 use fedtally_ledger::client::StatusRef;
 use fedtally_ledger::state::{MAX_STATUS_BITS, MAX_STATUS_REFS};
@@ -181,19 +181,27 @@ impl Run {
         let Some(end) = fresh.iter().rposition(|byte| *byte == b'\n') else {
             return Ok(false);
         };
-        for line in fresh[..end].split(|byte| *byte == b'\n') {
+        let lines: Vec<&[u8]> = fresh[..end].split(|byte| *byte == b'\n').collect();
+        let mut took = false;
+        for (at, line) in lines.iter().enumerate() {
+            let record = match Record::parse(line) {
+                // A power cut tore this one, and its party cuts it on restart.
+                Err(RecordError::Malformed(_)) if at + 1 == lines.len() => break,
+                parsed => parsed.map_err(Fault::from)?,
+            };
             if self.offset == 0 {
-                if line != self.plan_line {
+                if *line != self.plan_line {
                     return Err(ChainError::AnotherPlan);
                 }
             } else {
-                let record = self.replay.apply_line(line)?;
+                self.replay.apply(&record)?;
                 self.note(&record);
             }
             self.offset += line.len() as u64 + 1;
+            took = true;
         }
         self.review();
-        Ok(true)
+        Ok(took)
     }
 
     fn note(&mut self, record: &Record) {
@@ -304,7 +312,12 @@ mod tests {
         assert_eq!(run.view(), &view);
         assert_eq!(run.replay().entries, 1);
 
+        // Ending in a newline doesn't make it a record, but only a last line is torn.
         file.write_all(b"\": 1}\n").unwrap();
+        assert!(!run.refresh().unwrap());
+        assert_eq!(run.replay().entries, 1);
+        file.write_all(&fed.plan_line).unwrap();
+        file.write_all(b"\n").unwrap();
         assert!(matches!(run.refresh(), Err(ChainError::Fault(_))));
     }
 
