@@ -214,6 +214,14 @@ A run with a retry is never `complete` in its report, and `fedtally verify` exit
 
 **FedAdam** (`server_adam` in the plan) sends each round's average update through Adam on the server. Everyone works the next model out for themselves, so the moments are a file each party holds, and the Outcome commits to its digest. A site that sat a round out fetches them and checks that digest. Rust doesn't fuse floating point operations, so the same inputs give the same bits. That has only been run on one kind of machine.
 
+## What reaches the disk
+
+A file is synced if the log commits to it and nothing can rebuild it: the log, a site's seeds and masked update, a stored upload, the aggregate and the next model. Then its directory is synced, and a round's folder in its parent, since a new name doesn't survive a power cut otherwise. Anything else skips the sync. `sum.bin` is worked out again from the uploads and checked against the log, and a site checks what it fetched against its digest and can fetch it again, including the model a round started from, on its way back after contributing. The exceptions are a site's final model, synced before its last ack because the aggregator can leave after that, and a watcher's vectors, which it may need long after the aggregator stopped offering them. A site back after the end with its final model intact needs nobody.
+
+Before adding them up, the aggregator hashes every mask against the root its helper signed, and it refuses a new file under a mask already signed for. A mask lost or damaged on its disk, or a sum it can't rebuild, ends the run with an Abort in the log, since nobody will send those again, instead of reaching a signed model.
+
+A last log line that doesn't parse is a write a power cut tore. Its party hasn't acted on it, since a party syncs a record before acting on it and the aggregator syncs before sending it, so it is cut off on restart. An anchor leaves such a line unread until then. One gap: the aggregator's anchor reads the file directly, so it can post a line a moment before the line is synced. A bad line anywhere else, or a last line whose signature is wrong, stops the party. A follower that can't write a line stops too, because nobody sends a line twice.
+
 ## Losing a helper
 
 By default every helper is needed, and one honest helper is enough to keep updates hidden. A plan can trade some of that for surviving a helper that goes for good: `min_helpers` is the fewest the run may carry on with. It must be at least 2 and below the plan's helpers, and a grant refuses such a plan unless it says how many helpers it wants left.
