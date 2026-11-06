@@ -8,7 +8,7 @@ use fedtally_chain::{Anchor, Role, Stakes, Watching};
 use fedtally_core::admission::{self, Terms};
 use fedtally_core::credential::{Credential, Draft, StatusEntry};
 use fedtally_core::keys::{Identity, SigAlg, random_bytes};
-use fedtally_core::model::{Encoding, Layout};
+use fedtally_core::model::{Encoding, Layout, ModelFile, TensorView};
 use fedtally_core::plan::{AggregatorSpec, HelperSpec, Plan, Timeouts};
 use fedtally_core::policy::Policy;
 use fedtally_core::pq_ucan::delegation::Delegation;
@@ -24,6 +24,8 @@ use fedtally_node::aggregator::{AggregatorConfig, run_aggregator};
 use fedtally_node::helper::{HelperConfig, run_helper};
 use fedtally_node::local::{GrantFile, StandingFile};
 use fedtally_node::net::{generate_tls, tls_pin};
+use fedtally_node::registry::RpcRegistry;
+use fedtally_node::site::{RevocationFile, SiteConfig, Submit, TrainContext, Trainer, run_site};
 use serde_json::json;
 
 type Failure = Box<dyn std::error::Error>;
@@ -141,6 +143,41 @@ enum Command {
         out: PathBuf,
     },
     /// Run the aggregator until the run ends
+    /// Run a site, training with a command of your own
+    ///
+    /// Each round the command runs with FEDTALLY_ROUND, FEDTALLY_BASE (the
+    /// model to start from) and FEDTALLY_OUT (where to write the trained one,
+    /// as safetensors). The last line it prints is its weight, 1 if it prints
+    /// no number.
+    Site {
+        #[arg(long)]
+        key: PathBuf,
+        #[arg(long)]
+        plan: PathBuf,
+        #[arg(long)]
+        grant: PathBuf,
+        #[arg(long)]
+        connect: String,
+        #[arg(long)]
+        dir: PathBuf,
+        /// This site's dataset and credentials, for a plan that admits on them
+        #[arg(long)]
+        standing: Option<PathBuf>,
+        /// A folder of issuers' revocation lists this site brings to the log
+        #[arg(long)]
+        status_dir: Option<PathBuf>,
+        /// Delegations this site has taken back, one per line
+        #[arg(long)]
+        revocations: Option<PathBuf>,
+        /// Where to ask whether did:bio parties still stand
+        #[arg(long)]
+        registry_rpc: Option<String>,
+        #[arg(long, default_value_t = 600)]
+        give_up_secs: u64,
+        /// The training command and its arguments
+        #[arg(last = true, required = true)]
+        train: Vec<String>,
+    },
     Aggregator {
         #[arg(long)]
         key: PathBuf,
@@ -313,6 +350,46 @@ impl PlanSpec {
     }
 }
 
+/// Trains by running a command, which needs no Python in this process.
+struct CommandTrainer {
+    command: Vec<String>,
+    layout: Layout,
+}
+
+impl Trainer for CommandTrainer {
+    fn train(&mut self, ctx: &TrainContext, submit: &mut Submit<'_>) -> Result<(), String> {
+        let fail = |e: &dyn std::fmt::Display| e.to_string();
+        let out = ctx
+            .base_model
+            .with_extension(format!("trained-{}", ctx.round));
+        let ran = std::process::Command::new(&self.command[0])
+            .args(&self.command[1..])
+            .env("FEDTALLY_ROUND", ctx.round.to_string())
+            .env("FEDTALLY_BASE", &ctx.base_model)
+            .env("FEDTALLY_OUT", &out)
+            .stderr(std::process::Stdio::inherit())
+            .output()
+            .map_err(|e| fail(&e))?;
+        if !ran.status.success() {
+            return Err(format!("the training command ended with {}", ran.status));
+        }
+        let text = String::from_utf8_lossy(&ran.stdout);
+        let weight = text
+            .lines()
+            .last()
+            .and_then(|line| line.trim().parse().ok())
+            .unwrap_or(1);
+        let tensors = ModelFile::open(&out, &self.layout)
+            .map_err(|e| fail(&e))?
+            .read_all()
+            .map_err(|e| fail(&e))?;
+        let views: Vec<TensorView<'_>> = tensors.iter().map(|t| TensorView::F64(t)).collect();
+        submit(&views, weight).map_err(|e| fail(&e))?;
+        let _ = std::fs::remove_file(&out);
+        Ok(())
+    }
+}
+
 fn one_audit() -> u32 {
     1
 }
@@ -477,6 +554,45 @@ async fn run(command: Command) -> Result<ExitCode, Failure> {
                 proofs: chain.iter().map(|d| encode_token(d.bytes())).collect(),
             };
             std::fs::write(&out, serde_json::to_vec(&file)?)?;
+        }
+        Command::Site {
+            key,
+            plan,
+            grant,
+            connect,
+            dir,
+            standing,
+            status_dir,
+            revocations,
+            registry_rpc,
+            give_up_secs,
+            train,
+        } => {
+            let (plan_line, _, body) = read_plan(&plan)?;
+            let grant = GrantFile::load(&grant)?;
+            let standing = match standing {
+                Some(path) => StandingFile::load(&path, status_dir)?,
+                None => Default::default(),
+            };
+            let config = SiteConfig {
+                identity: Arc::new(Identity::load(&key)?),
+                plan_line,
+                addr: connect,
+                dir,
+                invocation: grant.invocation,
+                proofs: grant.proofs,
+                revocations: revocations.map(|path| Arc::new(RevocationFile(path)) as _),
+                give_up_after: Duration::from_secs(give_up_secs),
+                standing,
+                registry: registry_rpc.map(|url| Arc::new(RpcRegistry { url }) as _),
+                cheat: None,
+            };
+            let trainer = CommandTrainer {
+                command: train,
+                layout: body.layout,
+            };
+            let summary = run_site(config, Box::new(trainer)).await?;
+            println!("final model {}", summary.final_digest);
         }
         Command::Aggregator {
             key,

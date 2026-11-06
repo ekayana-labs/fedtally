@@ -174,6 +174,18 @@ pub struct ModelFile {
 }
 
 impl ModelFile {
+    /// Every tensor of the model, as doubles.
+    pub fn read_all(&self) -> io::Result<Vec<Vec<f64>>> {
+        let mut tensors = vec![Vec::new(); self.layout.tensors.len()];
+        let mut buf = Vec::new();
+        for run in self.layout.runs(0, self.layout.coords()) {
+            buf.resize(run.len as usize, 0.0);
+            self.read_run(&run, &mut buf)?;
+            tensors[run.tensor].extend_from_slice(&buf);
+        }
+        Ok(tensors)
+    }
+
     pub fn open(path: &Path, layout: &Layout) -> Result<ModelFile, ModelError> {
         let mut file = File::open(path)?;
         let expected = layout.header();
