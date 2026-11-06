@@ -2,6 +2,9 @@
 //! stand. A site asks for itself, through an endpoint it trusts, before each
 //! round. Nothing in the log depends on the answer, so a replay stays offline.
 
+use std::collections::BTreeSet;
+use std::fmt;
+
 use base64::Engine;
 use fedtally_core::plan::Plan;
 use fedtally_core::registry::{Account, Use, account_address, standing};
@@ -12,13 +15,38 @@ pub trait Registry: Send + Sync {
     fn account(&self, address: &[u8; 32]) -> Result<Option<Account>, String>;
 }
 
-/// Checks every `did:bio` operator, site and issuer the plan relies on. The first
-/// one whose own key may no longer act for it is an error.
-pub fn check(registry: &dyn Registry, plan: &Plan) -> Result<(), String> {
+#[derive(Debug)]
+pub enum Unsure {
+    /// The registry couldn't be asked. It may answer next time.
+    Unreachable(String),
+    /// It answered, and someone no longer stands.
+    Refused(String),
+}
+
+impl fmt::Display for Unsure {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Unsure::Unreachable(why) | Unsure::Refused(why) => f.write_str(why),
+        }
+    }
+}
+
+/// Checks every `did:bio` operator, site and issuer the plan relies on, leaving
+/// out helpers already removed from the run. The first one whose own key may no
+/// longer act for it is an error.
+pub fn check(
+    registry: &dyn Registry,
+    plan: &Plan,
+    removed: &BTreeSet<usize>,
+) -> Result<(), Unsure> {
     let sites = plan.sites.iter().map(String::as_str);
+    // The aggregator comes first, then the helpers in plan order.
+    let in_run = |(at, _): &(usize, _)| *at == 0 || !removed.contains(&(at - 1));
     let operators = plan
         .operators()
-        .map(|(did, _)| did)
+        .enumerate()
+        .filter(in_run)
+        .map(|(_, (did, _))| did)
         .chain(sites)
         .map(|did| (did, Use::Authentication));
     let issuers = plan
@@ -30,10 +58,13 @@ pub fn check(registry: &dyn Registry, plan: &Plan) -> Result<(), String> {
         if !did.starts_with("did:bio:") {
             continue;
         }
-        let account = registry.account(&account_address(did)?)?;
-        let found = standing(did, account.as_ref(), wanted)?;
+        let address = account_address(did).map_err(Unsure::Refused)?;
+        let account = registry.account(&address).map_err(Unsure::Unreachable)?;
+        let found = standing(did, account.as_ref(), wanted).map_err(Unsure::Refused)?;
         if !found.acts() {
-            return Err(format!("{did} no longer stands on the registry: {found:?}"));
+            return Err(Unsure::Refused(format!(
+                "{did} no longer stands on the registry: {found:?}"
+            )));
         }
     }
     Ok(())

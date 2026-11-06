@@ -2150,6 +2150,62 @@ async fn a_site_outside_a_redo_drops_what_it_kept_of_the_given_up_round() {
     );
 }
 
+/// Fails once, on the call a site makes first in the redo.
+struct FlakyOnce {
+    calls: std::sync::atomic::AtomicUsize,
+    at: usize,
+}
+
+impl fedtally_node::registry::Registry for FlakyOnce {
+    fn account(&self, _: &[u8; 32]) -> Result<Option<fedtally_core::registry::Account>, String> {
+        match self.calls.fetch_add(1, Ordering::SeqCst) == self.at {
+            true => Err("the endpoint timed out".into()),
+            false => Ok(None),
+        }
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_registry_blip_in_a_redo_does_not_stop_the_run() {
+    let dir = tempfile::tempdir().unwrap();
+    let init = initial_model(dir.path());
+    let mut options = spare_helper_options(1);
+    options.did_bio = Some("devnet".into());
+    let fed = LocalFederation::create(dir.path(), layout(), &init, &options).unwrap();
+    // One check asks about the aggregator, 3 helpers and 3 sites.
+    let flaky = |i: usize, config: &mut SiteConfig| {
+        if i == 0 {
+            let registry = FlakyOnce {
+                calls: Default::default(),
+                at: 7,
+            };
+            config.registry = Some(Arc::new(registry));
+        }
+    };
+    let lost = vec![(stage_sum(1), 2)];
+    let losing =
+        start_losing_configured(&fed, fixed_trainers(3), Vec::new(), lost, None, flaky).await;
+    let (replay, _) = losing.finish().await;
+    assert_eq!(replay.phase, Phase::Done, "{:?}", replay.abort);
+    assert_eq!(replay.rounds[1].included, [0, 1, 2]);
+}
+
+#[test]
+fn a_removed_helper_can_stop_standing_on_the_registry() {
+    let dir = tempfile::tempdir().unwrap();
+    let init = initial_model(dir.path());
+    let mut options = spare_helper_options(1);
+    options.did_bio = Some("devnet".into());
+    let fed = LocalFederation::create(dir.path(), layout(), &init, &options).unwrap();
+    let (address, account) = tombstone(&fed.plan.helpers[2].did);
+    let mut ledger = Ledger::default();
+    ledger.accounts.insert(address, account);
+    let nobody = std::collections::BTreeSet::new();
+    assert!(fedtally_node::registry::check(&ledger, &fed.plan, &nobody).is_err());
+    let removed = std::collections::BTreeSet::from([2]);
+    assert!(fedtally_node::registry::check(&ledger, &fed.plan, &removed).is_ok());
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn a_scoring_run_pays_the_group_that_moved_the_model() {
     let dir = tempfile::tempdir().unwrap();

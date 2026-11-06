@@ -30,7 +30,7 @@ use serde::{Deserialize, Serialize};
 use crate::follower::{Follower, Patience, Start};
 use crate::helper::seal_context;
 use crate::net::Client;
-use crate::registry::{self, Registry};
+use crate::registry::{self, Registry, Unsure};
 use crate::wire::{Blob, Msg, Object};
 use crate::{NodeError, blocking, newer_lists};
 
@@ -255,13 +255,22 @@ impl Site {
     }
 
     /// Asks the registry about every `did:bio` party this site relies on.
-    async fn registry_agrees(&mut self) -> Result<(), NodeError> {
+    /// A site that can't reach the registry sits a round out, except a redo,
+    /// which can't close without it. That one it keeps trying.
+    async fn registry_agrees(&mut self, redo: bool) -> Result<(), NodeError> {
         let Some(registry) = self.registry.clone() else {
             return Ok(());
         };
         let plan = self.f.plan.clone();
-        blocking(move || registry::check(registry.as_ref(), &plan).map_err(NodeError::Refused))
-            .await
+        let removed = self.f.replay.removed.clone();
+        blocking(
+            move || match registry::check(registry.as_ref(), &plan, &removed) {
+                Ok(()) => Ok(()),
+                Err(Unsure::Unreachable(why)) if redo => Err(NodeError::Disconnected(why)),
+                Err(e) => Err(NodeError::Refused(e.to_string())),
+            },
+        )
+        .await
     }
 
     /// Brings the log any revocation list this site holds a newer copy of.
@@ -416,9 +425,12 @@ impl Site {
                 admitted = self.admit().and_then(|()| self.in_standing());
             }
             if admitted.is_ok() {
-                admitted = self.registry_agrees().await;
+                admitted = self.registry_agrees(state.redo.is_some()).await;
             }
             if let Err(e) = admitted {
+                if e.is_transient() {
+                    return Err(e);
+                }
                 tracing::warn!("sitting out round {round}: {e}");
                 self.refused.push(round);
                 return Ok(());
