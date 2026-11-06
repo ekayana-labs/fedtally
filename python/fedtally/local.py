@@ -27,6 +27,49 @@ class Privacy:
 
 
 @dataclass
+class Stakes:
+    """What a task on the ledger holds, in lamports and slots."""
+
+    site_stake: int
+    aggregator_stake: int
+    reward_per_round: int
+    dispute_bond: int
+    challenge_slots: int
+    stall_slots: int
+
+
+@dataclass
+class Ledger:
+    """A Solana endpoint to anchor a run to.
+
+    `stakes` are the publisher's terms, and a whole run needs them. `watch`
+    adds a watcher that adds up every round and disputes a wrong sum. `program`
+    is the deployed ledger's address, by default the one built into this
+    package.
+    """
+
+    rpc: str
+    stakes: Stakes | None = None
+    watch: bool = True
+    program: str | None = None
+    priority_fee: int | None = None
+    poll_ms: int = 1000
+
+    def native(self) -> dict:
+        given = asdict(self)
+        if self.stakes is not None:
+            given["stakes"] = [
+                self.stakes.site_stake,
+                self.stakes.aggregator_stake,
+                self.stakes.reward_per_round,
+                self.stakes.dispute_bond,
+                self.stakes.challenge_slots,
+                self.stakes.stall_slots,
+            ]
+        return given
+
+
+@dataclass
 class RunResult:
     model: dict | None
     model_path: str | None
@@ -34,10 +77,16 @@ class RunResult:
     report: dict
     sites: list
     aggregator_error: str | None
+    ledger: dict | None = None
 
     @property
     def ok(self) -> bool:
-        return self.aggregator_error is None and all(s["ok"] for s in self.sites)
+        anchored = self.ledger is None or not self.ledger["errors"]
+        return (
+            anchored
+            and self.aggregator_error is None
+            and all(s["ok"] for s in self.sites)
+        )
 
 
 class LocalFederation:
@@ -95,11 +144,20 @@ class LocalFederation:
         """Takes back a site's access grant. It is out from the next round."""
         self.native.revoke_access(site)
 
-    def run(self, train, keep_spool: bool = False) -> RunResult:
+    def wallets(self) -> dict:
+        """Every party's wallet, to fund before anchoring. It takes a plan made
+        with `did_bio`, since a wallet is the key its party is named by."""
+        return self.native.wallets()
+
+    def run(self, train, keep_spool: bool = False, ledger: Ledger | None = None) -> RunResult:
+        """Runs to the end. With `ledger`, every party also anchors the run
+        there, and this returns once each has taken what is its own."""
+
         def for_site(i):
             return trainer_for(lambda r, params: train(i, r, params), self.layout)
 
-        out = self.native.run([for_site(i) for i in range(self.sites)], keep_spool)
+        trainers = [for_site(i) for i in range(self.sites)]
+        out = self.native.run(trainers, keep_spool, ledger.native() if ledger else None)
         finished = [s for s in out["sites"] if s["ok"]]
         path = finished[0]["final_model"] if finished else None
         return RunResult(
@@ -109,4 +167,5 @@ class LocalFederation:
             report=verify(self.log_path) if Path(self.log_path).exists() else {},
             sites=out["sites"],
             aggregator_error=out["aggregator_error"],
+            ledger=out.get("ledger"),
         )
