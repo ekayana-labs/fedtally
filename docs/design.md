@@ -201,7 +201,13 @@ The program enforces the same privacy arithmetic and the same cohort draw as the
 
 **A watcher** holds no data and no seeds. It fetches each round's masked vectors, mask totals and aggregate from the aggregator once the outcome is logged, checks them against the roots, and recomputes the sum leaf by leaf. If a leaf is wrong it opens a dispute and proves it. Masked vectors and mask totals together tell a watcher the aggregate and nothing more.
 
-**A fraud proof needs the vectors.** The watcher can prove only what it was served. An aggregator that posts a bad root and then withholds the vectors can't be slashed by this program. The sites are not exposed to that: none of them acknowledges, in the log or on the ledger, a round it couldn't check, so such a round never settles.
+**A fraud proof needs the vectors, so withholding them is a fault too.** A watcher refused a leaf can demand it on the ledger, with a bond. Anyone holding the leaf answers with the proof a dispute takes, and it stays readable in the demand. If nobody answers by the deadline, the aggregator loses its stake, as for a wrong sum. Deadlines on a round queue at least 64 slots apart, so no burst of demands can outrun an honest aggregator and take its stake. A burst can only delay settlement, at the price of a fee per leaf. So an aggregator has to keep a round's vectors until the round settles, and answering one leaf costs it no more than the fee it earns. An answered demand also lets its challenger open a dispute over that leaf after the window has closed, since the answer may come late.
+
+A leaf gives away nothing a watcher couldn't fetch anyway: inputs are masked, and a mask total sums over the whole cohort.
+
+Recovering a whole withheld chunk takes one demand per leaf, and each holds a bond and rent until it closes. That is fine for small chunks and heavy for large ones, so a plan meant for a ledger should pick its chunk size with that in mind.
+
+**An issuer's anchor** mirrors its revocation lists from the log to the ledger, for the first 80,000 bits. The watcher then applies them to enrollments, trying again until the bit lands. The ledger runs behind the log, so it takes the log's cohort even if a member has since been revoked there: refusing would let anyone stall a task by applying a revocation early. What keeps a revoked site out is the log's rule, and that no honest site acknowledges another cohort. **Round accounts** return their rent once every share is claimed.
 
 See [ledger/README.md](../ledger/README.md) for accounts, instructions, the anchor roles and measured compute costs.
 
