@@ -247,6 +247,17 @@ def test_a_plan_that_may_retry_needs_noise(tmp_path):
     assert not result.report["rounds"][0]["voided"]
 
 
+def test_a_plan_that_can_lose_a_helper_runs_normally_if_it_loses_none(tmp_path):
+    with pytest.raises(ft.FedtallyError, match="min_helpers"):
+        fed(tmp_path / "floor", helpers=2, min_helpers=2)
+    result = fed(tmp_path / "spare", helpers=3, min_helpers=2).run(
+        toward([1.0, 1.0, 1.0])
+    )
+    assert result.ok, result.sites
+    assert result.report["removed_helpers"] == []
+    assert len(result.report["rounds"]) == 1
+
+
 def test_an_impossible_privacy_target_is_refused(tmp_path):
     with pytest.raises(ft.FedtallyError):
         fed(tmp_path, privacy=ft.Privacy(epsilon=1.0, delta=1e-5, clip=-1.0))
