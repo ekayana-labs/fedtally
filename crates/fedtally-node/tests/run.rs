@@ -1358,6 +1358,8 @@ async fn a_gated_run_works_with_post_quantum_keys_and_credentials() {
     let init = initial_model(dir.path());
     let mut opts = gated_options(3, 1);
     opts.sig_alg = fedtally_core::keys::SigAlg::MlDsa65;
+    // These signatures are slow in a debug build, and every site joins anyway.
+    opts.timeouts.join_secs = 120;
     let fed = LocalFederation::create(dir.path(), layout(), &init, &opts).unwrap();
     let (running, results) = run_all(&fed, fixed_trainers(3), None).await;
     running.aggregator.await.unwrap().unwrap();
