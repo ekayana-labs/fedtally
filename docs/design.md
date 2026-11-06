@@ -172,7 +172,7 @@ The aggregator holds `y_i` and `Y`, and learns `A`. Without a seed `s_ih` for at
 |---|---|---|
 | Aggregator alone | Read an update. Get an acknowledgement for a model that isn't the committed sum. Spend past the privacy budget, or draw its own cohort after round 1 | Stop or stall the run. Leave invited sites out, down to `min_cohort`. Refuse to log a record: the site knows, and the report lists it as absent. In a plan that retries, throw away a sum it dislikes by refusing one attestation, up to `retries` times, each one charged. In a plan that can lose a helper, void a round and spend budget the same way by refusing a helper's record, as many times as helpers can be lost |
 | Helper alone | Read an update. Change the sum | Stop the run, unless it only goes silent in a plan that can lose it. In a plan that retries, push out a site of its choosing and let the run go on |
-| Site alone | Read another site's update. Spoil a seal by lying. Stay in after its credential is revoked and the list is logged. In a bounded plan, get an update longer than `norm` into a round | Without norm proofs, send any update it likes. Stop the run, in a plan that retries after using one up |
+| Site alone | Read another site's update. Spoil a seal by lying. Stay in after its credential is revoked and the list is logged. In a bounded plan, get an update longer than the proof's bound into a round, which is `norm` for small models and a multiple of it above the exact range | Without norm proofs, send any update it likes. Stop the run, in a plan that retries after using one up |
 | Site + helper | | Pass a norm proof for any update |
 | Aggregator + 1 site | Change the sum unnoticed, with `audits >= 1` | Read a victim's update if `min_cohort` is 2 and the run has no privacy terms |
 | Aggregator + `k` sites | Read an honest site's update if `min_cohort > k + 1`. Change the sum unnoticed if `k <= audits` | With `k > audits`, have its sites audit each other |
@@ -205,7 +205,7 @@ The bound holds even though the aggregator picks the second cohort after seeing 
 **What a retry can't tell apart.** The log can't tell a dropout from an aggregator pretending to see one. Tests pin the last two of these:
 
 - The aggregator can force every retry. Only `retries`, `min_cohort` and the budget limit that. Choosing among sums also gives it some say over later draws.
-- A site in the retry can send a different update after reading the first sum, because nothing ties its two attempts together. Norm proofs limit this to `norm`.
+- A site in the retry can send a different update after reading the first sum, because nothing ties its two attempts together. Norm proofs limit this to `Params::enforced`, which is `norm` for small models and a multiple of it above the exact range.
 - A helper can push a chosen site out by signing a wrong share for it. The site refuses to attest, and the run goes on without it, where without retries the same lie stops the run.
 
 A run with a retry is never `complete` in its report, and `fedtally verify` exits 2 for it. The given up round is listed as `voided`, with its silent sites under `unattested`. On a ledger, the aggregator's anchor follows with `void_round`. The budget it charged stays spent, nobody is paid for that round, and each step still pays its reward once.
@@ -303,7 +303,7 @@ A chunk's root is checked on arrival, and an upload is synced before it can be c
 
 ## Limits this design accepts
 
-- **Norm proofs bound length, not direction.** A dishonest site can still send the worst update of the allowed length, and one working with a helper can send anything.
+- **Norm proofs bound length, not direction, and the length leaves room for noise.** A dishonest site can send the worst update of the allowed length, which is a multiple of the clip: 8.21 times at the terms in [benchmarks.md](benchmarks.md), where one such site of 16 backdoors the model. One working with a helper can send anything.
 - **Privacy with few sites is expensive.** Noise in the average falls with the cohort size, so tens of sites pay heavily in accuracy at small epsilon. [benchmarks.md](benchmarks.md) has measurements.
 - **Rewards follow groups, not sites.** A per-site score is a statistic about one site, which is exactly what site-level privacy hides. Scoring groups costs privacy in proportion, and the ledger still pays equal shares and slashes only what can be proven.
 - **One party can stop a run.** Any site or helper can, though a plan that retries gets past a silent site a few times, and a plan with `min_helpers` gets past a silent helper. This trades liveness for the guarantee that nobody takes a model some party couldn't check.

@@ -1487,7 +1487,7 @@
  "notes": [
   "simulated_bound clips in Python before submission.",
   "private_cheat and private_proof run real dishonest clients that clip 4096 times too far out. Under private_proof the plan is bounded, and a site whose norm proof fails is left out of the round.",
-  "private_stock_client is what an enforced bound would give in a private run, since the stock encoder already clips the dishonest site.",
+  "private_stock_client is a dishonest trainer held to the clip by the stock encoder, which is not what a norm proof enforces.",
   "private_unbounded is the numpy model of a site that skips the clip and the noise altogether.",
   "The backdoor scales its update by sites / adversaries. A non-private plan would also let it claim a weight up to max_weight to the same end.",
   "case_rate_with_trigger is the share of test people called a case once the trigger is set; case_rate_clean is the same people without it."

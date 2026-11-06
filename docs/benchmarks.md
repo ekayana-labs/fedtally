@@ -159,7 +159,20 @@ Scripts are in `benchmarks/attacks`, on the polygenic risk task. Each result fil
 | backdoor, trigger rate | 2 | 0.99 | 0.66 | 1.00 | 0.41 |
 | backdoor, trigger rate | 4 | 1.00 | 0.89 | 1.00 | 0.38 |
 
-The trigger rate is the share of test people called a case once the trigger is set, about 0.5 with no attack. Without norm proofs one dishonest client is enough to replace the model, privacy terms or not. With them, the dishonest sites fail the proof and are left out of every round. A dishonest trainer behind an honest client is held to the clip like everyone else, which contains a label flipper but lets four backdoor sites of 16 push the trigger rate to 0.89: the proof bounds how long an update is, not where it points. A numpy model of the private round agrees with the real runs to within 0.03.
+The trigger rate is the share of test people called a case once the trigger is set, about 0.5 with no attack. Without norm proofs one dishonest client is enough to replace the model, privacy terms or not. With them, a client that reaches this far out fails the proof and is left out of every round. A dishonest trainer behind an honest client is held to the clip like everyone else, which contains a label flipper but lets four backdoor sites of 16 push the trigger rate to 0.89: the proof bounds how long an update is, not where it points. A numpy model of the private round agrees with the real runs on AUC to within 0.03. Trigger rates vary more, by about 0.1 between repeat runs at three seeds.
+
+**A client the proof lets through.** The proof has to leave room for honest noise, so at the terms below it passes up to 8.21 times the clip. The table above doesn't test that. Here dishonest clients clip 6 times too far out and keep their noise, under a plan with norm proofs, and in the last column a numpy model drops the noise and sends an update exactly at the bound. Real runs passed every dishonest update in every round. The two proof columns use a plan that can leave out four sites, which needs a third more noise than the honest column's plan. This is a separate run from the table above, and the honest column's trigger rates differ from it by up to 0.06.
+
+| Attack | Dishonest sites | Private, honest client | Within the bound, proofs on | At the bound (simulated) |
+|---|---|---|---|---|
+| label flip, AUC | 1 | 0.776 | 0.721 | 0.696 |
+| label flip, AUC | 2 | 0.767 | 0.549 | 0.411 |
+| label flip, AUC | 4 | 0.727 | 0.250 | 0.221 |
+| backdoor, trigger rate | 1 | 0.53 | 0.94 | 0.98 |
+| backdoor, trigger rate | 2 | 0.69 | 0.99 | 1.00 |
+| backdoor, trigger rate | 4 | 0.94 | 1.00 | 1.00 |
+
+So a proof stops a client that overshoots by far, not one that stays inside the room left for noise. A credentialed site with a modified client can still backdoor this model, and masking means nobody can tell which site did. Admission is the control that holds. This is one linear task of 201 parameters, three seeds and an attacker that isn't optimised. `poison.py --within-bound` reproduces it.
 
 **Free riding.** A site that returns the model unchanged, or noise, is paid the same equal share as everyone else: 0.125 at 8 sites. Nothing detects it. What it costs is accuracy: with 1, 2 and 4 of 8 sites returning the model unchanged, a private run at epsilon = 8 goes from 0.738 to 0.728, 0.710 and 0.680.
 
