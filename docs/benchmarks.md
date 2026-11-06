@@ -205,10 +205,14 @@ Output is byte for byte what it was. A round is bound by synced disk writes and 
 
 ## On the ledger
 
-Compute units per instruction are in [ledger/README.md](../ledger/README.md), measured in LiteSVM. A round with a fixed cohort of 16 takes 20 transactions: three from the aggregator at 3,035, 3,004 and 957 units, an acknowledgement of 750 from each site, and 911 to settle. That is about 20,000 units and, at 5,000 lamports a signature, 100,000 lamports in base fees. Each round also creates one account of 772 bytes, which locks about 0.0046 SOL of rent that the program never returns.
+Compute units per instruction are in [ledger/README.md](../ledger/README.md), measured in LiteSVM. A round with a fixed cohort of 16 takes 20 transactions: three from the aggregator at 3,035, 3,004 and 957 units, an acknowledgement of 750 from each site, and 911 to settle. That is about 20,000 units and, at 5,000 lamports a signature, 100,000 lamports in base fees. Each round also creates one account of 780 bytes, which locks about 0.0046 SOL of rent that the program never returns.
 
 Proving fraud at one leaf of a million-coordinate model with 16 sites takes 18 proof parts of 7,400 to 9,600 units each. A part is at most 1,824 bytes of leaf and path, which goes into the buffer over a few transactions before the one that checks it.
 
-On a local validator (`cargo test -p fedtally-chain --test validator -- --ignored --nocapture`, 3 sites, 2 rounds, a challenge window of 25 slots), a round settles 28 to 31 slots after it opens. A round costs 50,000 lamports in base fees for ten transactions, claims included, and a priority fee of 1,000 microlamports a unit adds 130. Compute units on the validator match the figures above, apart from instructions that create an account and search for its address. When the aggregator posts a root for an aggregate that is not the sum, the watcher proves it in 19 transactions and 16 to 28 slots for 95,000 lamports, and takes the aggregator's stake.
+On a local validator (`cargo test -p fedtally-chain --test validator -- --ignored --nocapture`, 3 sites, 2 rounds, a challenge window of 25 slots), a round settles 28 to 31 slots after it opens. A round costs 55,000 lamports in base fees for eleven transactions, claims and closing the round included, and a priority fee of 1,000 microlamports a unit adds 140. Compute units on the validator match the figures above, apart from instructions that create an account and search for its address. When the aggregator posts a root for an aggregate that is not the sum, the watcher proves it in 19 transactions and 16 to 28 slots for 95,000 lamports, and takes the aggregator's stake.
+
+A watcher that can't reach the aggregator gets what it needs through the ledger, with a window of 80 slots and 3 sites over 2 rounds. When the aggregator answers from its spool, 30 leaves come through, the run settles in about 110 s and the watcher pays 300,000 lamports in fees, plus 50,000 for each answer. When the aggregator has lost its vectors, it loses its stake about 70 s after the run is anchored, and the watcher ends with that stake less 150,000 lamports in fees.
+
+Demanding a leaf takes 3,013 units, answering 3,328 and closing 1,196. Closing a paid out round takes 751 and returns its 0.0046 SOL of rent.
 
 None of this was run on a public cluster.
