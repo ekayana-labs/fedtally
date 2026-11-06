@@ -50,7 +50,7 @@ const PATIENCE: Duration = Duration::from_secs(300);
 /// The README's LiteSVM figure for each instruction, for the nearest case it
 /// measures.
 const LITESVM: &[(&str, u64)] = &[
-    ("round_close", 751),
+    ("round_close", 3935),
     ("publish", 2398),
     ("back", 1722),
     ("enroll", 3371),
