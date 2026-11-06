@@ -30,6 +30,10 @@ pub struct Terms {
     pub colluding: u16,
     pub budget: u64,
     pub model: Digest,
+    /// Rounds that may be given up for a silent site.
+    pub retries: u32,
+    /// The fewest helpers the run may carry on with, or 0 if it needs them all.
+    pub min_helpers: u8,
 }
 
 /// What the aggregator posts once a round's cohort is fixed.
@@ -124,6 +128,8 @@ impl Plan {
             colluding: narrow("sites", privacy.map_or(0, |p| p.colluding) as usize)?,
             budget: privacy.map_or(0, |p| p.budget),
             model: self.init_model,
+            retries: self.retries,
+            min_helpers: u8::try_from(self.min_helpers).map_err(|_| "too many helpers")?,
         })
     }
 }

@@ -82,6 +82,8 @@ ledger_errors! {
     DemandNotOver = 6052, "The demand is still open";
     LatestRound = 6053, "The latest round stays open for withdrawals";
     SharesUnclaimed = 6054, "A share of the round is still unclaimed";
+    InvalidRetries = 6055, "The budget or the plan's terms do not allow these redos";
+    NoRetriesLeft = 6056, "The task has given up as many rounds as it may";
 }
 
 impl LedgerError {

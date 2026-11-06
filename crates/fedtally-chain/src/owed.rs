@@ -278,6 +278,8 @@ pub fn terms_differ(task: &TaskView, run: &RunView) -> Option<&'static str> {
         (task.noise == terms.noise, "noise"),
         (task.colluding == terms.colluding, "colluding sites"),
         (task.budget == terms.budget, "budget"),
+        (task.retries == terms.retries, "retries"),
+        (task.min_helpers == terms.min_helpers, "minimum helpers"),
     ];
     checks.iter().find(|(same, _)| !same).map(|(_, what)| *what)
 }
@@ -769,6 +771,8 @@ mod tests {
                 colluding: 0,
                 budget: 0,
                 model: Digest([3; 32]),
+                retries: 0,
+                min_helpers: 0,
             },
             publisher: [4; 32],
             aggregator: [5; 32],

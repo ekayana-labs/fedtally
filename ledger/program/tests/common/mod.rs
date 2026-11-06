@@ -350,6 +350,8 @@ impl Run {
             dispute_bond: 7_000_000,
             challenge_slots: 100,
             stall_slots: 1_000,
+            retries: 0,
+            min_helpers: 0,
         };
         adjust(&mut terms);
         let task = client::task(&key(&publisher), &terms.plan_id);

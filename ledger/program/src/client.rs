@@ -188,6 +188,10 @@ pub struct TaskTerms {
     pub dispute_bond: u64,
     pub challenge_slots: u64,
     pub stall_slots: u64,
+    /// How many rounds may be given up for a silent site.
+    pub retries: u32,
+    /// The fewest helpers a run may carry on with, or 0 if it needs them all.
+    pub min_helpers: u8,
 }
 
 /// One status list bit that revokes an enrollment when it is set.
@@ -248,6 +252,8 @@ pub fn publish(publisher: &[u8; 32], terms: &TaskTerms) -> Instruction {
     .raw(&terms.dispute_bond.to_le_bytes())
     .raw(&terms.challenge_slots.to_le_bytes())
     .raw(&terms.stall_slots.to_le_bytes())
+    .raw(&terms.retries.to_le_bytes())
+    .raw(&[terms.min_helpers])
 }
 
 /// Stakes on a task as its aggregator.

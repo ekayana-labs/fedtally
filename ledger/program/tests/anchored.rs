@@ -170,6 +170,8 @@ fn publish(trained: &Trained) -> Anchored {
         dispute_bond: STAKE,
         challenge_slots: WINDOW,
         stall_slots: 10 * WINDOW,
+        retries: 0,
+        min_helpers: 0,
     };
     let task = client::task(&key(&publisher), &terms.plan.0);
     world.run(

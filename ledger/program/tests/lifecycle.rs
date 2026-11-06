@@ -228,6 +228,8 @@ fn terms(plan: u8, adjust: impl FnOnce(&mut TaskTerms)) -> TaskTerms {
         reward_per_round: 1_000,
         challenge_slots: 10,
         stall_slots: 100,
+        retries: 0,
+        min_helpers: 0,
         ..TaskTerms::default()
     };
     adjust(&mut terms);
@@ -402,6 +404,8 @@ fn publish_arguments_are_laid_out_in_specification_order() {
         dispute_bond: 18,
         challenge_slots: 19,
         stall_slots: 20,
+        retries: 0,
+        min_helpers: 0,
     };
     let mut expected = vec![129, 177, 182, 160, 184, 224, 219, 5];
     for fill in 1..=4u8 {
@@ -417,6 +421,8 @@ fn publish_arguments_are_laid_out_in_specification_order() {
     for value in 14..=20u64 {
         expected.extend(value.to_le_bytes());
     }
+    expected.extend(0u32.to_le_bytes());
+    expected.push(0);
     assert_eq!(client::publish(&[0; 32], &terms).data, expected);
 }
 

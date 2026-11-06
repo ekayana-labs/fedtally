@@ -35,6 +35,8 @@ struct Terms<'a> {
     dispute_bond: u64,
     challenge_slots: u64,
     stall_slots: u64,
+    retries: u32,
+    min_helpers: u8,
 }
 
 impl<'a> Terms<'a> {
@@ -61,9 +63,29 @@ impl<'a> Terms<'a> {
             dispute_bond: r.u64()?,
             challenge_slots: r.u64()?,
             stall_slots: r.u64()?,
+            retries: r.u32()?,
+            min_helpers: r.u8()?,
         };
         r.finish()?;
         Ok(terms)
+    }
+
+    /// How many rounds can be given up, which the budget has to cover: using
+    /// them all must not cut a run short.
+    fn redos(&self) -> Result<u64, ProgramError> {
+        let removals = match self.min_helpers {
+            0 => 0,
+            floor => {
+                let room = 2..self.helpers;
+                require(room.contains(&floor), LedgerError::InvalidRetries)?;
+                self.helpers - floor
+            }
+        };
+        require(
+            self.retries == 0 || (self.noise > 0 && self.min_helpers == 0),
+            LedgerError::InvalidRetries,
+        )?;
+        Ok(u64::from(self.retries) + u64::from(removals))
     }
 
     fn check(&self) -> ProgramResult {
@@ -99,7 +121,16 @@ impl<'a> Terms<'a> {
             self.colluding,
             self.min_cohort,
         )?;
-        require(self.budget >= cost, LedgerError::BudgetTooSmall)
+        require(self.budget >= cost, LedgerError::BudgetTooSmall)?;
+        let redos = self.redos()?;
+        if redos > 0 {
+            let attempts = u128::from(self.rounds) + u128::from(redos);
+            require(
+                u128::from(cost) * attempts <= u128::from(self.budget),
+                LedgerError::InvalidRetries,
+            )?;
+        }
+        Ok(())
     }
 
     /// The reward of every round, which the task holds from the start.
@@ -152,6 +183,8 @@ pub fn process(accounts: &mut [AccountView], args: &[u8]) -> ProgramResult {
     task.set_dispute_bond(terms.dispute_bond);
     task.set_challenge_slots(terms.challenge_slots);
     task.set_stall_slots(terms.stall_slots);
+    task.set_retries(terms.retries);
+    task.set_min_helpers(terms.min_helpers);
     task.set_last_change(current_slot()?);
     Ok(())
 }

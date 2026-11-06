@@ -33,7 +33,7 @@ bitmap is 128 bytes, and bit `i` is bit `i % 8` of byte `i / 8`.
 
 | Account | Seeds | Bytes | Holds |
 | --- | --- | --- | --- |
-| Task | `"task", publisher, plan_id` | 561 | The terms, the budget spent, the latest round and model, the enrolled and revoked bitmaps. Above its rent: the reward escrow and the aggregator's stake. |
+| Task | `"task", publisher, plan_id` | 571 | The terms, the budget spent, the latest round and model, the enrolled and revoked bitmaps. Above its rent: the reward escrow and the aggregator's stake. |
 | Enrollment | `"site", task, index u16` | 261 | A site's wallet, index, status, admission digest and up to 4 status references. Above its rent: the site's stake. |
 | Round | `"round", task, round u32` | 788 | State, the number of open disputes, beacon, cohort, the committed and posted roots, the acked and claimed bitmaps, the share and when it settled. |
 | Dispute | `"dispute", task, round u32, challenger` | 2275 | Challenger, disputed leaf, deadline, the running sum and the aggregate leaf. Above its rent: the bond. |

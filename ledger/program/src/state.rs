@@ -267,6 +267,14 @@ account! {
         last_change / set_last_change: u64,
         enrolled / enrolled_mut: [u8; 128],
         revoked / revoked_mut: [u8; 128],
+        /// How many rounds may be given up for a silent site.
+        retries / set_retries: u32,
+        /// Rounds given up so far, for either reason.
+        voided / set_voided: u32,
+        /// The fewest helpers a run may carry on with, or 0 if it needs them all.
+        min_helpers / set_min_helpers: u8,
+        /// Helpers removed so far.
+        removed_helpers / set_removed_helpers: u8,
     }
 }
 
@@ -395,7 +403,7 @@ account! {
 
 // Clients read these layouts, so a field that moves fails the build.
 const _: () = {
-    assert!(TASK_SPACE == 561);
+    assert!(TASK_SPACE == 571);
     assert!(offset_of!(TaskLayout, sites) == 13);
     assert!(offset_of!(TaskLayout, publisher) == 33);
     assert!(offset_of!(TaskLayout, coords) == 193);

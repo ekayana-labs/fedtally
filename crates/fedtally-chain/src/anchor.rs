@@ -133,6 +133,8 @@ fn task_terms(run: &RunView, stakes: &Stakes) -> TaskTerms {
         dispute_bond: stakes.dispute_bond,
         challenge_slots: stakes.challenge_slots,
         stall_slots: stakes.stall_slots,
+        retries: terms.retries,
+        min_helpers: terms.min_helpers,
     }
 }
 

@@ -87,6 +87,11 @@ pub struct TaskView {
     pub challenge_slots: u64,
     pub stall_slots: u64,
     pub last_change: u64,
+    pub spent: u64,
+    pub retries: u32,
+    pub voided: u32,
+    pub min_helpers: u8,
+    pub removed_helpers: u8,
     pub enrolled: Sites,
     pub revoked: Sites,
 }
@@ -199,6 +204,11 @@ pub fn task(account: Option<&Account>) -> Option<TaskView> {
         challenge_slots: task.challenge_slots(),
         stall_slots: task.stall_slots(),
         last_change: task.last_change(),
+        spent: task.spent(),
+        retries: task.retries(),
+        voided: task.voided(),
+        min_helpers: task.min_helpers(),
+        removed_helpers: task.removed_helpers(),
         enrolled: Sites(*task.enrolled()),
         revoked: Sites(*task.revoked()),
     })
