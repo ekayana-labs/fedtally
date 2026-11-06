@@ -100,6 +100,11 @@ impl TaskView {
     pub fn is_open(&self) -> bool {
         self.state == TASK_OPEN
     }
+
+    /// The helpers whose masks a round has.
+    pub fn active_helpers(&self) -> u8 {
+        self.helpers.saturating_sub(self.removed_helpers)
+    }
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]

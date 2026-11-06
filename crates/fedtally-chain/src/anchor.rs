@@ -300,7 +300,8 @@ impl Anchor {
         let Some(task) = &snapshot.task else {
             return Ok(snapshot);
         };
-        let (helpers, latest, me) = (task.helpers, task.round, self.me());
+        let helpers = task.active_helpers();
+        let (latest, me) = (task.round, self.me());
         let round_at = |number: u32| client::round(&self.task, number);
         match self.party {
             Party::Publisher => {

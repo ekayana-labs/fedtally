@@ -26,6 +26,8 @@ pub struct RoundLog {
     pub vectors: BTreeMap<u16, Digest>,
     /// One root per helper, once every helper has given its own.
     pub masks: Vec<Digest>,
+    /// The plan's index of each active helper, in the order of `masks`.
+    pub active: Vec<usize>,
     pub aggregate: Option<Digest>,
     pub acks: BTreeSet<u16>,
 }
@@ -214,7 +216,6 @@ impl Run {
             Phase::Aborted => Ending::Aborted,
             _ => Ending::Running,
         };
-        let helpers = view.terms.helpers as usize;
         let settled = view.rounds.iter().take_while(|r| r.is_settled()).count();
         view.rounds.truncate(settled);
         for state in &replay.rounds[settled..] {
@@ -227,10 +228,11 @@ impl Run {
                     .iter()
                     .map(|(site, c)| (narrow(site), c.masked))
                     .collect(),
-                masks: match state.masks.len() == helpers {
+                masks: match state.masks.len() == state.active.len() {
                     true => state.masks.values().copied().collect(),
                     false => Vec::new(),
                 },
+                active: state.active.clone(),
                 aggregate: state.outcome.as_ref().map(|outcome| outcome.aggregate),
                 acks: state.acks.iter().map(narrow).collect(),
             });

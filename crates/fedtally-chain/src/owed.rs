@@ -592,7 +592,7 @@ fn watcher(run: &RunView, ledger: &Snapshot, notes: &Notes) -> Result<Step, Dive
     let capacity = proof_capacity(run);
     let roomy = |buffer: &BufferView| buffer.capacity >= capacity;
     if let (Some(dispute), Some(round)) = (&ledger.dispute, round) {
-        let part = next_part(dispute, round.cohort.len(), task.helpers);
+        let part = next_part(dispute, round.cohort.len(), task.active_helpers());
         let over = round.state == ROUND_FRAUD || ledger.slot > dispute.deadline;
         return Ok(match (part, ledger.buffer) {
             (None, _) => Step::CloseDispute(number),
@@ -830,6 +830,7 @@ mod tests {
                 .map(|site| (*site as u16, Digest([*site as u8; 32])))
                 .collect(),
             masks: vec![Digest([tag + 30; 32])],
+            active: vec![0],
             aggregate: Some(Digest([tag + 40; 32])),
             acks: cohort.iter().map(|site| *site as u16).collect(),
         }
@@ -1423,6 +1424,37 @@ mod tests {
         assert_eq!(watcher(&ledger, &notes), Ok(Step::CloseBuffer));
         ledger.buffer = None;
         assert_eq!(watcher(&ledger, &notes), Ok(Step::Done));
+    }
+
+    #[test]
+    fn a_dispute_asks_only_for_the_masks_a_round_has() {
+        let (mut run, mut ledger) = watched();
+        run.terms.helpers = 3;
+        let task = ledger.task.as_mut().unwrap();
+        (task.helpers, task.removed_helpers) = (3, 1);
+        ledger.buffer = Some(BufferView {
+            capacity: proof_capacity(&run),
+        });
+        let mut notes = with(Verdict::Wrong(2));
+        notes.disputed.insert(1);
+        let mut dispute = DisputeView {
+            leaf_index: 2,
+            deadline: 110 + WINDOW,
+            seen_inputs: [0u16, 1].into_iter().collect(),
+            ..DisputeView::default()
+        };
+        let mut given = Vec::new();
+        for seen_masks in 0..=2u8 {
+            dispute.seen_masks = (1 << seen_masks) - 1;
+            ledger.dispute = Some(dispute.clone());
+            let step = owed(Party::Watcher, &ME, &run, &ledger, &notes);
+            let Ok(Step::GiveLeaf { part, .. }) = step else {
+                panic!("{step:?}");
+            };
+            given.push(part);
+        }
+        let parts = [ProofPart::Mask(0), ProofPart::Mask(1), ProofPart::Aggregate];
+        assert_eq!(given, parts);
     }
 
     #[test]

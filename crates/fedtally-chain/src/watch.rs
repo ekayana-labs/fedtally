@@ -178,8 +178,8 @@ impl Vault {
             let site = u32::from(*site);
             self.hold(Object::Upload { round, site }, root)?;
         }
-        for (helper, root) in log.masks.iter().enumerate() {
-            let helper = helper as u32;
+        for (root, helper) in log.masks.iter().zip(&log.active) {
+            let helper = *helper as u32;
             self.hold(Object::Mask { round, helper }, *root)?;
         }
         self.hold(Object::Aggregate { round }, aggregate)?;
@@ -193,6 +193,7 @@ impl Vault {
         number: u32,
         held: &RoundView,
         roots: &[Digest],
+        active: &[usize],
     ) -> Result<Option<Held>, NodeError> {
         if anchor::inputs_root(roots) != held.inputs_root {
             return Ok(None);
@@ -204,8 +205,8 @@ impl Vault {
             inputs.push(self.hold(Object::Upload { round, site }, *root)?);
         }
         let mut masks = Vec::new();
-        for (helper, root) in held.mask_roots.iter().enumerate() {
-            let helper = helper as u32;
+        for (root, helper) in held.mask_roots.iter().zip(active) {
+            let helper = *helper as u32;
             masks.push(self.hold(Object::Mask { round, helper }, Digest(*root))?);
         }
         let aggregate = self.hold(Object::Aggregate { round }, Digest(held.aggregate_root))?;
@@ -227,7 +228,7 @@ impl Vault {
         let Some(roots) = vector_roots(&round.cohort.members(), log) else {
             return Ok(None);
         };
-        let Some(held) = self.files(number, round, &roots)? else {
+        let Some(held) = self.files(number, round, &roots, &log.active)? else {
             return Ok(Some(Verdict::Unprovable));
         };
         let inputs: Vec<&Path> = held.inputs.iter().map(PathBuf::as_path).collect();
@@ -242,6 +243,7 @@ impl Vault {
         number: u32,
         round: &RoundView,
         roots: &[Digest],
+        active: &[usize],
     ) -> Vec<(ProofPart, Object, Digest)> {
         let cohort = round.cohort.members().into_iter().zip(roots);
         let inputs = cohort.enumerate().map(|(position, (site, root))| {
@@ -251,12 +253,14 @@ impl Vault {
             };
             (ProofPart::Input(position as u16), object, *root)
         });
-        let masks = round.mask_roots.iter().enumerate().map(|(helper, root)| {
+        // A proof numbers masks by position, and the spool by the plan's index.
+        let held = round.mask_roots.iter().zip(active).enumerate();
+        let masks = held.map(|(position, (root, helper))| {
             let object = Object::Mask {
                 round: number,
-                helper: helper as u32,
+                helper: *helper as u32,
             };
-            (ProofPart::Mask(helper as u8), object, Digest(*root))
+            (ProofPart::Mask(position as u8), object, Digest(*root))
         });
         let aggregate = (
             ProofPart::Aggregate,
@@ -320,7 +324,7 @@ impl Vault {
         if anchor::inputs_root(&roots) != round.inputs_root {
             return Ok(None);
         }
-        let vectors = self.vectors(number, round, &roots);
+        let vectors = self.vectors(number, round, &roots, &log.active);
         let mut whole = HashMap::new();
         for (_, object, root) in &vectors {
             if !self.is_whole(*object, *root) {
@@ -394,7 +398,7 @@ impl Vault {
             return Vec::new();
         };
         let mut gone: BTreeMap<u64, Vec<(ProofPart, Object)>> = BTreeMap::new();
-        for (part, object, root) in self.vectors(number, round, &roots) {
+        for (part, object, root) in self.vectors(number, round, &roots, &log.active) {
             if self.is_whole(object, root) {
                 continue;
             }
@@ -442,7 +446,7 @@ impl Vault {
     ) -> Result<(), ChainError> {
         let gone = || NodeError::Check(format!("round {number}: no such vector"));
         let roots = vector_roots(&round.cohort.members(), log).ok_or_else(gone)?;
-        let vectors = self.vectors(number, round, &roots);
+        let vectors = self.vectors(number, round, &roots, &log.active);
         let (_, object, root) = vectors
             .iter()
             .find(|(held, ..)| *held == part)
@@ -496,7 +500,7 @@ impl Vault {
         if anchor::inputs_root(&roots) != round.inputs_root {
             return Err(gone().into());
         }
-        let vectors = self.vectors(number, round, &roots);
+        let vectors = self.vectors(number, round, &roots, &log.active);
         let (_, object, root) = vectors
             .iter()
             .find(|(held, ..)| *held == part)
@@ -576,6 +580,11 @@ mod tests {
     }
 
     fn fixture(wrong_at: Option<u64>) -> Fixture {
+        masked_by(wrong_at, 0)
+    }
+
+    /// `helper` is the plan's index of the round's one active helper.
+    fn masked_by(wrong_at: Option<u64>, helper: usize) -> Fixture {
         let dir = tempfile::tempdir().unwrap();
         let source = ObserverConfig {
             identity: Arc::new(Identity::generate(SigAlg::Ed25519).unwrap()),
@@ -588,7 +597,7 @@ mod tests {
         std::fs::create_dir_all(&spool).unwrap();
         let a = write(&spool.join("site-0.bin"), |i| i + 5);
         let b = write(&spool.join("site-1.bin"), |i| i * 3);
-        let mask = write(&spool.join("mask-0.bin"), |i| i);
+        let mask = write(&spool.join(format!("mask-{helper}.bin")), |i| i);
         let aggregate = write(&spool.join("aggregate.bin"), move |i| {
             let sum = i + 5 + i * 3 - i;
             sum + u64::from(wrong_at == Some(i))
@@ -603,6 +612,7 @@ mod tests {
         };
         let log = RoundLog {
             vectors: [(0, a.root), (1, b.root)].into_iter().collect(),
+            active: vec![helper],
             ..RoundLog::default()
         };
         Fixture {
@@ -664,6 +674,14 @@ mod tests {
         held.proof(ProofPart::Input(1), 1);
         held.proof(ProofPart::Mask(0), 1);
         held.proof(ProofPart::Aggregate, 1);
+    }
+
+    #[test]
+    fn a_mask_is_found_by_its_helper_after_a_removal_and_proven_by_its_position() {
+        let mut held = masked_by(Some(130), 2);
+        let verdict = held.vault.examine(ROUND, &held.round, &held.log).unwrap();
+        assert!(matches!(verdict, Some(Verdict::Wrong(1))), "{verdict:?}");
+        held.proof(ProofPart::Mask(0), 1);
     }
 
     #[test]
