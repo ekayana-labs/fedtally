@@ -208,7 +208,7 @@ The bound holds even though the aggregator picks the second cohort after seeing 
 - A site in the retry can send a different update after reading the first sum, because nothing ties its two attempts together. Norm proofs limit this to `norm`.
 - A helper can push a chosen site out by signing a wrong share for it. The site refuses to attest, and the run goes on without it, where without retries the same lie stops the run.
 
-A run with a retry is never `complete` in its report, and `fedtally verify` exits 2 for it. The given up round is listed as `voided`, with its silent sites under `unattested`. A plan that retries can't be anchored to the ledger yet.
+A run with a retry is never `complete` in its report, and `fedtally verify` exits 2 for it. The given up round is listed as `voided`, with its silent sites under `unattested`. On a ledger, the aggregator's anchor follows with `void_round`. The budget it charged stays spent, nobody is paid for that round, and each step still pays its reward once.
 
 ## Losing a helper
 
@@ -235,7 +235,7 @@ The log has no clock, so whether a helper was really silent is the aggregator's 
 - Every site in the cohort has to come back for the redo. If one doesn't, the run stops, since a smaller cohort would give an update away.
 - A dishonest aggregator may hold the sum before a removal, in Masking as well as Attesting, because helpers upload their masks before their records are logged. The log can't show this. It and one site can then pick that site's input in the redo knowing the sum, and nothing ties a site's two attempts together. Without this, that takes a helper too. A site alone can't: the aggregator doesn't serve a sum until every helper has attested, or a given up round's sum at all.
 - A redo is paid for at Close like any round, though it releases nothing new. The budget must cover every possible redo, so a plan sized to a target carries more noise from the start. Nothing here measures what that costs in accuracy yet.
-- A plan that can lose a helper can't also retry, score groups, prove norms or be anchored to the ledger yet. Without norm proofs, the input in the bullet above can be anything.
+- A plan that can lose a helper can't also retry, score groups or prove norms yet. Without norm proofs, the input in the bullet above can be anything. On a ledger it works as a retry does, and the redo posts one mask root fewer.
 - A network blip long enough costs a helper for good, and it can't rejoin.
 - A helper whose `did:bio` identifier stops standing before sites contribute still stops the run. Sites ignore a helper's standing only once it has been removed.
 - A run with a removal is never `complete`, and `fedtally verify` exits 2 for it. The round given up lists its whole cohort as `unattested` and `unacked`, since nobody asked them to sign, and `removed_helpers` says who was removed.

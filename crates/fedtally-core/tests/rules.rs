@@ -1251,13 +1251,6 @@ fn a_site_limiting_its_rounds_counts_the_retries() {
 }
 
 #[test]
-fn a_plan_that_retries_cannot_be_anchored_yet() {
-    let run = Run::with(retrying(4 << 40, 1));
-    let refused = run.plan.ledger_terms(run.plan_id).unwrap_err();
-    assert!(refused.contains("retries"), "{refused}");
-}
-
-#[test]
 fn a_plan_that_can_lose_helpers_is_refused_unless_it_makes_sense() {
     let check = |change: &dyn Fn(&mut Plan), want: PlanError| {
         let mut plan = Run::with_spare_helper(|_| {}).plan;
@@ -1316,13 +1309,6 @@ fn a_site_limiting_its_rounds_counts_the_redos_of_a_lost_helper() {
     // Two rounds, and one helper that can be lost.
     assert!(!with(2));
     assert!(with(3));
-}
-
-#[test]
-fn a_plan_that_can_lose_helpers_cannot_be_anchored_yet() {
-    let run = Run::with_spare_helper(|_| {});
-    let refused = run.plan.ledger_terms(run.plan_id).unwrap_err();
-    assert!(refused.contains("lose a helper"), "{refused}");
 }
 
 #[test]

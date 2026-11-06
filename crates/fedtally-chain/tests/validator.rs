@@ -30,10 +30,11 @@ use fedtally_chain::{Anchor, ChainError, Config, Role, Stakes, Watching};
 use fedtally_core::anchor;
 use fedtally_core::keys::{Identity, SigAlg};
 use fedtally_core::model::{Dtype, Layout, TensorSpec, TensorView, write_model};
-use fedtally_core::replay::Replay;
+use fedtally_core::privacy::Request;
+use fedtally_core::replay::{Phase, Replay};
 use fedtally_core::vector::{self, LEAF_COORDS};
 use fedtally_node::NodeError;
-use fedtally_node::aggregator::run_aggregator;
+use fedtally_node::aggregator::{Hook, Stage, run_aggregator};
 use fedtally_node::helper::run_helper;
 use fedtally_node::local::{LocalFederation, Options};
 use fedtally_node::site::{Submit, TrainContext, Trainer, run_site};
@@ -275,6 +276,25 @@ fn start_with(
     gated: bool,
     edit: impl FnOnce(&mut Options),
 ) -> Running {
+    start_losing(runtime, validator, price, window, gated, edit, None)
+}
+
+/// A party that stops at a stage, as if its machine had gone away.
+#[derive(Clone, Copy)]
+enum Lost {
+    Site(usize),
+    Helper(usize),
+}
+
+fn start_losing(
+    runtime: &tokio::runtime::Runtime,
+    validator: &Validator,
+    price: Option<u64>,
+    window: u64,
+    gated: bool,
+    edit: impl FnOnce(&mut Options),
+    loss: Option<(Stage, Lost)>,
+) -> Running {
     let dir = tempfile::tempdir().unwrap();
     let init = dir.path().join("init.safetensors");
     write_model(&init, &layout(), &[TensorView::F32(&[0.5; 300])]).unwrap();
@@ -300,19 +320,41 @@ fn start_with(
     let mut config = fed.aggregator_config("127.0.0.1:0");
     config.keep_spool = true;
     config.watchers = vec![watcher.did_string()];
+    let victim: Arc<Mutex<Option<tokio::task::AbortHandle>>> = Arc::default();
+    if let Some((when, _)) = loss {
+        let victim = victim.clone();
+        let hook: Hook = Arc::new(move |stage, _| {
+            if stage == when
+                && let Some(handle) = victim.lock().unwrap().take()
+            {
+                handle.abort();
+                // An abort lands when the task next yields.
+                std::thread::sleep(Duration::from_millis(300));
+            }
+        });
+        config.hook = Some(hook);
+    }
     config.on_ready = Some(Box::new(move |addr| {
         let _ = tx.send(addr);
     }));
     let aggregator = Some(runtime.spawn(run_aggregator(config)));
     let addr = rx.recv_timeout(PATIENCE).unwrap();
-    runtime.spawn(run_helper(fed.helper_config(0, &addr)));
-    let sites = (0..SITES)
+    for h in 0..fed.helpers.len() {
+        let helper = runtime.spawn(run_helper(fed.helper_config(h, &addr)));
+        if matches!(loss, Some((_, Lost::Helper(lost))) if lost == h) {
+            *victim.lock().unwrap() = Some(helper.abort_handle());
+        }
+    }
+    let sites: Vec<_> = (0..SITES)
         .map(|i| {
             let trainer = Box::new(Towards(i as f32, gate.clone()));
             let site = run_site(fed.site_config(i, &addr), trainer);
             runtime.spawn(async move { site.await.map(|_| ()) })
         })
         .collect();
+    if let Some((_, Lost::Site(lost))) = loss {
+        *victim.lock().unwrap() = Some(sites[lost].abort_handle());
+    }
     Running {
         _dir: dir,
         fed,
@@ -1048,6 +1090,99 @@ fn an_aggregator_that_cannot_answer_a_demand_loses_its_stake() {
 #[ignore = "needs solana-test-validator and the built program"]
 fn a_watcher_cut_off_from_the_aggregator_gets_what_it_needs_through_the_ledger() {
     with_validator(answered);
+}
+
+/// The log gives a round up after a site goes silent, and the ledger follows: the
+/// round is voided, the next one settles, and only those in it are paid.
+fn retried(runtime: &tokio::runtime::Runtime, validator: &Validator) {
+    let lost = (Stage::BeforeOutcome { round: 1 }, Lost::Site(2));
+    let mut running = start_losing(
+        runtime,
+        validator,
+        None,
+        40,
+        false,
+        |options| {
+            options.rounds = 1;
+            options.min_cohort = 2;
+            options.retries = 1;
+            options.timeouts.attest_secs = 6;
+            options.privacy = Some(Request {
+                epsilon: 8.0,
+                delta: 1e-5,
+                clip: 1.0,
+                colluding: 0,
+            });
+        },
+        Some(lost),
+    );
+    let (mut anchors, _) = running.anchors(runtime);
+    anchors.start("aggregator", running.aggregator());
+    anchors.finish();
+    let replay = runtime.block_on(running.aggregator.take().unwrap());
+    let replay = replay.unwrap().unwrap();
+    assert_eq!(replay.retried, 1);
+    assert_eq!(replay.phase, Phase::Done);
+
+    let task = running.task().unwrap();
+    assert_eq!(task.state, TASK_FINISHED);
+    assert_eq!((task.round, task.settled, task.voided), (2, 2, 1));
+    assert_eq!(
+        task.model,
+        replay.rounds[1].outcome.as_ref().unwrap().model.0
+    );
+    assert_eq!(task.spent, replay.spent);
+    assert!(running.was_sent("void_round").is_some());
+    assert!(running.round(1).is_none(), "its rent was not returned");
+}
+
+/// A helper is lost before its mask. The ledger voids the round and removes it, and
+/// the redo posts one mask root fewer.
+fn lost_helper(runtime: &tokio::runtime::Runtime, validator: &Validator) {
+    let lost = (Stage::BeforeSum { round: 1 }, Lost::Helper(0));
+    let mut running = start_losing(
+        runtime,
+        validator,
+        None,
+        40,
+        false,
+        |options| {
+            options.helpers = 3;
+            options.rounds = 1;
+            options.min_cohort = 2;
+            options.min_helpers = 2;
+            options.timeouts.collect_secs = 4;
+        },
+        Some(lost),
+    );
+    let (mut anchors, _) = running.anchors(runtime);
+    anchors.start("aggregator", running.aggregator());
+    anchors.finish();
+    let replay = runtime.block_on(running.aggregator.take().unwrap());
+    let replay = replay.unwrap().unwrap();
+    assert_eq!(replay.phase, Phase::Done);
+    assert!(replay.removed.contains(&0));
+
+    let task = running.task().unwrap();
+    assert_eq!(task.state, TASK_FINISHED);
+    assert_eq!((task.voided, task.removed_helpers), (1, 1));
+    assert_eq!(
+        task.model,
+        replay.rounds[1].outcome.as_ref().unwrap().model.0
+    );
+    assert!(running.was_sent("void_round").is_some());
+}
+
+#[test]
+#[ignore = "needs solana-test-validator and the built program"]
+fn a_round_the_log_gave_up_for_a_silent_site_is_voided_on_the_ledger() {
+    with_validator(retried);
+}
+
+#[test]
+#[ignore = "needs solana-test-validator and the built program"]
+fn a_round_the_log_gave_up_for_a_lost_helper_is_voided_on_the_ledger() {
+    with_validator(lost_helper);
 }
 
 #[test]
