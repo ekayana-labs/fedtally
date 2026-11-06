@@ -18,6 +18,7 @@ use thiserror::Error;
 
 use crate::field::Fp;
 use crate::keys::random_bytes;
+use crate::plan::ServerAdam;
 use crate::privacy::{Privacy, Sampler};
 use crate::vector::{self, Manifest, Shape};
 
@@ -570,6 +571,107 @@ pub fn apply_aggregate(
     Ok(())
 }
 
+/// Adam's first and second moment for one coordinate, as two little endian f64s.
+pub const MOMENTS_LEN: usize = 16;
+
+/// What FedAdam needs beyond the aggregate. `moments` is absent in the first round.
+pub struct AdamStep<'a> {
+    pub params: ServerAdam,
+    pub moments: Option<&'a Path>,
+    pub moments_out: &'a Path,
+}
+
+/// As `apply_aggregate`, with the average update going through Adam on its way to
+/// the model. Rust doesn't fuse floating point operations, so everyone who works
+/// this out on the same inputs gets the same bits.
+#[allow(clippy::too_many_arguments)]
+pub fn apply_aggregate_adam(
+    layout: &Layout,
+    encoding: Encoding,
+    chunk_coords: u64,
+    base: &Path,
+    aggregate: &Path,
+    total_weight: u64,
+    adam: &AdamStep<'_>,
+    out: &Path,
+) -> Result<(), ModelError> {
+    let base = ModelFile::open(base, layout)?;
+    let aggregate = File::open(aggregate)?;
+    let shape = layout.shape(chunk_coords);
+    let target = OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(true)
+        .open(out)?;
+    target.write_all_at(&layout.header(), 0)?;
+    let before = adam.moments.map(File::open).transpose()?;
+    let after = OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(true)
+        .open(adam.moments_out)?;
+    let ServerAdam {
+        rate,
+        beta1,
+        beta2,
+        tau,
+    } = adam.params;
+    let advance = |delta: f64, moment: &mut [u8]| {
+        let (first, second) = moment.split_at_mut(8);
+        let word = |b: &[u8]| f64::from_le_bytes(b.try_into().unwrap_or([0; 8]));
+        let m = beta1 * word(first) + (1.0 - beta1) * delta;
+        let v = beta2 * word(second) + (1.0 - beta2) * (delta * delta);
+        first.copy_from_slice(&m.to_le_bytes());
+        second.copy_from_slice(&v.to_le_bytes());
+        rate * m / (v.sqrt() + tau)
+    };
+    let result: io::Result<()> = (0..shape.chunks()).into_par_iter().try_for_each(|chunk| {
+        SCRATCH.with_borrow_mut(|Scratch { bytes, values }| {
+            let (start, end) = shape.range(chunk);
+            vector::read_chunk(&aggregate, shape, chunk, values)?;
+            let mut rest = values.as_slice();
+            let mut coord = start;
+            let mut moments = Vec::new();
+            for run in layout.runs(start, end) {
+                let (steps, after_run) = rest.split_at(run.len as usize);
+                rest = after_run;
+                moments.clear();
+                moments.resize(steps.len() * MOMENTS_LEN, 0u8);
+                let offset = coord * MOMENTS_LEN as u64;
+                if let Some(file) = &before {
+                    file.read_exact_at(&mut moments, offset)?;
+                }
+                let deltas = steps
+                    .iter()
+                    .map(|v| encoding.decode(Fp::new(*v), total_weight));
+                let slots = moments.as_chunks_mut::<MOMENTS_LEN>().0.iter_mut();
+                match base.read_bytes(&run, bytes)? {
+                    Dtype::F32 => {
+                        let words = bytes.as_chunks_mut::<4>().0.iter_mut();
+                        for ((b, delta), slot) in words.zip(deltas).zip(slots) {
+                            let next = f32::from_le_bytes(*b) as f64 + advance(delta, slot);
+                            *b = (next as f32).to_le_bytes();
+                        }
+                    }
+                    Dtype::F64 => {
+                        let words = bytes.as_chunks_mut::<8>().0.iter_mut();
+                        for ((b, delta), slot) in words.zip(deltas).zip(slots) {
+                            *b = (f64::from_le_bytes(*b) + advance(delta, slot)).to_le_bytes();
+                        }
+                    }
+                }
+                target.write_all_at(bytes, base.run_start(&run))?;
+                after.write_all_at(&moments, offset)?;
+                coord += run.len;
+            }
+            Ok(())
+        })
+    });
+    result?;
+    target.sync_data()?;
+    Ok(())
+}
+
 /// Checks every plain coordinate is in range. Only meaningful without masks.
 pub fn in_range(path: &Path, shape: Shape, plain: u64, bound: u64) -> io::Result<bool> {
     let file = File::open(path)?;
@@ -813,6 +915,72 @@ mod tests {
         assert_eq!(clipped, 2);
         assert_eq!(encoding.encode(0.25, 2, &mut clipped).centered(), 8);
         assert!((encoding.decode(Fp::from_i64(-384), 3) - (-8.0)).abs() < 1e-12);
+    }
+
+    #[test]
+    fn adam_matches_the_formula_over_two_rounds_and_resumes_from_its_moments() {
+        let dir = tempfile::tempdir().unwrap();
+        let layout = Layout {
+            tensors: vec![TensorSpec {
+                name: "w".into(),
+                dtype: Dtype::F64,
+                shape: vec![4],
+            }],
+        };
+        let encoding = Encoding {
+            frac_bits: 16,
+            clip: 8.0,
+        };
+        let shape = layout.shape(4);
+        let aggregate_of = |name: &str, delta: f64| {
+            let path = dir.path().join(name);
+            let value = Fp::from_i64((delta * encoding.scale()).round() as i64).value();
+            vector::build(&path, shape, |_, buf, _| {
+                buf.fill(value);
+                Ok(())
+            })
+            .unwrap();
+            path
+        };
+        let start = dir.path().join("start.safetensors");
+        write_model(&start, &layout, &[TensorView::F64(&[1.0; 4])]).unwrap();
+        let params = ServerAdam {
+            rate: 0.5,
+            beta1: 0.9,
+            beta2: 0.99,
+            tau: 0.001,
+        };
+
+        let (one, two) = (
+            dir.path().join("one.safetensors"),
+            dir.path().join("two.safetensors"),
+        );
+        let (m1, m2) = (dir.path().join("m1"), dir.path().join("m2"));
+        let first = AdamStep {
+            params,
+            moments: None,
+            moments_out: &m1,
+        };
+        let a = aggregate_of("a1", 0.5);
+        apply_aggregate_adam(&layout, encoding, 4, &start, &a, 1, &first, &one).unwrap();
+        let second = AdamStep {
+            params,
+            moments: Some(&m1),
+            moments_out: &m2,
+        };
+        let a = aggregate_of("a2", -0.25);
+        apply_aggregate_adam(&layout, encoding, 4, &one, &a, 1, &second, &two).unwrap();
+
+        let (mut m, mut v, mut x) = (0.0f64, 0.0f64, 1.0f64);
+        for delta in [0.5, -0.25] {
+            m = 0.9 * m + 0.1 * delta;
+            v = 0.99 * v + 0.01 * delta * delta;
+            x += 0.5 * m / (v.sqrt() + 0.001);
+        }
+        let bytes = std::fs::read(&two).unwrap();
+        let got = f64::from_le_bytes(bytes[bytes.len() - 8..].try_into().unwrap());
+        assert!((got - x).abs() < 1e-12, "{got} {x}");
+        assert_eq!(std::fs::read(&m2).unwrap().len(), 4 * MOMENTS_LEN);
     }
 
     #[test]
