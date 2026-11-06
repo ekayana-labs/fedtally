@@ -522,6 +522,7 @@ impl LocalFederation {
             scoring: options.scoring.map(|group| Scoring { group }),
             retries: options.retries,
             min_helpers: options.min_helpers,
+            server_adam: None,
         };
         edit(&mut plan);
         plan.validate().map_err(|e| check(&e))?;

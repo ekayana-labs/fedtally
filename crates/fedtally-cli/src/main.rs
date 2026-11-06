@@ -540,6 +540,7 @@ async fn run(command: Command) -> Result<ExitCode, Failure> {
                 scoring: spec.scoring,
                 retries: spec.retries,
                 min_helpers: spec.min_helpers,
+                server_adam: None,
             };
             plan.validate()?;
             let record = Record::sign(&sponsor, &Body::Plan(Box::new(plan)))?;

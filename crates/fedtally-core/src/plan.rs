@@ -98,6 +98,32 @@ pub struct Plan {
     /// to collude. Absent, every helper is needed and one honest helper is enough.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub min_helpers: u32,
+    /// Apply each round's average update through Adam on the server, rather than
+    /// adding it to the model. Everyone works this out for themselves.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub server_adam: Option<ServerAdam>,
+}
+
+/// FedAdam's settings (Reddi et al., Adaptive Federated Optimization).
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ServerAdam {
+    pub rate: f64,
+    pub beta1: f64,
+    pub beta2: f64,
+    pub tau: f64,
+}
+
+impl ServerAdam {
+    fn is_valid(&self) -> bool {
+        let beta = |b: f64| (0.0..1.0).contains(&b);
+        self.rate.is_finite()
+            && self.rate > 0.0
+            && beta(self.beta1)
+            && beta(self.beta2)
+            && self.tau.is_finite()
+            && self.tau > 0.0
+    }
 }
 
 fn is_zero(n: &u32) -> bool {
@@ -110,6 +136,8 @@ pub enum PlanError {
     Version(u32),
     #[error("plan needs at least one round")]
     NoRounds,
+    #[error("server_adam needs a positive rate and tau, and betas in [0, 1)")]
+    ServerAdam,
     #[error("a plan's rounds and redos must fit in a 32 bit round number")]
     TooManyRounds,
     #[error("a plan with no noise cannot retry: two sums would give a site's update away")]
@@ -270,6 +298,9 @@ impl Plan {
             && (size < self.min_cohort || size as usize > self.sites.len())
         {
             return Err(PlanError::Sample);
+        }
+        if self.server_adam.is_some_and(|adam| !adam.is_valid()) {
+            return Err(PlanError::ServerAdam);
         }
         if self.retries > 0 {
             self.can_retry()?;
@@ -478,6 +509,7 @@ mod tests {
             scoring: None,
             retries: 0,
             min_helpers: 0,
+            server_adam: None,
         }
     }
 

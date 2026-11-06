@@ -9,7 +9,7 @@ use fedtally_core::field::{Fp, Fp2};
 use fedtally_core::keys::{Identity, SigAlg};
 use fedtally_core::log::{GENESIS, chain};
 use fedtally_core::model::{Dtype, Encoding, Layout, TensorSpec};
-use fedtally_core::plan::{AggregatorSpec, HelperSpec, Plan, PlanError, Timeouts};
+use fedtally_core::plan::{AggregatorSpec, HelperSpec, Plan, PlanError, ServerAdam, Timeouts};
 use fedtally_core::policy::{About, Atom, Policy, Rule};
 use fedtally_core::pq_ucan::Ipld;
 use fedtally_core::pq_ucan::command::Command;
@@ -159,6 +159,7 @@ impl Run {
             scoring: None,
             retries: 0,
             min_helpers: 0,
+            server_adam: None,
         };
         edit(&mut plan);
         let record = Record::sign(&sponsor, &Body::Plan(Box::new(plan.clone()))).unwrap();
@@ -1383,6 +1384,32 @@ fn a_removed_helper_no_longer_counts_as_an_operator() {
     assert_eq!(run.replay.phase, Phase::Aborted);
     let reason = run.replay.abort.clone().unwrap();
     assert!(reason.contains(&run.spare[0].did_string()), "{reason}");
+}
+
+fn adam(plan: &mut Plan) {
+    plan.server_adam = Some(ServerAdam {
+        rate: 0.1,
+        beta1: 0.9,
+        beta2: 0.99,
+        tau: 0.001,
+    });
+}
+
+#[test]
+fn a_plan_with_server_adam_needs_sensible_settings() {
+    let check = |change: fn(&mut ServerAdam)| {
+        let mut plan = Run::with(adam).plan;
+        change(plan.server_adam.as_mut().unwrap());
+        assert_eq!(plan.validate(), Err(PlanError::ServerAdam));
+    };
+    check(|a| a.rate = 0.0);
+    check(|a| a.rate = f64::NAN);
+    check(|a| a.beta1 = 1.0);
+    check(|a| a.beta2 = -0.1);
+    check(|a| a.tau = 0.0);
+    assert_eq!(Run::with(adam).plan.validate(), Ok(()));
+    let plain = serde_json::to_string(&Run::new().plan).unwrap();
+    assert!(!plain.contains("server_adam"));
 }
 
 #[test]
