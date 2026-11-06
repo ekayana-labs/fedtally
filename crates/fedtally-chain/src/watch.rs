@@ -10,9 +10,9 @@ use std::time::Duration;
 use fedtally_core::anchor;
 use fedtally_core::vector::{self, Digest, LEAF_COORDS, Manifest, Shape};
 use fedtally_ledger::client::{self, ProofPart};
-use fedtally_node::NodeError;
 use fedtally_node::observer::{self, ObserverConfig, Salvaged};
 use fedtally_node::wire::Object;
+use fedtally_node::{NodeError, sync_parent};
 
 use crate::error::ChainError;
 use crate::ledger::RoundView;
@@ -157,7 +157,7 @@ impl Vault {
         runtime
             .block_on(async { tokio::time::timeout(FETCH_LIMIT, fetch).await })
             .map_err(|_| NodeError::Disconnected(format!("{object:?} took too long")))??;
-        std::fs::rename(&partial, &path)?;
+        keep(&partial, &path)?;
         self.manifests.remove(&path);
         Ok(path)
     }
@@ -304,7 +304,7 @@ impl Vault {
         let path = self.path(object);
         let sparse = path.with_extension("sparse");
         if vector::manifest_of(&sparse, self.shape)?.root == root {
-            std::fs::rename(&sparse, &path)?;
+            keep(&sparse, &path)?;
             self.manifests.remove(&path);
         }
         Ok(())
@@ -546,6 +546,15 @@ impl Vault {
             .retain(|object, _| round_of(*object) != number);
         self.clean.remove(&number);
     }
+}
+
+/// Moves a finished vector into place. A round may depend on it long after the
+/// aggregator stopped offering it, so it has to survive a power cut.
+fn keep(from: &Path, to: &Path) -> std::io::Result<()> {
+    std::fs::File::open(from)?.sync_data()?;
+    std::fs::rename(from, to)?;
+    sync_parent(to)?;
+    to.parent().map_or(Ok(()), sync_parent)
 }
 
 #[cfg(test)]
