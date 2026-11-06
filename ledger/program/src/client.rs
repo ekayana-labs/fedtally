@@ -31,7 +31,10 @@ use crate::{
         dispute_leaf::{PART_AGGREGATE, PART_INPUT, PART_MASK},
         withdraw::{ROLE_AGGREGATOR, ROLE_PUBLISHER, ROLE_SITE},
     },
-    state::{BUFFER_SEED, DISPUTE_SEED, ROUND_SEED, SITE_SEED, STATUS_SEED, TASK_SEED},
+    state::{
+        demand_place, BUFFER_SEED, DEMAND_SEED, DISPUTE_SEED, ROUND_SEED, SITE_SEED, STATUS_SEED,
+        TASK_SEED,
+    },
 };
 
 /// The system program, `11111111111111111111111111111111`.
@@ -133,6 +136,23 @@ pub fn dispute(task: &[u8; 32], round: u32, challenger: &[u8; 32]) -> [u8; 32] {
     find(&[DISPUTE_SEED, task, &round.to_le_bytes(), challenger])
 }
 
+/// A challenger's demand for one leaf of one vector of round `round`.
+pub fn demand(
+    task: &[u8; 32],
+    challenger: &[u8; 32],
+    round: u32,
+    part: ProofPart,
+    leaf_index: u64,
+) -> [u8; 32] {
+    let (kind, position) = part.encoded();
+    find(&[
+        DEMAND_SEED,
+        task,
+        challenger,
+        &demand_place(round, kind, position, leaf_index),
+    ])
+}
+
 /// Status list `list` of an issuer, `["status", issuer, list u32 LE]`.
 pub fn status_list(issuer: &[u8; 32], list: u32) -> [u8; 32] {
     find(&[STATUS_SEED, issuer, &list.to_le_bytes()])
@@ -186,6 +206,16 @@ pub enum ProofPart {
     /// The mask of this helper.
     Mask(u8),
     Aggregate,
+}
+
+impl ProofPart {
+    fn encoded(self) -> (u8, u16) {
+        match self {
+            ProofPart::Input(position) => (PART_INPUT, position),
+            ProofPart::Mask(helper) => (PART_MASK, helper as u16),
+            ProofPart::Aggregate => (PART_AGGREGATE, 0),
+        }
+    }
 }
 
 /// Publishes a task and deposits the reward of every round.
@@ -401,11 +431,7 @@ pub fn dispute_leaf(
     number: u32,
     part: ProofPart,
 ) -> Instruction {
-    let (kind, position) = match part {
-        ProofPart::Input(position) => (PART_INPUT, position),
-        ProofPart::Mask(helper) => (PART_MASK, helper as u16),
-        ProofPart::Aggregate => (PART_AGGREGATE, 0),
-    };
+    let (kind, position) = part.encoded();
     Instruction::new(
         crate::ix::DISPUTE_LEAF,
         std::vec![
@@ -435,6 +461,85 @@ pub fn dispute_close(
             AccountMeta::writable(dispute(task, number, challenger), false),
             AccountMeta::writable(*challenger, false),
             AccountMeta::writable(*aggregator, false),
+        ],
+    )
+}
+
+/// Opens a dispute past the window, on the strength of an answered demand.
+pub fn dispute_open_after_demand(
+    challenger: &[u8; 32],
+    task: &[u8; 32],
+    number: u32,
+    part: ProofPart,
+    leaf_index: u64,
+) -> Instruction {
+    let mut ix = dispute_open(challenger, task, number, leaf_index);
+    ix.accounts.push(AccountMeta::readonly(
+        demand(task, challenger, number, part, leaf_index),
+        false,
+    ));
+    ix
+}
+
+/// Demands one leaf of one vector of a posted round.
+pub fn demand_open(
+    challenger: &[u8; 32],
+    task: &[u8; 32],
+    number: u32,
+    part: ProofPart,
+    leaf_index: u64,
+) -> Instruction {
+    let (kind, position) = part.encoded();
+    Instruction::new(
+        crate::ix::DEMAND_OPEN,
+        std::vec![
+            AccountMeta::writable(*challenger, true),
+            AccountMeta::readonly(*task, false),
+            AccountMeta::writable(round(task, number), false),
+            AccountMeta::writable(demand(task, challenger, number, part, leaf_index), false),
+            AccountMeta::readonly(SYSTEM_PROGRAM, false),
+        ],
+    )
+    .raw(&number.to_le_bytes())
+    .raw(&[kind])
+    .raw(&position.to_le_bytes())
+    .raw(&leaf_index.to_le_bytes())
+}
+
+/// Answers a demand with the proof in the responder's buffer.
+pub fn demand_answer(
+    responder: &[u8; 32],
+    task: &[u8; 32],
+    number: u32,
+    demand: [u8; 32],
+) -> Instruction {
+    Instruction::new(
+        crate::ix::DEMAND_ANSWER,
+        std::vec![
+            AccountMeta::writable(*responder, true),
+            AccountMeta::readonly(*task, false),
+            AccountMeta::readonly(round(task, number), false),
+            AccountMeta::writable(demand, false),
+            AccountMeta::readonly(buffer(responder), false),
+        ],
+    )
+}
+
+/// Closes a demand. Before its deadline only the challenger's signature will do.
+pub fn demand_close(
+    task: &[u8; 32],
+    number: u32,
+    demand: [u8; 32],
+    challenger: &[u8; 32],
+    signed: bool,
+) -> Instruction {
+    Instruction::new(
+        crate::ix::DEMAND_CLOSE,
+        std::vec![
+            AccountMeta::writable(*task, false),
+            AccountMeta::writable(round(task, number), false),
+            AccountMeta::writable(demand, false),
+            AccountMeta::writable(*challenger, signed),
         ],
     )
 }

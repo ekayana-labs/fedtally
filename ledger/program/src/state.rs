@@ -43,6 +43,7 @@ pub const ROUND_SEED: &[u8] = b"round";
 pub const DISPUTE_SEED: &[u8] = b"dispute";
 pub const STATUS_SEED: &[u8] = b"status";
 pub const BUFFER_SEED: &[u8] = b"buffer";
+pub const DEMAND_SEED: &[u8] = b"demand";
 
 pub const TASK_DISCRIMINATOR: [u8; 8] = [79, 34, 229, 55, 88, 90, 55, 84];
 pub const ENROLLMENT_DISCRIMINATOR: [u8; 8] = [249, 210, 64, 145, 197, 241, 57, 51];
@@ -50,6 +51,7 @@ pub const ROUND_DISCRIMINATOR: [u8; 8] = [87, 127, 165, 51, 73, 78, 116, 174];
 pub const DISPUTE_DISCRIMINATOR: [u8; 8] = [36, 49, 241, 67, 40, 36, 241, 74];
 pub const STATUS_LIST_DISCRIMINATOR: [u8; 8] = [128, 202, 59, 123, 106, 255, 246, 185];
 pub const BUFFER_DISCRIMINATOR: [u8; 8] = [115, 5, 212, 192, 85, 30, 46, 41];
+pub const DEMAND_DISCRIMINATOR: [u8; 8] = [146, 217, 158, 200, 51, 25, 106, 64];
 
 pub const TASK_SPACE: usize = size_of::<TaskLayout>();
 pub const ENROLLMENT_SPACE: usize = size_of::<EnrollmentLayout>();
@@ -59,6 +61,8 @@ pub const DISPUTE_SPACE: usize = size_of::<DisputeLayout>();
 pub const STATUS_LIST_HEADER: usize = size_of::<StatusListLayout>();
 /// The fixed head of a buffer, which its bytes follow.
 pub const BUFFER_HEADER: usize = size_of::<BufferLayout>();
+/// The fixed head of a demand, which the proof that answers it follows.
+pub const DEMAND_HEADER: usize = size_of::<DemandLayout>();
 
 pub const TASK_OPEN: u8 = 0;
 pub const TASK_FINISHED: u8 = 1;
@@ -300,6 +304,8 @@ account! {
         next_model / next_model_mut: [u8; 32],
         seal_head / seal_head_mut: [u8; 32],
         posted_slot / set_posted_slot: u64,
+        /// The latest deadline any demand on this round has been given.
+        demand_tail / set_demand_tail: u64,
         /// Lamports per cohort member, set when the round settles.
         share / set_share: u64,
         cohort / cohort_mut: [u8; 128],
@@ -333,6 +339,26 @@ account! {
         acc / acc_mut: [u8; 1024],
         /// The aggregate leaf, 128 reduced coordinates.
         aggregate / aggregate_mut: [u8; 1024],
+    }
+}
+
+account! {
+    /// A demand that one leaf be published, at
+    /// `["demand", task, challenger, round u32 LE + kind + position u16 LE +
+    /// leaf u64 LE]`. It holds the challenger's bond above its rent, and the
+    /// proof that answers it follows this head.
+    Demand, DemandLayout, DEMAND_DISCRIMINATOR {
+        bump / set_bump: u8,
+        answered / set_answered: bool,
+        kind / set_kind: u8,
+        position / set_position: u16,
+        round / set_round: u32,
+        proof_len / set_proof_len: u32,
+        task / task_mut: [u8; 32],
+        challenger / challenger_mut: [u8; 32],
+        leaf_index / set_leaf_index: u64,
+        /// The last slot to answer in or, once answered, to open a dispute in.
+        deadline / set_deadline: u64,
     }
 }
 
@@ -371,10 +397,10 @@ const _: () = {
     assert!(ENROLLMENT_SPACE == 261);
     assert!(offset_of!(EnrollmentLayout, task) == 13);
     assert!(offset_of!(EnrollmentLayout, status_refs) == 117);
-    assert!(ROUND_SPACE == 772);
+    assert!(ROUND_SPACE == 780);
     assert!(offset_of!(RoundLayout, task) == 20);
     assert!(offset_of!(RoundLayout, posted_slot) == 372);
-    assert!(offset_of!(RoundLayout, cohort) == 388);
+    assert!(offset_of!(RoundLayout, cohort) == 396);
     assert!(DISPUTE_SPACE == 2275);
     assert!(offset_of!(DisputeLayout, task) == 19);
     assert!(offset_of!(DisputeLayout, acc) == 227);
@@ -463,6 +489,43 @@ impl<D: Deref<Target = [u8]>> Dispute<D> {
     }
 }
 
+/// The last seed of a demand, which says what it asks for.
+pub fn demand_place(round: u32, kind: u8, position: u16, leaf_index: u64) -> [u8; 15] {
+    let mut place = [0u8; 15];
+    place[..4].copy_from_slice(&round.to_le_bytes());
+    place[4] = kind;
+    place[5..7].copy_from_slice(&position.to_le_bytes());
+    place[7..].copy_from_slice(&leaf_index.to_le_bytes());
+    place
+}
+
+impl<D: Deref<Target = [u8]>> Demand<D> {
+    /// The address the stored seeds and bump derive.
+    pub fn address(&self) -> Address {
+        let place = demand_place(
+            self.round(),
+            self.kind(),
+            self.position(),
+            self.leaf_index(),
+        );
+        derive(
+            &[DEMAND_SEED, self.task(), self.challenger(), &place],
+            self.bump(),
+        )
+    }
+
+    /// The proof that answered the demand, in the form a dispute takes it.
+    pub fn proof(&self) -> &[u8] {
+        &self.0[DEMAND_HEADER..]
+    }
+}
+
+impl<D: DerefMut<Target = [u8]>> Demand<D> {
+    pub fn proof_mut(&mut self) -> &mut [u8] {
+        &mut self.0[DEMAND_HEADER..]
+    }
+}
+
 impl<D: Deref<Target = [u8]>> StatusList<D> {
     /// The address the stored seeds and bump derive.
     pub fn address(&self) -> Address {
@@ -511,6 +574,11 @@ impl<D: DerefMut<Target = [u8]>> Buffer<D> {
 /// The bytes a status list of `bits` bits takes.
 pub const fn status_list_space(bits: u32) -> usize {
     STATUS_LIST_HEADER + bits.div_ceil(8) as usize
+}
+
+/// The bytes a demand for a proof of `length` bytes takes.
+pub const fn demand_space(length: usize) -> usize {
+    DEMAND_HEADER + length
 }
 
 /// The bytes a buffer of `capacity` bytes takes.

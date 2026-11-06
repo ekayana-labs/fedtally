@@ -60,6 +60,9 @@ pub mod ix {
     pub const DISPUTE_OPEN: [u8; 8] = [171, 66, 231, 238, 207, 254, 151, 219];
     pub const DISPUTE_LEAF: [u8; 8] = [180, 26, 101, 135, 251, 140, 111, 60];
     pub const DISPUTE_CLOSE: [u8; 8] = [238, 219, 107, 139, 243, 19, 45, 225];
+    pub const DEMAND_OPEN: [u8; 8] = [62, 50, 59, 206, 85, 252, 38, 26];
+    pub const DEMAND_ANSWER: [u8; 8] = [76, 254, 20, 65, 181, 107, 171, 157];
+    pub const DEMAND_CLOSE: [u8; 8] = [107, 127, 189, 229, 211, 29, 172, 254];
     pub const STATUS_INIT: [u8; 8] = [20, 18, 138, 138, 31, 14, 2, 29];
     pub const REVOKE: [u8; 8] = [170, 23, 31, 34, 133, 173, 93, 242];
     pub const REVOKE_CHECK: [u8; 8] = [239, 53, 173, 18, 53, 253, 110, 115];
@@ -97,6 +100,9 @@ pub fn process_instruction(
         ix::DISPUTE_OPEN => dispute_open::process(accounts, args),
         ix::DISPUTE_LEAF => dispute_leaf::process(accounts, args),
         ix::DISPUTE_CLOSE => dispute_close::process(accounts, args),
+        ix::DEMAND_OPEN => demand::open(accounts, args),
+        ix::DEMAND_ANSWER => demand::answer(accounts, args),
+        ix::DEMAND_CLOSE => demand::close(accounts, args),
         ix::STATUS_INIT => status_init::process(accounts, args),
         ix::REVOKE => revoke::process(accounts, args),
         ix::REVOKE_CHECK => revoke_check::process(accounts, args),
@@ -135,6 +141,9 @@ mod tests {
             ("dispute_open", ix::DISPUTE_OPEN),
             ("dispute_leaf", ix::DISPUTE_LEAF),
             ("dispute_close", ix::DISPUTE_CLOSE),
+            ("demand_open", ix::DEMAND_OPEN),
+            ("demand_answer", ix::DEMAND_ANSWER),
+            ("demand_close", ix::DEMAND_CLOSE),
             ("status_init", ix::STATUS_INIT),
             ("revoke", ix::REVOKE),
             ("revoke_check", ix::REVOKE_CHECK),
@@ -156,6 +165,7 @@ mod tests {
             ("Enrollment", state::ENROLLMENT_DISCRIMINATOR),
             ("Round", state::ROUND_DISCRIMINATOR),
             ("Dispute", state::DISPUTE_DISCRIMINATOR),
+            ("Demand", state::DEMAND_DISCRIMINATOR),
             ("StatusList", state::STATUS_LIST_DISCRIMINATOR),
             ("Buffer", state::BUFFER_DISCRIMINATOR),
         ];

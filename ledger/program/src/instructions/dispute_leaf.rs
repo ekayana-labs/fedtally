@@ -35,7 +35,7 @@ pub const PART_MASK: u8 = 1;
 pub const PART_AGGREGATE: u8 = 2;
 
 #[derive(Clone, Copy)]
-enum Part {
+pub enum Part {
     /// The input of the member at this cohort position.
     Input(u16),
     /// The mask of this helper.
@@ -68,12 +68,12 @@ pub fn process(accounts: &mut [AccountView], args: &[u8]) -> ProgramResult {
 
     let part = part(kind, position, task.helpers(), round.cohort_count())?;
     require(!is_seen(&dispute, part), LedgerError::ProofPartRepeated)?;
-    let leaf = proven_leaf(part, &task, &round, &dispute, buffer.contents())?;
+    let leaf = proven_leaf(part, &task, &round, dispute.leaf_index(), buffer.contents())?;
     absorb(&mut dispute, part, leaf);
     Ok(())
 }
 
-fn part(kind: u8, position: u16, helpers: u8, cohort_count: u16) -> Result<Part, ProgramError> {
+pub fn part(kind: u8, position: u16, helpers: u8, cohort_count: u16) -> Result<Part, ProgramError> {
     match kind {
         PART_INPUT if position < cohort_count => Ok(Part::Input(position)),
         PART_MASK if position < helpers as u16 => Ok(Part::Mask(position as u8)),
@@ -90,31 +90,47 @@ fn is_seen<D: Deref<Target = [u8]>>(dispute: &Dispute<D>, part: Part) -> bool {
     }
 }
 
+fn leaf_len<T: Deref<Target = [u8]>>(task: &Task<T>, leaf_index: u64) -> usize {
+    task.leaf_coords(leaf_index) as usize * COORD_LEN
+}
+
+/// The one length a proof of this leaf can have.
+pub fn proof_len<T, R>(
+    part: Part,
+    task: &Task<T>,
+    round: &Round<R>,
+    leaf_index: u64,
+) -> Result<usize, ProgramError>
+where
+    T: Deref<Target = [u8]>,
+    R: Deref<Target = [u8]>,
+{
+    let mut path_len = merkle::path_len(leaf_index, task.leaves());
+    if let Part::Input(position) = part {
+        let to_inputs_root = merkle::path_len(position as u64, round.cohort_count() as u64);
+        path_len = path_len.zip(to_inputs_root).map(|(a, b)| a + b + 1);
+    }
+    let path_len = path_len.ok_or(ProgramError::InvalidAccountData)?;
+    Ok(leaf_len(task, leaf_index) + path_len * DIGEST_LEN)
+}
+
 /// Checks `proof` against the round's roots and returns the leaf it proves.
-fn proven_leaf<'a, T, R, D>(
+pub fn proven_leaf<'a, T, R>(
     part: Part,
     task: &Task<T>,
     round: &'a Round<R>,
-    dispute: &Dispute<D>,
+    leaf_index: u64,
     proof: &'a [u8],
 ) -> Result<&'a [u8], ProgramError>
 where
     T: Deref<Target = [u8]>,
     R: Deref<Target = [u8]>,
-    D: Deref<Target = [u8]>,
 {
-    let (leaf_index, leaves) = (dispute.leaf_index(), task.leaves());
+    let leaves = task.leaves();
     let members = round.cohort_count() as u64;
-    let leaf_len = dispute.leaf_coords() as usize * COORD_LEN;
-
-    let mut path_len = merkle::path_len(leaf_index, leaves);
-    if let Part::Input(position) = part {
-        let to_inputs_root = merkle::path_len(position as u64, members);
-        path_len = path_len.zip(to_inputs_root).map(|(a, b)| a + b + 1);
-    }
-    let path_len = path_len.ok_or(ProgramError::InvalidAccountData)?;
+    let leaf_len = leaf_len(task, leaf_index);
     require(
-        proof.len() == leaf_len + path_len * DIGEST_LEN,
+        proof.len() == proof_len(part, task, round, leaf_index)?,
         LedgerError::InvalidProofLength,
     )?;
 

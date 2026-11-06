@@ -77,6 +77,9 @@ ledger_errors! {
     InvalidBufferWrite = 6047, "A write starts the buffer over or continues it, within its size";
     InvalidRole = 6048, "A withdrawal is for a site, the aggregator or the publisher";
     InvalidWindows = 6049, "A task may only be called stalled after a challenge window has had time to pass";
+    DemandAnswered = 6050, "The demand has been answered";
+    DemandExpired = 6051, "The demand's deadline has passed";
+    DemandNotOver = 6052, "The demand is still open";
 }
 
 impl LedgerError {

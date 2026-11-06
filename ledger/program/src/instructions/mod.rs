@@ -6,6 +6,7 @@ pub mod back;
 pub mod buffer;
 pub mod claim;
 pub mod commit_root;
+pub mod demand;
 pub mod dispute_close;
 pub mod dispute_leaf;
 pub mod dispute_open;
