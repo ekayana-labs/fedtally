@@ -303,7 +303,6 @@ impl Follower {
             Ok(vector::write_chunk_bytes(&target, shape, chunk, data)?)
         })
         .await?;
-        file.sync_data()?;
         Ok(())
     }
 
@@ -442,7 +441,8 @@ impl Follower {
                 }
             }
         }
-        file.sync_data()?;
+        // No sync: it's checked against its digest whenever it's used, and can
+        // be fetched again.
         drop(file);
         if Digest::file(&partial)? != digest {
             return Err(NodeError::Check(format!("{object:?} has the wrong digest")));

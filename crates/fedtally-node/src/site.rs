@@ -4,6 +4,7 @@
 //! A site never receives code from the aggregator. It runs the trainer it was
 //! started with.
 
+use std::fs::File;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -32,7 +33,7 @@ use crate::helper::seal_context;
 use crate::net::Client;
 use crate::registry::{self, Registry, Unsure};
 use crate::wire::{Blob, Msg, Object};
-use crate::{NodeError, blocking, newer_lists, write_durable};
+use crate::{NodeError, blocking, newer_lists, sync_parent, write_durable};
 
 pub struct TrainContext {
     pub round: u32,
@@ -759,6 +760,9 @@ impl Site {
                 &aggregate_path,
             )
             .await?;
+        // Models are written without a sync, and a restart comes back here
+        // without passing through collect.
+        self.ensure_model(client, state.from, state.base).await?;
         self.ensure_moments(client, state).await?;
         let plan = self.f.plan.clone();
         let base = self.f.dirs.model(state.from);
@@ -806,6 +810,12 @@ impl Site {
             return Err(NodeError::Check(
                 "the model rebuilt from the aggregate has a different digest".into(),
             ));
+        }
+        // Once the ack is out the aggregator can leave, so this model is for keeps.
+        if state.step >= self.f.plan.rounds {
+            let last = self.f.dirs.model(round);
+            File::open(&last)?.sync_data()?;
+            sync_parent(&last)?;
         }
 
         let bound = match self.f.plan.norm() {
@@ -1073,13 +1083,21 @@ impl Site {
 
     /// The final state may have arrived while this site was offline.
     async fn settle(&mut self, client: &mut Client) -> Result<(), NodeError> {
+        self.tidy_given_up();
+        let (round, digest) = (self.f.replay.round_number(), self.f.replay.model);
+        self.ensure_model(client, round, digest).await?;
+        // The aggregator is leaving, so nothing could fetch this one again.
+        let path = self.f.dirs.model(round);
+        File::open(&path)?.sync_data()?;
+        Ok(sync_parent(&path)?)
+    }
+
+    fn tidy_given_up(&self) {
         for given_up in self.f.replay.rounds.iter().filter(|r| r.voided) {
             self.f.dirs.drop_round(given_up.round);
             let _ = std::fs::remove_file(self.f.dirs.model(given_up.round));
             let _ = std::fs::remove_file(self.f.dirs.moments(given_up.round));
         }
-        let (round, digest) = (self.f.replay.round_number(), self.f.replay.model);
-        self.ensure_model(client, round, digest).await
     }
 
     fn summary(&self) -> Result<SiteSummary, NodeError> {
