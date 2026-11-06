@@ -1414,6 +1414,14 @@ fn a_plan_with_server_adam_needs_sensible_settings() {
 }
 
 #[test]
+fn a_rate_with_every_digit_a_float_can_hold_survives_signing() {
+    let mut run = Run::with(adam);
+    run.plan.server_adam.as_mut().unwrap().rate = 0.123_456_789_012_345_67;
+    let record = Record::sign(&run.sponsor, &Body::Plan(Box::new(run.plan.clone()))).unwrap();
+    assert!(Record::parse(&record.line).is_ok());
+}
+
+#[test]
 fn an_outcome_commits_to_the_moments_exactly_when_the_plan_uses_adam() {
     let reach_outcome = |run: &mut Run| {
         run.join(0..3);

@@ -24,7 +24,7 @@ rand_chacha = "0.9"
 rand_core = "0.9"
 rayon = "1"
 serde = { version = "1", features = ["derive"] }
-serde_json = { version = "1", features = ["raw_value"] }
+serde_json = { version = "1", features = ["float_roundtrip", "raw_value"] }
 sha2 = "0.11"
 thiserror = "2"
 x25519-dalek = { version = "2", features = ["static_secrets"] }
