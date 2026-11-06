@@ -201,6 +201,18 @@ pub fn first_wrong_leaf(
     sub: &[&Path],
     aggregate: &Path,
 ) -> io::Result<Option<u64>> {
+    let every: Vec<u64> = (0..shape.chunks()).collect();
+    first_wrong_leaf_in(shape, add, sub, aggregate, &every)
+}
+
+/// `first_wrong_leaf` over some chunks only, so the files need hold only those.
+pub fn first_wrong_leaf_in(
+    shape: Shape,
+    add: &[&Path],
+    sub: &[&Path],
+    aggregate: &Path,
+    chunks: &[u64],
+) -> io::Result<Option<u64>> {
     if !shape.aligned() {
         return Err(unaligned());
     }
@@ -208,9 +220,9 @@ pub fn first_wrong_leaf(
         |paths: &[&Path]| -> io::Result<Vec<File>> { paths.iter().map(File::open).collect() };
     let (add, sub, aggregate) = (open(add)?, open(sub)?, File::open(aggregate)?);
     let per_chunk = shape.chunk_coords / LEAF_COORDS;
-    let wrong: io::Result<Vec<Option<u64>>> = (0..shape.chunks())
-        .into_par_iter()
-        .map(|chunk| {
+    let wrong: io::Result<Vec<Option<u64>>> = chunks
+        .par_iter()
+        .map(|&chunk| {
             SCRATCH.with_borrow_mut(|(buf, scratch)| {
                 buf.clear();
                 buf.resize(shape.chunk_bytes(chunk) / WORD, 0);
@@ -225,6 +237,43 @@ pub fn first_wrong_leaf(
         })
         .collect();
     Ok(wrong?.into_iter().flatten().min())
+}
+
+/// Whether the aggregate is not the sum at one leaf. The files need hold only
+/// that leaf.
+pub fn wrong_at_leaf(
+    shape: Shape,
+    add: &[&Path],
+    sub: &[&Path],
+    aggregate: &Path,
+    leaf: u64,
+) -> io::Result<bool> {
+    if !shape.aligned() || leaf >= shape.leaves() {
+        return Err(unaligned());
+    }
+    let start = leaf * LEAF_COORDS;
+    let length = (shape.coords - start).min(LEAF_COORDS) as usize * WORD;
+    let read = |path: &Path| -> io::Result<Vec<Fp>> {
+        let mut bytes = [0u8; merkle::LEAF_BYTES];
+        File::open(path)?.read_exact_at(&mut bytes[..length], start * WORD as u64)?;
+        let (words, _) = bytes[..length].as_chunks::<WORD>();
+        Ok(words
+            .iter()
+            .map(|word| Fp::new(u64::from_le_bytes(*word)))
+            .collect())
+    };
+    let mut sum = vec![Fp::new(0); length / WORD];
+    for path in add {
+        for (sum, value) in sum.iter_mut().zip(read(path)?) {
+            *sum = *sum + value;
+        }
+    }
+    for path in sub {
+        for (sum, value) in sum.iter_mut().zip(read(path)?) {
+            *sum = *sum - value;
+        }
+    }
+    Ok(sum != read(aggregate)?)
 }
 
 /// Chunk digests and the root that commits to them. Each chunk digest is the
@@ -968,6 +1017,33 @@ mod tests {
         let manifest = write(&path, shape, &vec![1; 500]);
         assert!(prove_leaf(&path, shape, &manifest, 0).is_err());
         assert!(first_wrong_leaf(shape, &[&path], &[], &path).is_err());
+    }
+
+    #[test]
+    fn a_wrong_sum_is_found_from_the_parts_that_are_held() {
+        let dir = tempfile::tempdir().unwrap();
+        let shape = Shape {
+            coords: 300,
+            chunk_coords: 128,
+        };
+        let at = |name: &str| dir.path().join(name);
+        let (a, m, sum) = (at("a"), at("m"), at("sum"));
+        write(&a, shape, &(0..300).map(|i| i * 7).collect::<Vec<_>>());
+        write(&m, shape, &(0..300).map(|i| i + 9).collect::<Vec<_>>());
+        combine(&sum, shape, &[&a], &[&m]).unwrap();
+        let file = OpenOptions::new().write(true).open(&sum).unwrap();
+        file.write_all_at(&5u64.to_le_bytes(), 8 * 130).unwrap();
+
+        let check = |chunks: &[u64]| first_wrong_leaf_in(shape, &[&a], &[&m], &sum, chunks);
+        assert_eq!(check(&[0, 2]).unwrap(), None);
+        assert_eq!(check(&[2, 1]).unwrap(), Some(1));
+        for (leaf, wrong) in [(0, false), (1, true), (2, false)] {
+            assert_eq!(
+                wrong_at_leaf(shape, &[&a], &[&m], &sum, leaf).unwrap(),
+                wrong
+            );
+        }
+        assert!(wrong_at_leaf(shape, &[&a], &[&m], &sum, 3).is_err());
     }
 
     #[test]
