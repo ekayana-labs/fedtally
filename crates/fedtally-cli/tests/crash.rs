@@ -1,5 +1,6 @@
 //! Kills the aggregator process with SIGKILL during a run and restarts it.
 
+use std::fs::File;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::{Arc, Mutex};
@@ -56,7 +57,7 @@ fn spawn_aggregator(root: &Path, init: &Path, addr: &str) -> Child {
         .arg(root.join("aggregator"))
         .args(["--listen", addr])
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
+        .stderr(File::create(root.join("aggregator.err")).unwrap())
         .spawn()
         .unwrap()
 }
@@ -182,6 +183,85 @@ impl Trainer for Small {
             .map(|_| ())
             .map_err(|e| e.to_string())
     }
+}
+
+/// A federation on a small model, with its aggregator running and its sites
+/// started, but no helper yet, so a round waits after it closes.
+async fn waiting_for_a_mask(
+    root: &Path,
+    helpers: usize,
+) -> (
+    LocalFederation,
+    PathBuf,
+    String,
+    Child,
+    Vec<
+        tokio::task::JoinHandle<Result<fedtally_node::site::SiteSummary, fedtally_node::NodeError>>,
+    >,
+) {
+    let init: PathBuf = root.join("init.safetensors");
+    let small = Layout {
+        tensors: vec![TensorSpec {
+            name: "w".into(),
+            dtype: Dtype::F32,
+            shape: vec![256],
+        }],
+    };
+    write_model(&init, &small, &[TensorView::F32(&[0.0; 256])]).unwrap();
+    let mut options = Options::new(3, helpers, 1);
+    options.chunk_coords = 64;
+    let fed = LocalFederation::create(root, small, &init, &options).unwrap();
+    fed.save().unwrap();
+    let addr = free_port();
+    let aggregator = spawn_aggregator(root, &init, &addr);
+    let sites = (0..3)
+        .map(|i| tokio::spawn(run_site(fed.site_config(i, &addr), Box::new(Small))))
+        .collect();
+    (fed, init, addr, aggregator, sites)
+}
+
+async fn until_in_log(root: &Path, kind: &str) {
+    let started = Instant::now();
+    while !log_kinds(root).iter().any(|k| k == kind) {
+        assert!(
+            started.elapsed() < Duration::from_secs(60),
+            "no {kind} in the log"
+        );
+        tokio::time::sleep(Duration::from_millis(1)).await;
+    }
+}
+
+/// What a power cut can leave: a half written last line, and a file that was
+/// never synced because it can be rebuilt.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_aggregator_restarts_on_a_torn_log_and_a_lost_sum() {
+    use std::io::Write;
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    let (fed, init, addr, mut aggregator, sites) = waiting_for_a_mask(root, 1).await;
+    until_in_log(root, "close").await;
+    aggregator.kill().unwrap();
+    aggregator.wait().unwrap();
+
+    let log = root.join("aggregator/log.jsonl");
+    let mut file = std::fs::OpenOptions::new().append(true).open(&log).unwrap();
+    file.write_all(b"{\"body\":{\"kind\":\"ack\",\0\0\0\n")
+        .unwrap();
+    std::fs::remove_file(root.join("aggregator/round-1/sum.bin")).unwrap();
+
+    let mut aggregator = spawn_aggregator(root, &init, &addr);
+    let helper = tokio::spawn(run_helper(fed.helper_config(0, &addr)));
+    let mut summaries = Vec::new();
+    for site in sites {
+        summaries.push(site.await.unwrap().unwrap());
+    }
+    helper.await.unwrap().unwrap();
+    let status = tokio::task::spawn_blocking(move || aggregator.wait().unwrap())
+        .await
+        .unwrap();
+    assert!(status.success());
+    let report = verify_log(&log, Some(&summaries[0].final_model)).unwrap();
+    assert!(report.complete(), "{report:?}");
 }
 
 #[tokio::test(flavor = "multi_thread")]
