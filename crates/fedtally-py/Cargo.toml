@@ -12,6 +12,8 @@ name = "_native"
 crate-type = ["cdylib"]
 
 [dependencies]
+bs58 = "0.5"
+fedtally-chain.workspace = true
 fedtally-core.workspace = true
 fedtally-node.workspace = true
 pyo3 = { version = "0.30", features = ["abi3-py311"] }

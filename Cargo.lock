@@ -973,6 +973,8 @@ dependencies = [
 name = "fedtally-py"
 version = "0.1.0"
 dependencies = [
+ "bs58",
+ "fedtally-chain",
  "fedtally-core",
  "fedtally-node",
  "pyo3",

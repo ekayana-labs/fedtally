@@ -1,11 +1,13 @@
 //! The native half of the Python package. Trainers stay in Python; everything
 //! that touches masks, keys or the network stays here with the GIL released.
 
+mod anchoring;
+
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
-use fedtally_core::keys::Identity;
+use fedtally_core::keys::{Identity, SigAlg};
 use fedtally_core::model::{Dtype, Layout, TensorSpec, TensorView, write_model};
 use fedtally_core::report::{VerifyError, verify_log};
 use fedtally_node::NodeError;
@@ -25,7 +27,7 @@ use pyo3::types::PyDict;
 create_exception!(_native, FedtallyError, PyException);
 create_exception!(_native, VerifyFailed, FedtallyError);
 
-fn fail(e: impl std::fmt::Display) -> PyErr {
+pub(crate) fn fail(e: impl std::fmt::Display) -> PyErr {
     FedtallyError::new_err(e.to_string())
 }
 
@@ -142,7 +144,7 @@ impl Trainer for PyTrainer {
     }
 }
 
-fn runtime() -> PyResult<tokio::runtime::Runtime> {
+pub(crate) fn runtime() -> PyResult<tokio::runtime::Runtime> {
     tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
@@ -174,6 +176,8 @@ fn summary_dict<'py>(
 #[pyclass]
 struct Federation {
     inner: LocalFederation,
+    /// Watches the run when it is anchored. It isn't a party to the plan.
+    watcher: Arc<Identity>,
 }
 
 #[pymethods]
@@ -190,7 +194,8 @@ impl Federation {
             Options::from_json(options).map_err(|e| PyValueError::new_err(e.to_string()))?;
         let inner = LocalFederation::create(&root, parse_layout(layout)?, &initial_model, &options)
             .map_err(fail)?;
-        Ok(Federation { inner })
+        let watcher = Arc::new(Identity::generate(SigAlg::Ed25519).map_err(fail)?);
+        Ok(Federation { inner, watcher })
     }
 
     #[getter]
@@ -240,24 +245,38 @@ impl Federation {
     }
 
     /// `(arrays_in_layout_order, weight)`.
-    #[pyo3(signature = (trainers, keep_spool = false))]
+    /// Every party's wallet, to fund before an anchored run.
+    fn wallets<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
+        anchoring::wallets(py, &self.inner, &self.watcher)
+    }
+
+    #[pyo3(signature = (trainers, keep_spool = false, ledger = None))]
     fn run<'py>(
         &self,
         py: Python<'py>,
         trainers: Vec<Py<PyAny>>,
         keep_spool: bool,
+        ledger: Option<anchoring::Spec>,
     ) -> PyResult<Bound<'py, PyDict>> {
         if trainers.len() != self.inner.sites.len() {
             return Err(PyValueError::new_err("need one trainer per site"));
         }
         let fed = &self.inner;
         let layout = fed.plan.layout.clone();
-        let (site_results, aggregator) = py.detach(|| -> PyResult<_> {
+        if ledger.is_some() {
+            self.wallets(py)?;
+        }
+        let watcher = &self.watcher;
+        let (site_results, aggregator, anchored) = py.detach(|| -> PyResult<_> {
             let runtime = runtime()?;
             Ok(runtime.block_on(async {
                 let (tx, rx) = tokio::sync::oneshot::channel();
                 let mut config = fed.aggregator_config("127.0.0.1:0");
-                config.keep_spool = keep_spool;
+                // An anchor prunes the rounds it has settled.
+                config.keep_spool = keep_spool || ledger.is_some();
+                if ledger.as_ref().is_some_and(|spec| spec.watch) {
+                    config.watchers = vec![watcher.did_string()];
+                }
                 config.on_ready = Some(Box::new(move |addr| {
                     let _ = tx.send(addr);
                 }));
@@ -267,7 +286,16 @@ impl Federation {
                         |e| e.to_string(),
                         |r| r.err().map_or_else(String::new, |e| e.to_string()),
                     );
-                    return (Vec::new(), Some(error));
+                    return (Vec::new(), Some(error), None);
+                };
+                let anchors = ledger.as_ref().map(|spec| {
+                    let handle = tokio::runtime::Handle::current();
+                    anchoring::Anchors::start(spec, fed, watcher, &addr, handle)
+                });
+                let (anchors, refused) = match anchors {
+                    Some(Ok(anchors)) => (Some(anchors), None),
+                    Some(Err(e)) => (None, Some(e)),
+                    None => (None, None),
                 };
                 for h in 0..fed.helpers.len() {
                     tokio::spawn(run_helper(fed.helper_config(h, &addr)));
@@ -297,7 +325,15 @@ impl Federation {
                     Ok(Err(e)) => Some(e.to_string()),
                     Err(_) => Some("the aggregator did not stop".to_owned()),
                 };
-                (results, error)
+                let failed = error.is_some() || results.iter().any(Result::is_err);
+                let report = match anchors {
+                    Some(anchors) => tokio::task::spawn_blocking(move || anchors.finish(failed))
+                        .await
+                        .ok(),
+                    None => None,
+                };
+                let error = error.or(refused.map(|e| e.to_string()));
+                (results, error, report)
             }))
         })?;
         let out = PyDict::new(py);
@@ -307,6 +343,9 @@ impl Federation {
             .collect::<PyResult<Vec<_>>>()?;
         out.set_item("sites", sites)?;
         out.set_item("aggregator_error", aggregator)?;
+        if let Some(report) = anchored {
+            out.set_item("ledger", report.to_dict(py)?)?;
+        }
         Ok(out)
     }
 }
@@ -401,6 +440,7 @@ fn write_model_py(
 fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<Federation>()?;
     m.add_function(wrap_pyfunction!(run_site_process, m)?)?;
+    m.add_function(wrap_pyfunction!(anchoring::run_anchor, m)?)?;
     m.add_function(wrap_pyfunction!(verify, m)?)?;
     m.add_function(wrap_pyfunction!(write_model_py, m)?)?;
     m.add("FedtallyError", m.py().get_type::<FedtallyError>())?;
