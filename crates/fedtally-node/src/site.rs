@@ -356,7 +356,7 @@ impl Site {
     }
 
     /// Drops what no round will read again: the model before the one this
-    /// round starts from, and whatever attempts since then left behind.
+    /// round starts from, and whatever given up rounds left, seeds included.
     fn tidy(&self, state: &RoundState) {
         let rounds = &self.f.replay.rounds;
         let before = state
@@ -367,9 +367,9 @@ impl Site {
         if before > 0 {
             let _ = std::fs::remove_file(self.f.dirs.model(before));
         }
-        for given_up in state.from + 1..state.round {
-            self.f.dirs.drop_round(given_up);
-            let _ = std::fs::remove_file(self.f.dirs.model(given_up));
+        for given_up in rounds.iter().filter(|r| r.voided) {
+            self.f.dirs.drop_round(given_up.round);
+            let _ = std::fs::remove_file(self.f.dirs.model(given_up.round));
         }
     }
 

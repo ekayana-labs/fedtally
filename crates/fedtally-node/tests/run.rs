@@ -1,7 +1,8 @@
 //! Whole runs over real TLS on loopback.
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use fedtally_core::keys::{Identity, SigAlg};
@@ -11,7 +12,7 @@ use fedtally_core::pq_ucan::Cid;
 use fedtally_core::pq_ucan::did::Did;
 use fedtally_core::pq_ucan::validate::RevocationStore;
 use fedtally_core::privacy::Request;
-use fedtally_core::replay::Replay;
+use fedtally_core::replay::{Phase, Replay};
 use fedtally_core::report::verify_log;
 use fedtally_core::vector::{self, Digest};
 use fedtally_node::NodeError;
@@ -22,7 +23,7 @@ use fedtally_node::observer::{ObserverConfig, fetch_vector};
 use fedtally_node::site::{SiteSummary, Submit, TrainContext, Trainer, run_site};
 use fedtally_node::wire::Object;
 use tokio::sync::oneshot;
-use tokio::task::JoinHandle;
+use tokio::task::{AbortHandle, JoinHandle};
 
 fn layout() -> Layout {
     Layout {
@@ -1428,6 +1429,257 @@ async fn the_aggregator_waits_for_a_named_watcher_to_fetch_the_last_round() {
         .expect("it stayed after the watcher had what it came for")
         .unwrap()
         .unwrap();
+}
+
+fn retrying_options(sites: usize, rounds: u32, retries: u32) -> Options {
+    let mut options = private_options(sites, rounds);
+    options.min_cohort = 2;
+    options.retries = retries;
+    options.timeouts.attest_secs = 6;
+    options
+}
+
+/// A run in which a hook stops a site's task at a given stage, as if the
+/// machine had gone away.
+struct Losing {
+    addr: String,
+    aggregator: JoinHandle<Result<Replay, NodeError>>,
+    sites: Vec<JoinHandle<Result<SiteSummary, NodeError>>>,
+}
+
+async fn start_losing(
+    fed: &LocalFederation,
+    trainers: Vec<Box<dyn Trainer>>,
+    losses: Vec<(Stage, usize)>,
+) -> Losing {
+    let handles: Arc<Mutex<BTreeMap<usize, AbortHandle>>> = Arc::default();
+    let hook: Hook = Arc::new({
+        let handles = handles.clone();
+        move |stage, _| {
+            for (when, site) in &losses {
+                if *when == stage
+                    && let Some(handle) = handles.lock().unwrap().remove(site)
+                {
+                    handle.abort();
+                    // An abort lands when the task next yields, which may be
+                    // after it has read what the aggregator sends next.
+                    std::thread::sleep(Duration::from_millis(300));
+                }
+            }
+        }
+    });
+    let (tx, rx) = oneshot::channel();
+    let mut config = fed.aggregator_config("127.0.0.1:0");
+    config.hook = Some(hook);
+    config.keep_spool = true;
+    config.on_ready = Some(Box::new(move |addr| {
+        let _ = tx.send(addr);
+    }));
+    let aggregator = tokio::spawn(run_aggregator(config));
+    let addr = rx.await.unwrap();
+    for h in 0..fed.helpers.len() {
+        tokio::spawn(run_helper(fed.helper_config(h, &addr)));
+    }
+    let sites: Vec<_> = trainers
+        .into_iter()
+        .enumerate()
+        .map(|(i, t)| tokio::spawn(run_site(fed.site_config(i, &addr), t)))
+        .collect();
+    let mut held = handles.lock().unwrap();
+    for (i, site) in sites.iter().enumerate() {
+        held.insert(i, site.abort_handle());
+    }
+    drop(held);
+    Losing {
+        addr,
+        aggregator,
+        sites,
+    }
+}
+
+impl Losing {
+    /// The final log state, and each site's result unless it was stopped.
+    async fn finish(self) -> (Replay, Vec<Option<Result<SiteSummary, NodeError>>>) {
+        let mut results = Vec::new();
+        for site in self.sites {
+            results.push(site.await.ok());
+        }
+        (self.aggregator.await.unwrap().unwrap(), results)
+    }
+}
+
+fn stage_outcome(round: u32) -> Stage {
+    Stage::BeforeOutcome { round }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_site_lost_before_it_attests_costs_an_attempt_and_not_the_run() {
+    let dir = tempfile::tempdir().unwrap();
+    let init = initial_model(dir.path());
+    let fed =
+        LocalFederation::create(dir.path(), layout(), &init, &retrying_options(4, 1, 1)).unwrap();
+    let staying = Fixed::new(1.0, 1);
+    let trained = staying.rounds.clone();
+    let mut trainers: Vec<Box<dyn Trainer>> = vec![staying];
+    trainers.extend(fixed_trainers(3));
+    let losing = start_losing(&fed, trainers, vec![(stage_outcome(1), 3)]).await;
+    let (replay, results) = losing.finish().await;
+
+    assert_eq!(replay.phase, Phase::Done);
+    assert_eq!(replay.retried, 1);
+    assert!(results[3].is_none());
+    let summary = results[0].as_ref().unwrap().as_ref().unwrap();
+    let log = fed.aggregator_dir().join("log.jsonl");
+    let report = verify_log(&log, Some(&summary.final_model)).unwrap();
+    assert!(report.finished);
+    assert!(!report.complete(), "a retry is worth a second look");
+    assert!(report.rounds[0].voided && !report.rounds[0].sealed);
+    assert!(report.rounds[1].sealed && !report.rounds[1].voided);
+    assert_eq!(report.rounds[1].included.len(), 3);
+    assert_eq!(
+        replay.spent,
+        fed.plan.round_cost(4).unwrap() + fed.plan.round_cost(3).unwrap()
+    );
+
+    // The same step is trained again, into new masks and new noise.
+    assert_eq!(*trained.lock().unwrap(), [1, 1]);
+    let (first, second) = (&replay.rounds[0], &replay.rounds[1]);
+    for site in 0..3 {
+        let (old, new) = (&first.contributions[&site], &second.contributions[&site]);
+        assert_ne!(old.masked, new.masked);
+        assert_ne!(old.sealed, new.sealed);
+    }
+    assert_eq!(first.base, second.base);
+    assert!(
+        !fed.site_dir(0).join("round-1").exists(),
+        "the seeds of the given up round are still on disk"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_plan_with_no_noise_cannot_ask_for_retries_and_still_stops() {
+    let dir = tempfile::tempdir().unwrap();
+    let init = initial_model(dir.path());
+    let mut asking = options(3, 1, 1);
+    asking.min_cohort = 2;
+    asking.retries = 1;
+    assert!(LocalFederation::create(dir.path(), layout(), &init, &asking).is_err());
+
+    let dir = tempfile::tempdir().unwrap();
+    let init = initial_model(dir.path());
+    let mut plain = options(3, 1, 1);
+    plain.min_cohort = 2;
+    plain.timeouts.attest_secs = 3;
+    let fed = LocalFederation::create(dir.path(), layout(), &init, &plain).unwrap();
+    let losing = start_losing(&fed, fixed_trainers(3), vec![(stage_outcome(1), 2)]).await;
+    let (replay, _) = losing.finish().await;
+    assert_eq!(replay.phase, Phase::Aborted);
+    assert_eq!(replay.rounds.len(), 1);
+    let reason = replay.abort.unwrap();
+    assert!(reason.contains("no valid attestation"), "{reason}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_site_lost_after_the_seal_still_stops_the_run() {
+    let dir = tempfile::tempdir().unwrap();
+    let init = initial_model(dir.path());
+    let mut options = retrying_options(4, 1, 1);
+    options.timeouts.ack_secs = 3;
+    let fed = LocalFederation::create(dir.path(), layout(), &init, &options).unwrap();
+    let lost = vec![(Stage::BeforeSeal { round: 1 }, 3)];
+    let losing = start_losing(&fed, fixed_trainers(4), lost).await;
+    let (replay, _) = losing.finish().await;
+    assert_eq!(replay.phase, Phase::Aborted);
+    assert_eq!(replay.retried, 0);
+    let reason = replay.abort.unwrap();
+    assert!(reason.contains("no acknowledgement"), "{reason}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_run_stops_once_its_retries_are_spent() {
+    let dir = tempfile::tempdir().unwrap();
+    let init = initial_model(dir.path());
+    let fed =
+        LocalFederation::create(dir.path(), layout(), &init, &retrying_options(4, 1, 1)).unwrap();
+    let lost = vec![(stage_outcome(1), 3), (stage_outcome(2), 2)];
+    let losing = start_losing(&fed, fixed_trainers(4), lost).await;
+    let (replay, _) = losing.finish().await;
+    assert_eq!(replay.phase, Phase::Aborted);
+    assert_eq!(replay.retried, 1);
+    assert_eq!(replay.rounds.len(), 2);
+    assert_eq!(
+        replay.spent,
+        fed.plan.round_cost(4).unwrap() + fed.plan.round_cost(3).unwrap()
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn too_few_sites_left_stops_the_run_even_with_retries_left() {
+    let dir = tempfile::tempdir().unwrap();
+    let init = initial_model(dir.path());
+    let mut options = retrying_options(3, 1, 1);
+    options.min_cohort = 2;
+    let fed = LocalFederation::create(dir.path(), layout(), &init, &options).unwrap();
+    let lost = vec![(stage_outcome(1), 2), (stage_outcome(1), 1)];
+    let losing = start_losing(&fed, fixed_trainers(3), lost).await;
+    let (replay, _) = losing.finish().await;
+    assert_eq!(replay.phase, Phase::Aborted);
+    assert_eq!(replay.retried, 0);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_retry_in_a_bounded_plan_proves_its_updates_afresh() {
+    let dir = tempfile::tempdir().unwrap();
+    let init = initial_model(dir.path());
+    let mut options = retrying_options(4, 1, 1);
+    options.bounded = true;
+    options.timeouts.collect_secs = 20;
+    let fed = LocalFederation::create(dir.path(), layout(), &init, &options).unwrap();
+    let losing = start_losing(&fed, fixed_trainers(4), vec![(stage_outcome(1), 3)]).await;
+    let (replay, _) = losing.finish().await;
+    assert_eq!(replay.phase, Phase::Done);
+    let (first, second) = (&replay.rounds[0], &replay.rounds[1]);
+    for site in &second.included {
+        assert_ne!(
+            first.contributions[site].proof,
+            second.contributions[site].proof
+        );
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_lost_site_that_comes_back_sits_out_the_retry_and_rejoins_after_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let init = initial_model(dir.path());
+    let fed =
+        LocalFederation::create(dir.path(), layout(), &init, &retrying_options(4, 2, 1)).unwrap();
+    let mut losing = start_losing(&fed, fixed_trainers(4), vec![(stage_outcome(1), 3)]).await;
+    let log = fed.aggregator_dir().join("log.jsonl");
+    let waited = tokio::time::timeout(Duration::from_secs(120), async {
+        while !std::fs::read_to_string(&log).is_ok_and(|text| text.contains(r#""kind":"retry""#)) {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    });
+    waited.await.expect("no retry in the log");
+
+    let back = Fixed::new(1.0, 1);
+    let trained = back.rounds.clone();
+    let config = fed.site_config(3, &losing.addr);
+    losing.sites[3] = tokio::spawn(run_site(config, back));
+    let (replay, results) = losing.finish().await;
+
+    assert_eq!(replay.phase, Phase::Done);
+    assert_eq!(replay.rounds.len(), 3);
+    assert_eq!(replay.rounds[1].included, [0, 1, 2]);
+    assert_eq!(replay.rounds[2].included, [0, 1, 2, 3]);
+    assert_eq!(
+        *trained.lock().unwrap(),
+        [2],
+        "it trains the next step only"
+    );
+    let summary = results[3].as_ref().unwrap().as_ref().unwrap();
+    verify_log(&log, Some(&summary.final_model)).unwrap();
+    assert!(!fed.site_dir(3).join("round-1").exists());
 }
 
 #[tokio::test(flavor = "multi_thread")]

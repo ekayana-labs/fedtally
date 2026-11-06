@@ -39,6 +39,7 @@ pub enum Stage {
     BeforeVerdict { round: u32 },
     BeforeSum { round: u32 },
     BeforeOutcome { round: u32 },
+    BeforeSeal { round: u32 },
 }
 
 pub type Hook = Arc<dyn Fn(Stage, &Path) + Send + Sync>;
@@ -1115,6 +1116,7 @@ enum Decision {
     Outcome,
     Fingerprints,
     Seal,
+    Retry,
     Next,
     Abort(String),
     Stop,
@@ -1260,6 +1262,9 @@ fn decide(shared: &Shared, state: &State, elapsed: Duration) -> Decision {
             if helpers_in && silent.is_empty() {
                 Decision::Seal
             } else if past(plan.timeouts.attest_secs) {
+                if state.replay.retry_cohort(plan).is_ok() {
+                    return Decision::Retry;
+                }
                 Decision::Abort(if helpers_in {
                     format!("no valid attestation from {}", silent.join(", "))
                 } else {
@@ -1314,9 +1319,34 @@ async fn drive(shared: &Arc<Shared>) -> Result<(), NodeError> {
             Decision::Outcome => outcome_round(shared).await?,
             Decision::Fingerprints => fingerprints(shared).await?,
             Decision::Seal => seal_round(shared)?,
+            Decision::Retry => retry_round(shared)?,
             Decision::Next => next_round(shared)?,
         }
     }
+}
+
+/// Gives up this round number and starts the next one without whoever went
+/// silent. The old round's files stay until a seal, since a slow site may still
+/// be reading them.
+fn retry_round(shared: &Shared) -> Result<(), NodeError> {
+    let mut state = shared.lock();
+    // A late attestation may have got in since the decision.
+    if state.replay.retry_cohort(&shared.plan).is_err() {
+        return Ok(());
+    }
+    let round = state.replay.round_number();
+    tracing::warn!("round {round}: a site went silent, starting over without it");
+    let body = Body::Retry {
+        plan: shared.plan_id,
+        round,
+        prev: state.replay.head,
+    };
+    let record = Record::sign(&shared.identity, &body)?;
+    shared.apply(&mut state, &record)?;
+    state.uploads.clear();
+    state.manifests.clear();
+    state.attests.clear();
+    Ok(())
 }
 
 fn abort(shared: &Shared, reason: String) -> Result<(), NodeError> {
@@ -1817,6 +1847,10 @@ async fn fingerprints(shared: &Arc<Shared>) -> Result<(), NodeError> {
 }
 
 fn seal_round(shared: &Arc<Shared>) -> Result<(), NodeError> {
+    if let Some(hook) = &shared.hook {
+        let round = shared.lock().replay.round_number();
+        hook(Stage::BeforeSeal { round }, &shared.dirs.round_path(round));
+    }
     let mut state = shared.lock();
     let state = &mut *state;
     let (round, per_site) = state
