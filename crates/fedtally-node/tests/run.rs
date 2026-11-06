@@ -118,6 +118,31 @@ fn options(sites: usize, helpers: usize, rounds: u32) -> Options {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn a_weight_the_plan_refuses_fails_the_site_instead_of_leaving_it_out() {
+    let dir = tempfile::tempdir().unwrap();
+    let init = initial_model(dir.path());
+    let fed = LocalFederation::create(dir.path(), layout(), &init, &options(2, 1, 1)).unwrap();
+    let over = fed.plan.max_weight + 1;
+    let running = start(&fed, None).await;
+    let tasks: Vec<_> = [0, over]
+        .into_iter()
+        .enumerate()
+        .map(|(site, weight)| {
+            let config = fed.site_config(site, &running.addr);
+            tokio::spawn(run_site(config, Fixed::new(1.0, weight)))
+        })
+        .collect();
+    for task in tasks {
+        let failed = task.await.unwrap().err().unwrap().to_string();
+        assert!(failed.contains("outside the plan"), "{failed}");
+    }
+    running.aggregator.abort();
+    for helper in running.helpers {
+        helper.abort();
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn a_site_back_after_the_end_with_its_model_needs_nobody() {
     let dir = tempfile::tempdir().unwrap();
     let init = initial_model(dir.path());

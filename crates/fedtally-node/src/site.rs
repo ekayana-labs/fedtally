@@ -635,6 +635,12 @@ impl Site {
                 }
                 // A private run counts every site the same, whatever it trained on.
                 let weight = if plan.privacy.is_some() { 1 } else { weight };
+                if weight == 0 || weight > plan.max_weight {
+                    return Err(ModelError::Mismatch(format!(
+                        "weight {weight} is outside the plan's 1 to {}",
+                        plan.max_weight
+                    )));
+                }
                 let mut tries = 0;
                 let encoded = loop {
                     let encoded = match terms {
