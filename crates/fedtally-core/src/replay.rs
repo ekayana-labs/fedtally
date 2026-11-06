@@ -80,6 +80,10 @@ pub enum Fault {
     HelperMissing(String),
     #[error("cannot retry: {0}")]
     NoRetry(&'static str),
+    #[error("cannot remove a helper: {0}")]
+    NoRemoval(&'static str),
+    #[error("{0} was removed from this run")]
+    RemovedHelper(String),
     #[error("ack names a different head")]
     WrongHead,
     #[error("finish before the last round")]
@@ -180,6 +184,12 @@ pub struct RoundState {
     pub step: u32,
     /// Given up before its seal. Its sum is out and paid for, but made no model.
     pub voided: bool,
+    /// The helpers this round's masks go to.
+    pub active: Vec<usize>,
+    /// The cohort this round must close over, because it redoes a round after
+    /// a helper was removed. That round's sum may be out already, so a smaller
+    /// one would give the difference away.
+    pub redo: Option<Vec<usize>>,
 }
 
 #[derive(Clone, Debug)]
@@ -211,6 +221,8 @@ pub struct Replay {
     pub operators: Vec<Vec<Credential>>,
     /// Round numbers given up so far. Each one is an attempt that made no model.
     pub retried: u32,
+    /// Helpers out of the run for good.
+    pub removed: BTreeSet<usize>,
 }
 
 impl Default for Replay {
@@ -236,6 +248,7 @@ fn kind(body: &Body) -> &'static str {
         Body::Ack { .. } => "ack",
         Body::Abort { .. } => "abort",
         Body::Retry { .. } => "retry",
+        Body::RemoveHelper { .. } => "remove_helper",
         Body::Status { .. } => "status",
         Body::Finish { .. } => "finish",
     }
@@ -258,6 +271,7 @@ impl Replay {
             revoked: BTreeMap::new(),
             operators: Vec::new(),
             retried: 0,
+            removed: BTreeSet::new(),
         }
     }
 
@@ -332,9 +346,12 @@ impl Replay {
             return Err(Fault::NoRetry("no retries left"));
         }
         let state = self.current().ok_or(Fault::NoPlan)?;
-        let helpers = &plan.helpers;
-        if let Some(h) = (0..helpers.len()).find(|h| !state.helper_attests.contains_key(h)) {
-            return Err(Fault::HelperMissing(helpers[h].did.clone()));
+        let missing = state.active.iter();
+        if let Some(h) = missing
+            .into_iter()
+            .find(|h| !state.helper_attests.contains_key(h))
+        {
+            return Err(Fault::HelperMissing(plan.helpers[*h].did.clone()));
         }
         let attested = |site: &&usize| state.site_attests.contains_key(*site);
         if state.included.iter().all(|site| attested(&site)) {
@@ -351,6 +368,25 @@ impl Replay {
             return Err(Fault::NoRetry("too few sites attested"));
         }
         Ok(rest)
+    }
+
+    /// The helpers the round is waiting on, if the plan lets the run lose one.
+    pub fn removable(&self, plan: &Plan) -> Result<Vec<usize>, Fault> {
+        if plan.min_helpers == 0 {
+            return Err(Fault::NoRemoval("the plan needs every helper"));
+        }
+        let state = self.current().ok_or(Fault::NoPlan)?;
+        if state.active.len() <= plan.min_helpers as usize {
+            return Err(Fault::NoRemoval("too few helpers would be left"));
+        }
+        let owing = |h: &&usize| match self.phase {
+            Phase::Masking => !state.masks.contains_key(*h),
+            _ => !state.helper_attests.contains_key(*h),
+        };
+        if !matches!(self.phase, Phase::Masking | Phase::Attesting) {
+            return Err(Fault::NoRemoval("the round is not waiting on a helper"));
+        }
+        Ok(state.active.iter().filter(owing).copied().collect())
     }
 
     /// A run moves on only when every site in the last round has signed the
@@ -417,7 +453,10 @@ impl Replay {
         let Some(rule) = &policy.operators else {
             return Ok(());
         };
-        for ((did, _), held) in plan.operators().zip(&self.operators) {
+        // The aggregator comes first, then the helpers in plan order.
+        let in_run = |at: &usize| *at == 0 || !self.removed.contains(&(at - 1));
+        let operators = plan.operators().zip(&self.operators).enumerate();
+        for (_, ((did, _), held)) in operators.filter(|(at, _)| in_run(at)) {
             let holder = Holder { did, dataset: None };
             self.meets(policy, rule, holder, held, now)
                 .map_err(|why| format!("{did}: {why}"))?;
@@ -511,7 +550,13 @@ impl Replay {
             }
         };
         let from_site = || plan.site_index(signer).ok_or_else(wrong_signer);
-        let from_helper = || plan.helper_index(signer).ok_or_else(wrong_signer);
+        let from_helper = || match plan.helper_index(signer) {
+            Some(helper) if self.removed.contains(&helper) => {
+                Err(Fault::RemovedHelper(signer.to_owned()))
+            }
+            Some(helper) => Ok(helper),
+            None => Err(wrong_signer()),
+        };
         let same_run = |id: &Digest| {
             if *id == self.plan_id {
                 Ok(())
@@ -648,6 +693,9 @@ impl Replay {
                     invited,
                     from: next - 1,
                     step,
+                    active: (0..plan.helpers.len())
+                        .filter(|h| !self.removed.contains(h))
+                        .collect(),
                     ..RoundState::default()
                 });
                 self.phase = Phase::Collecting;
@@ -692,6 +740,15 @@ impl Replay {
                 }
                 if sealed.len() != plan.helpers.len() {
                     return Err(bad("wrong number of sealed seeds".to_owned()));
+                }
+                // A zero digest for each removed helper signs the active set
+                // into the contribution, so it can't be shown to another fork.
+                let active = self.current().map(|r| r.active.as_slice()).unwrap_or(&[]);
+                let right = |(h, seed): (usize, &Digest)| {
+                    active.contains(&h) == (*seed != Digest::default())
+                };
+                if !sealed.iter().enumerate().all(right) {
+                    return Err(bad("sealed seeds are not for the active helpers".to_owned()));
                 }
                 if proof.is_some() != plan.bounded {
                     return Err(bad("a norm proof exactly when the plan asks".to_owned()));
@@ -782,6 +839,11 @@ impl Replay {
                 this_round(*round)?;
                 let state = self.current().ok_or(Fault::NoPlan)?;
                 let sites = check_included(plan, state, included)?;
+                if state.redo.as_ref().is_some_and(|cohort| *cohort != sites) {
+                    return Err(Fault::BadClose(
+                        "a redo must close over the cohort of the round it redoes".to_owned(),
+                    ));
+                }
                 self.still_admitted(plan, &sites)?;
                 if shares.is_some() != plan.bounded {
                     return Err(Fault::BadClose(
@@ -858,10 +920,8 @@ impl Replay {
                 self.wants(&[Phase::Masking], body)?;
                 this_round(*round)?;
                 let state = self.rounds.last_mut().ok_or(Fault::NoPlan)?;
-                if let Some(missing) =
-                    (0..plan.helpers.len()).find(|h| !state.masks.contains_key(h))
-                {
-                    return Err(Fault::HelperMissing(plan.helpers[missing].did.clone()));
+                if let Some(missing) = state.active.iter().find(|h| !state.masks.contains_key(h)) {
+                    return Err(Fault::HelperMissing(plan.helpers[*missing].did.clone()));
                 }
                 let want: u64 = state
                     .included
@@ -909,10 +969,12 @@ impl Replay {
                     return Err(Fault::WrongChallenge(name));
                 }
                 // A site checks the helpers' shares before it attests, so they come first.
-                if let Some(missing) =
-                    (0..plan.helpers.len()).find(|h| !state.helper_attests.contains_key(h))
+                if let Some(missing) = state
+                    .active
+                    .iter()
+                    .find(|h| !state.helper_attests.contains_key(h))
                 {
-                    return Err(Fault::HelperMissing(plan.helpers[missing].did.clone()));
+                    return Err(Fault::HelperMissing(plan.helpers[*missing].did.clone()));
                 }
                 if state.site_attests.contains_key(&site) {
                     return Err(Fault::Duplicate(name, signer.to_owned()));
@@ -1092,8 +1154,8 @@ impl Replay {
             Body::Abort {
                 plan: id, reason, ..
             } => {
-                if signer != plan.aggregator.did && plan.helper_index(signer).is_none() {
-                    return Err(wrong_signer());
+                if signer != plan.aggregator.did {
+                    from_helper()?;
                 }
                 same_run(id)?;
                 if matches!(self.phase, Phase::Done | Phase::Aborted) {
@@ -1121,15 +1183,52 @@ impl Replay {
                 let state = self.rounds.last_mut().ok_or(Fault::NoPlan)?;
                 state.voided = true;
                 let (base, from, step) = (state.base, state.from, state.step);
+                let active = state.active.clone();
                 self.retried += 1;
                 self.rounds.push(RoundState {
                     round: *round + 1,
                     base,
                     from,
                     step,
+                    active,
                     invited: Some(invited),
                     ..RoundState::default()
                 });
+                self.phase = Phase::Collecting;
+                Ok(())
+            }
+
+            Body::RemoveHelper {
+                plan: id,
+                round,
+                helper,
+                prev,
+            } => {
+                from_aggregator()?;
+                same_run(id)?;
+                chained(prev)?;
+                this_round(*round)?;
+                let helper = *helper as usize;
+                if !self.removable(plan)?.contains(&helper) {
+                    return Err(Fault::NoRemoval("the round isn't waiting on that helper"));
+                }
+                let state = self.rounds.last_mut().ok_or(Fault::NoPlan)?;
+                state.voided = true;
+                let cohort = state.included.clone();
+                let mut next = RoundState {
+                    round: *round + 1,
+                    base: state.base,
+                    from: state.from,
+                    step: state.step,
+                    active: state.active.clone(),
+                    invited: Some(cohort.clone()),
+                    redo: Some(cohort),
+                    ..RoundState::default()
+                };
+                next.active.retain(|h| *h != helper);
+                self.rounds.push(next);
+                self.removed.insert(helper);
+                self.retried += 1;
                 self.phase = Phase::Collecting;
                 Ok(())
             }
@@ -1224,11 +1323,11 @@ fn check_seal(
         return Err(Fault::SealSum);
     }
     let mut masks = Fp2::ZERO;
-    for (h, helper) in plan.helpers.iter().enumerate() {
+    for h in &state.active {
         let attest = state
             .helper_attests
-            .get(&h)
-            .ok_or_else(|| Fault::HelperMissing(helper.did.clone()))?;
+            .get(h)
+            .ok_or_else(|| Fault::HelperMissing(plan.helpers[*h].did.clone()))?;
         masks = masks + attest.total;
     }
     if sum - masks != aggregate {

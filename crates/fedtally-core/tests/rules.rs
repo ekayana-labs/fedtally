@@ -269,7 +269,12 @@ impl Run {
             base: self.replay.model,
             masked: Digest::of(b"masked"),
             weight,
-            sealed: vec![Digest::of(b"sealed")],
+            sealed: (0..self.plan.helpers.len())
+                .map(|h| match self.replay.removed.contains(&h) {
+                    true => Digest::default(),
+                    false => Digest::of(b"sealed"),
+                })
+                .collect(),
             proof: self.plan.bounded.then(|| Digest::of(b"proof")),
         }
     }
@@ -492,6 +497,85 @@ impl Run {
         self.mask_sum(round);
         self.outcome(round, 3 * weight);
         self.seal(round);
+        for i in 0..3 {
+            let body = self.ack_body(round);
+            let site = self.site(i);
+            self.apply(&site, body);
+        }
+    }
+
+    fn helper_id(&self, h: usize) -> Id {
+        match h {
+            0 => self.helper.clone(),
+            _ => self.spare[h - 1].clone(),
+        }
+    }
+
+    fn mask_sum_by(&mut self, h: usize, round: u32) {
+        let body = self.mask_sum_body(round);
+        let helper = self.helper_id(h);
+        self.apply(&helper, body);
+    }
+
+    /// Helper 0 masked with the numbers' shares, and the others with nothing.
+    fn helper_attest_by(&mut self, h: usize, round: u32) {
+        let shares = match h {
+            0 => numbers().shares,
+            _ => [Fp2::ZERO; 3],
+        };
+        let body = self.helper_attest_body(round, &shares);
+        let helper = self.helper_id(h);
+        self.apply(&helper, body);
+    }
+
+    fn remove_body(&self, round: u32, helper: u32) -> Body {
+        Body::RemoveHelper {
+            plan: self.plan_id,
+            round,
+            helper,
+            prev: self.replay.head,
+        }
+    }
+
+    fn remove(&mut self, round: u32, helper: u32) {
+        let body = self.remove_body(round, helper);
+        let aggregator = self.aggregator.clone();
+        self.apply(&aggregator, body);
+    }
+
+    /// Round 1 closes, and helper 2 never gives its mask total.
+    fn losing_a_helper_in_masking(edit: impl FnOnce(&mut Plan)) -> Run {
+        let mut run = Run::with_spare_helper(edit);
+        run.join(0..3);
+        run.open_and_close_all_at(1, 1);
+        run.mask_sum_by(0, 1);
+        run.mask_sum_by(1, 1);
+        run
+    }
+
+    /// Takes the current round from its contributions to its acks, with
+    /// helpers 0 and 1.
+    fn complete_with_two_helpers(&mut self, round: u32) {
+        let list: Vec<_> = (0..3).map(|s| self.contribute(s, round, 1)).collect();
+        self.close(round, &list);
+        self.mask_sum_by(0, round);
+        self.mask_sum_by(1, round);
+        self.outcome(round, 3);
+        self.helper_attest_by(0, round);
+        self.helper_attest_by(1, round);
+        self.attest_and_ack(round);
+    }
+
+    fn attest_and_ack(&mut self, round: u32) {
+        let n = numbers();
+        for i in 0..3 {
+            let body = self.attest_body(round, n.masked[i]);
+            let site = self.site(i);
+            self.apply(&site, body);
+        }
+        let body = self.seal_body(round, &n.masked, n.sum, n.aggregate);
+        let aggregator = self.aggregator.clone();
+        self.apply(&aggregator, body);
         for i in 0..3 {
             let body = self.ack_body(round);
             let site = self.site(i);
@@ -1251,6 +1335,249 @@ fn a_plan_that_needs_every_helper_says_nothing_new() {
     );
     let args = admission::arguments(&run.plan_id, &run.plan);
     assert!(!args.contains_key("min_helpers"));
+}
+
+#[test]
+fn a_silent_helper_is_removed_and_the_round_is_redone_without_it() {
+    let mut run = Run::losing_a_helper_in_masking(|_| {});
+    run.remove(1, 2);
+    assert_eq!(run.replay.phase, Phase::Collecting);
+    assert_eq!(run.replay.retried, 1);
+    assert!(run.replay.removed.contains(&2));
+    assert!(run.replay.rounds[0].voided);
+    let next = run.replay.current().unwrap();
+    assert_eq!((next.round, next.from, next.step), (2, 0, 1));
+    assert_eq!(next.base, Digest::of(b"model 0"));
+    assert_eq!(next.active, [0, 1]);
+    assert_eq!(next.redo.as_deref(), Some(&[0, 1, 2][..]));
+    assert_eq!(next.invited.as_deref(), Some(&[0, 1, 2][..]));
+
+    run.complete_with_two_helpers(2);
+    assert_eq!(run.replay.model, Digest::of(b"model 2"));
+    assert_eq!(run.replay.current().unwrap().step, 1);
+
+    run.open(3);
+    assert_eq!(run.replay.current().unwrap().active, [0, 1]);
+    assert_eq!(run.replay.current().unwrap().step, 2);
+    run.complete_with_two_helpers(3);
+    let body = run.finish_body();
+    let aggregator = run.aggregator.clone();
+    run.apply(&aggregator, body);
+    assert_eq!(run.replay.phase, Phase::Done);
+
+    let report = run.replay.report().unwrap();
+    assert!(report.finished);
+    assert!(!report.complete());
+    assert!(report.rounds[0].voided);
+    assert_eq!(report.removed_helpers, [run.spare[1].did_string()]);
+}
+
+#[test]
+fn a_helper_can_be_removed_while_it_owes_its_attestation() {
+    let mut run = Run::with_spare_helper(|_| {});
+    run.join(0..3);
+    run.open_and_close_all_at(1, 1);
+    for h in 0..3 {
+        run.mask_sum_by(h, 1);
+    }
+    run.outcome(1, 3);
+    run.helper_attest_by(0, 1);
+    let attesting = run.helper_attest_body(1, &[Fp2::ZERO; 3]);
+    run.helper_attest_by(1, 1);
+    run.remove(1, 2);
+    assert_eq!(run.replay.current().unwrap().active, [0, 1]);
+
+    // A site can't attest while a helper still owes its shares, and a removed
+    // helper's late shares don't count.
+    let removed = run.helper_id(2);
+    assert!(matches!(
+        run.refuse(&removed, attesting),
+        Fault::RemovedHelper(_)
+    ));
+}
+
+#[test]
+fn a_redo_must_close_over_the_same_cohort() {
+    let mut run = Run::losing_a_helper_in_masking(|_| {});
+    run.remove(1, 2);
+    let list: Vec<_> = (0..2).map(|s| run.contribute(s, 2, 1)).collect();
+    let aggregator = run.aggregator.clone();
+    // Any honest helper's replica refuses this, so even on a fork of the log it
+    // gets no mask total: that's what keeps the difference of two sums away.
+    let body = run.close_body(2, &list);
+    let refused = run.refuse(&aggregator, body).to_string();
+    assert!(refused.contains("redo must close"), "{refused}");
+
+    let mut list = list;
+    list.push(run.contribute(2, 2, 1));
+    run.close(2, &list);
+    assert_eq!(run.replay.phase, Phase::Masking);
+}
+
+#[test]
+fn a_contribution_commits_to_who_its_seeds_are_for() {
+    let mut run = Run::losing_a_helper_in_masking(|_| {});
+    let sealed_for_all = run.contribute_body(0, 1);
+    run.remove(1, 2);
+    let site = run.site(0);
+    let Body::Contribute {
+        plan,
+        base,
+        masked,
+        weight,
+        sealed,
+        proof,
+        ..
+    } = sealed_for_all
+    else {
+        unreachable!()
+    };
+    let with = |sealed: Vec<Digest>| Body::Contribute {
+        plan,
+        round: 2,
+        base,
+        masked,
+        weight,
+        sealed,
+        proof,
+    };
+    for wrong in [
+        sealed.clone(),
+        vec![
+            Digest::default(),
+            Digest::of(b"sealed"),
+            Digest::of(b"sealed"),
+        ],
+        vec![Digest::of(b"sealed"), Digest::of(b"sealed")],
+    ] {
+        let refused = run.refuse(&site, with(wrong));
+        assert!(
+            matches!(refused, Fault::BadContribution { .. }),
+            "{refused}"
+        );
+    }
+    let mut right = sealed;
+    right[2] = Digest::default();
+    run.apply(&site, with(right));
+}
+
+#[test]
+fn a_removed_helper_has_no_more_say_in_the_run() {
+    let mut run = Run::losing_a_helper_in_masking(|_| {});
+    run.remove(1, 2);
+    let removed = run.helper_id(2);
+    let body = Body::Abort {
+        plan: run.plan_id,
+        round: 2,
+        reason: "still here".into(),
+    };
+    assert!(matches!(
+        run.refuse(&removed, body),
+        Fault::RemovedHelper(_)
+    ));
+    let list: Vec<_> = (0..3).map(|s| run.contribute(s, 2, 1)).collect();
+    run.close(2, &list);
+    let body = run.mask_sum_body(2);
+    assert!(matches!(
+        run.refuse(&removed, body),
+        Fault::RemovedHelper(_)
+    ));
+}
+
+#[test]
+fn a_helper_is_removed_only_when_the_rules_allow_it() {
+    let aggregator_refused = |run: &mut Run, body: Body| {
+        let (head, retried) = (run.replay.head, run.replay.retried);
+        let aggregator = run.aggregator.clone();
+        let fault = run.refuse(&aggregator, body).to_string();
+        assert_eq!((run.replay.head, run.replay.retried), (head, retried));
+        fault
+    };
+
+    // A plan that needs every helper.
+    let mut run = Run::new();
+    run.join(0..3);
+    run.open_and_close_all_at(1, 1);
+    let body = run.remove_body(1, 0);
+    let fault = aggregator_refused(&mut run, body);
+    assert!(fault.contains("needs every helper"), "{fault}");
+
+    // Too early, and when the helper has given what the round needs from it.
+    let mut run = Run::with_spare_helper(|_| {});
+    run.join(0..3);
+    run.open(1);
+    let body = run.remove_body(1, 2);
+    let fault = aggregator_refused(&mut run, body);
+    assert!(fault.contains("not waiting"), "{fault}");
+
+    let mut run = Run::losing_a_helper_in_masking(|_| {});
+    let body = run.remove_body(1, 0);
+    let fault = aggregator_refused(&mut run, body);
+    assert!(fault.contains("isn't waiting on that helper"), "{fault}");
+
+    // Not the aggregator, another head, another round.
+    let site = run.site(0);
+    let body = run.remove_body(1, 2);
+    assert!(matches!(run.refuse(&site, body), Fault::WrongSigner { .. }));
+    let body = Body::RemoveHelper {
+        plan: run.plan_id,
+        round: 1,
+        helper: 2,
+        prev: Digest::of(b"another head"),
+    };
+    assert!(matches!(
+        aggregator_refused_fault(&mut run, body),
+        Fault::BrokenChain(_)
+    ));
+    let body = run.remove_body(2, 2);
+    assert!(matches!(
+        aggregator_refused_fault(&mut run, body),
+        Fault::WrongRound("remove_helper", 2, 1)
+    ));
+
+    // The floor.
+    run.remove(1, 2);
+    let list: Vec<_> = (0..3).map(|s| run.contribute(s, 2, 1)).collect();
+    run.close(2, &list);
+    let body = run.remove_body(2, 1);
+    let fault = aggregator_refused(&mut run, body);
+    assert!(fault.contains("too few"), "{fault}");
+}
+
+fn aggregator_refused_fault(run: &mut Run, body: Body) -> Fault {
+    let aggregator = run.aggregator.clone();
+    run.refuse(&aggregator, body)
+}
+
+#[test]
+fn a_redo_is_paid_for_again() {
+    let mut run = Run::losing_a_helper_in_masking(private(4 << 40));
+    run.remove(1, 2);
+    run.complete_with_two_helpers(2);
+    let three = run.plan.round_cost(3).unwrap();
+    assert_eq!(run.replay.spent, three + three);
+}
+
+#[test]
+fn a_log_with_a_removal_replays_and_catches_tampering() {
+    let mut run = Run::losing_a_helper_in_masking(|_| {});
+    run.remove(1, 2);
+    run.complete_with_two_helpers(2);
+    run.open(3);
+    let again = replay_lines(&run.lines).unwrap();
+    assert_eq!(again.head, run.replay.head);
+    assert_eq!(again.removed, run.replay.removed);
+    for i in 0..run.lines.len() - 1 {
+        let mut lines = run.lines.clone();
+        lines.remove(i);
+        assert!(replay_lines(&lines).is_err(), "removed line {i}");
+    }
+    for (i, line) in run.lines.iter().enumerate() {
+        let mut lines = run.lines.clone();
+        let middle = line.len() / 2;
+        lines[i][middle] ^= 1;
+        assert!(replay_lines(&lines).is_err(), "edited line {i}");
+    }
 }
 
 #[test]

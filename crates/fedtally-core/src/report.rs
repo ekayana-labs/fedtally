@@ -121,6 +121,9 @@ pub struct Report {
     pub purpose: String,
     pub masked: bool,
     pub helpers: Vec<String>,
+    /// Helpers the aggregator dropped from the run as silent. The log can't
+    /// tell whether they really were.
+    pub removed_helpers: Vec<String>,
     pub aggregator: String,
     pub head: Digest,
     pub entries: u64,
@@ -268,6 +271,11 @@ impl Replay {
             purpose: plan.purpose.clone(),
             masked: plan.is_masked(),
             helpers: plan.helpers.iter().map(|h| h.did.clone()).collect(),
+            removed_helpers: self
+                .removed
+                .iter()
+                .map(|h| plan.helpers[*h].did.clone())
+                .collect(),
             aggregator: plan.aggregator.did.clone(),
             head: self.head,
             entries: self.entries,

@@ -161,6 +161,15 @@ pub enum Body {
         round: u32,
         prev: Digest,
     },
+    /// Aggregator: a helper went silent, so it is out for the rest of the run.
+    /// This round number is given up, and the next one must close over the same
+    /// cohort without it.
+    RemoveHelper {
+        plan: Digest,
+        round: u32,
+        helper: u32,
+        prev: Digest,
+    },
     /// Aggregator: the last round is sealed.
     Finish { plan: Digest, prev: Digest },
 }
