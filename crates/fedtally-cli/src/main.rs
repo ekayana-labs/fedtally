@@ -52,6 +52,7 @@ enum Party {
     Aggregator,
     Site,
     Watcher,
+    Issuer,
 }
 
 #[derive(Subcommand)]
@@ -536,6 +537,7 @@ async fn run(command: Command) -> Result<ExitCode, Failure> {
                 (Party::Publisher, _, _) => return Err("a publisher sets the --stakes".into()),
                 (Party::Aggregator, _, _) => Role::Aggregator,
                 (Party::Site, _, _) => Role::Site,
+                (Party::Issuer, _, _) => Role::Issuer,
                 (Party::Watcher, _, Some(addr)) => Role::Watcher(Watching {
                     addr,
                     dir: dir.clone(),

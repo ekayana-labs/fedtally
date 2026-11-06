@@ -10,7 +10,9 @@ use fedtally_ledger::state::{
 };
 use thiserror::Error;
 
-use crate::ledger::{BufferView, DisputeView, EnrollmentView, RoundView, TaskView};
+use crate::ledger::{
+    BufferView, DemandView, DisputeView, EnrollmentView, RoundView, StatusView, TaskView,
+};
 use crate::run::{Ending, RoundLog, RunView};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -19,6 +21,7 @@ pub enum Party {
     Aggregator,
     Site(u16),
     Watcher,
+    Issuer,
 }
 
 /// The accounts a decision looks at, read at one slot. A party only fills in
@@ -34,6 +37,29 @@ pub struct Snapshot {
     /// The party's own dispute over the task's latest round.
     pub dispute: Option<DisputeView>,
     pub buffer: Option<BufferView>,
+    /// The open demands on the task: all of them for the aggregator, its own
+    /// for a watcher.
+    pub demands: Vec<DemandView>,
+    /// An issuer's lists on the ledger, by number.
+    pub lists: BTreeMap<u32, StatusView>,
+}
+
+/// A leaf a watcher could not fetch and asks for on the ledger.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Wanted {
+    pub part: ProofPart,
+    pub leaf: u64,
+    /// A demand for it has been sent.
+    pub opened: bool,
+    /// Its answer has gone into the watcher's copy of the vector.
+    pub taken: bool,
+}
+
+/// What an issuer has signed, as the log has it.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct SignedList {
+    pub bits: u32,
+    pub set: Vec<u32>,
 }
 
 /// What a watcher found when it added up a round's vectors.
@@ -52,9 +78,16 @@ pub struct Notes {
     pub verdicts: BTreeMap<u32, Verdict>,
     /// Rounds this watcher has already taken to a dispute.
     pub disputed: BTreeSet<u32>,
-    /// Sites whose status lists were applied since the log revoked them.
-    pub checked: BTreeSet<u16>,
+    /// The slot each site's status lists were last applied at, since the log
+    /// revoked it. An issuer's list may reach the ledger later than the check.
+    pub checked: BTreeMap<u16, u64>,
+    pub wanted: BTreeMap<u32, Vec<Wanted>>,
+    /// What this issuer's lists say, by ledger number.
+    pub signed: BTreeMap<u32, SignedList>,
 }
+
+/// Slots between two checks of one revoked site.
+const RECHECK_SLOTS: u64 = 32;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Differs {
@@ -136,6 +169,39 @@ pub enum Step {
     OpenDispute {
         round: u32,
         leaf: u64,
+        /// The answered demand that lets this dispute open past the window.
+        after: Option<ProofPart>,
+    },
+    OpenDemand {
+        round: u32,
+        part: ProofPart,
+        leaf: u64,
+    },
+    TakeAnswer {
+        round: u32,
+        part: ProofPart,
+        leaf: u64,
+    },
+    CloseDemand {
+        round: u32,
+        part: ProofPart,
+        leaf: u64,
+    },
+    /// The aggregator publishes a leaf someone demanded.
+    AnswerDemand {
+        round: u32,
+        part: ProofPart,
+        leaf: u64,
+        address: [u8; 32],
+    },
+    CloseRound(u32),
+    InitList {
+        list: u32,
+        bits: u32,
+    },
+    SetBit {
+        list: u32,
+        bit: u32,
     },
     GiveLeaf {
         round: u32,
@@ -275,6 +341,40 @@ fn aggregator(run: &RunView, ledger: &Snapshot) -> Result<Step, Divergence> {
         return Ok(Step::Wait(Wait::Task));
     };
     let latest = ledger.rounds.get(&task.round);
+    let capacity = proof_capacity(run);
+    let unanswered = ledger
+        .demands
+        .iter()
+        .filter(|demand| {
+            !demand.answered
+                && ledger.slot <= demand.deadline
+                && ledger
+                    .rounds
+                    .get(&demand.round)
+                    .is_some_and(|round| round.state == ROUND_POSTED)
+        })
+        .min_by_key(|demand| demand.deadline);
+    if let Some(demand) = unanswered {
+        return Ok(match ledger.buffer {
+            None => Step::OpenBuffer(capacity),
+            Some(buffer) if buffer.capacity < capacity => Step::CloseBuffer,
+            Some(_) => Step::AnswerDemand {
+                round: demand.round,
+                part: demand.part,
+                leaf: demand.leaf,
+                address: demand.address,
+            },
+        });
+    }
+    if ledger.buffer.is_some() {
+        return Ok(Step::CloseBuffer);
+    }
+    let paid_out = ledger.rounds.iter().find(|(number, round)| {
+        **number < task.round && round.state == ROUND_FINAL && round.claimed == round.cohort
+    });
+    if let Some((number, _)) = paid_out {
+        return Ok(Step::CloseRound(*number));
+    }
     match task.state {
         TASK_FINISHED if task.stake_held > 0 => return Ok(Step::WithdrawAggregator),
         TASK_ABORTED if task.stake_held > 0 && !task.fraud => {
@@ -408,7 +508,12 @@ fn watcher(run: &RunView, ledger: &Snapshot, notes: &Notes) -> Result<Step, Dive
         return Ok(Step::Wait(Wait::Task));
     };
     let revoked = run.revoked.iter().find(|site| {
-        task.enrolled.has(**site) && !task.revoked.has(**site) && !notes.checked.contains(site)
+        task.enrolled.has(**site)
+            && !task.revoked.has(**site)
+            && notes
+                .checked
+                .get(site)
+                .is_none_or(|slot| ledger.slot >= slot + RECHECK_SLOTS)
     });
     if let Some(site) = revoked {
         return Ok(Step::RevokeCheck(*site));
@@ -434,24 +539,51 @@ fn watcher(run: &RunView, ledger: &Snapshot, notes: &Notes) -> Result<Step, Dive
         });
     }
 
-    let open =
-        round.filter(|round| round.state == ROUND_POSTED && ledger.slot < window_end(task, round));
+    let posted = round.filter(|round| round.state == ROUND_POSTED);
+    let open = posted.filter(|round| ledger.slot < window_end(task, round));
+    if let Some(step) = demanding(number, posted, ledger, notes) {
+        return Ok(step);
+    }
+    let answered = |leaf: Option<u64>| {
+        ledger.demands.iter().find(|demand| {
+            demand.round == number
+                && demand.answered
+                && ledger.slot <= demand.deadline
+                && leaf.is_none_or(|leaf| demand.leaf == leaf)
+        })
+    };
     let verdict = notes.verdicts.get(&number).copied();
-    if open.is_some() && !notes.disputed.contains(&number) {
+    let live = posted.is_some() && (open.is_some() || answered(None).is_some());
+    if live && !notes.disputed.contains(&number) {
         match (verdict, ledger.buffer) {
             (None, _) => return Ok(Step::Examine(number)),
-            (Some(Verdict::Wrong(_)), None) => return Ok(Step::OpenBuffer(capacity)),
-            (Some(Verdict::Wrong(_)), Some(buffer)) if !roomy(&buffer) => {
-                return Ok(Step::CloseBuffer);
+            (Some(Verdict::Wrong(leaf)), buffer)
+                if open.is_some() || answered(Some(leaf)).is_some() =>
+            {
+                match buffer {
+                    None => return Ok(Step::OpenBuffer(capacity)),
+                    Some(buffer) if !roomy(&buffer) => return Ok(Step::CloseBuffer),
+                    Some(_) => {
+                        return Ok(Step::OpenDispute {
+                            round: number,
+                            leaf,
+                            after: match open {
+                                Some(_) => None,
+                                None => answered(Some(leaf)).map(|demand| demand.part),
+                            },
+                        });
+                    }
+                }
             }
-            (Some(Verdict::Wrong(leaf)), Some(_)) => {
-                return Ok(Step::OpenDispute {
-                    round: number,
-                    leaf,
-                });
-            }
-            (Some(Verdict::Sound | Verdict::Unprovable), _) => {}
+            (Some(_), _) => {}
         }
+    }
+    if let Some(demand) = ledger.demands.iter().find(|demand| demand.answered) {
+        return Ok(Step::CloseDemand {
+            round: demand.round,
+            part: demand.part,
+            leaf: demand.leaf,
+        });
     }
     if ledger.buffer.is_some() {
         return Ok(Step::CloseBuffer);
@@ -461,6 +593,66 @@ fn watcher(run: &RunView, ledger: &Snapshot, notes: &Notes) -> Result<Step, Dive
         (true, Some(round)) => Step::Wait(Wait::Window(window_end(task, round))),
         (true, None) => Step::Wait(Wait::Run),
     })
+}
+
+/// What a watcher does about the leaves it had to ask for on the ledger.
+fn demanding(
+    number: u32,
+    posted: Option<&RoundView>,
+    ledger: &Snapshot,
+    notes: &Notes,
+) -> Option<Step> {
+    let mut pending = false;
+    for demand in ledger.demands.iter().filter(|demand| !demand.answered) {
+        if ledger.slot > demand.deadline || (demand.round == number && posted.is_none()) {
+            return Some(Step::CloseDemand {
+                round: demand.round,
+                part: demand.part,
+                leaf: demand.leaf,
+            });
+        }
+        pending = true;
+    }
+    for wanted in notes.wanted.get(&number).into_iter().flatten() {
+        let (part, leaf) = (wanted.part, wanted.leaf);
+        let demand = ledger
+            .demands
+            .iter()
+            .find(|demand| demand.round == number && demand.part == part && demand.leaf == leaf);
+        let round = number;
+        match demand {
+            None if !wanted.opened && posted.is_some() => {
+                return Some(Step::OpenDemand { round, part, leaf });
+            }
+            Some(demand) if demand.answered && !wanted.taken => {
+                return Some(Step::TakeAnswer { round, part, leaf });
+            }
+            _ => {}
+        }
+    }
+    pending.then_some(Step::Wait(Wait::Dispute))
+}
+
+fn issuer(run: &RunView, ledger: &Snapshot, notes: &Notes) -> Step {
+    for (list, signed) in &notes.signed {
+        let Some(held) = ledger.lists.get(list) else {
+            return Step::InitList {
+                list: *list,
+                bits: signed.bits,
+            };
+        };
+        let missing = signed.set.iter().find(|bit| !held.set.contains(bit));
+        if let Some(bit) = missing {
+            return Step::SetBit {
+                list: *list,
+                bit: *bit,
+            };
+        }
+    }
+    match run.ending {
+        Ending::Running => Step::Wait(Wait::Run),
+        _ => Step::Done,
+    }
 }
 
 /// The one thing `party` owes next. `wallet` is its own address.
@@ -476,6 +668,7 @@ pub fn owed(
         Party::Aggregator => aggregator(run, ledger),
         Party::Site(me) => site(me, wallet, run, ledger),
         Party::Watcher => watcher(run, ledger, notes),
+        Party::Issuer => Ok(issuer(run, ledger, notes)),
     }
 }
 
@@ -873,6 +1066,173 @@ mod tests {
         assert_eq!(site(&gone), Ok(Step::Done));
     }
 
+    fn demand(part: ProofPart, leaf: u64, answered: bool, deadline: u64) -> DemandView {
+        DemandView {
+            address: [9; 32],
+            challenger: ME,
+            round: 1,
+            part,
+            leaf,
+            answered,
+            deadline,
+            proof: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn a_watcher_demands_what_it_cannot_fetch_and_takes_each_answer() {
+        let (run, mut ledger) = watched();
+        let part = ProofPart::Aggregate;
+        let mut notes = Notes::default();
+        let want = Wanted {
+            part,
+            leaf: 1,
+            opened: false,
+            taken: false,
+        };
+        notes.wanted.insert(1, vec![want]);
+        let watcher =
+            |ledger: &Snapshot, notes: &Notes| owed(Party::Watcher, &ME, &run, ledger, notes);
+        let open = Step::OpenDemand {
+            round: 1,
+            part,
+            leaf: 1,
+        };
+        assert_eq!(watcher(&ledger, &notes), Ok(open));
+
+        notes.wanted.get_mut(&1).unwrap()[0].opened = true;
+        ledger.demands = vec![demand(part, 1, false, 200)];
+        assert_eq!(watcher(&ledger, &notes), Ok(Step::Wait(Wait::Dispute)));
+
+        let close = Step::CloseDemand {
+            round: 1,
+            part,
+            leaf: 1,
+        };
+        ledger.slot = 201;
+        assert_eq!(watcher(&ledger, &notes), Ok(close));
+        ledger.slot = 110;
+
+        ledger.demands = vec![demand(part, 1, true, 200)];
+        let take = Step::TakeAnswer {
+            round: 1,
+            part,
+            leaf: 1,
+        };
+        assert_eq!(watcher(&ledger, &notes), Ok(take));
+
+        notes.wanted.get_mut(&1).unwrap()[0].taken = true;
+        assert_eq!(watcher(&ledger, &notes), Ok(Step::Examine(1)));
+
+        notes.verdicts.insert(1, Verdict::Sound);
+        assert_eq!(watcher(&ledger, &notes), Ok(close));
+    }
+
+    #[test]
+    fn an_answered_demand_carries_a_dispute_past_the_window() {
+        let (run, mut ledger) = watched();
+        let part = ProofPart::Input(0);
+        let capacity = proof_capacity(&run);
+        ledger.slot = 100 + WINDOW + 5;
+        ledger.buffer = Some(BufferView { capacity });
+        ledger.demands = vec![demand(part, 2, true, 100 + 2 * WINDOW)];
+        let mut notes = with(Verdict::Wrong(2));
+        let step = owed(Party::Watcher, &ME, &run, &ledger, &notes);
+        assert_eq!(
+            step,
+            Ok(Step::OpenDispute {
+                round: 1,
+                leaf: 2,
+                after: Some(part),
+            })
+        );
+        // Wrong at a leaf nobody demanded, past the window: too late to prove.
+        notes.verdicts.insert(1, Verdict::Wrong(1));
+        let step = owed(Party::Watcher, &ME, &run, &ledger, &notes);
+        assert_eq!(
+            step,
+            Ok(Step::CloseDemand {
+                round: 1,
+                part,
+                leaf: 2,
+            })
+        );
+    }
+
+    #[test]
+    fn the_aggregator_answers_demands_first_and_cleans_up_after() {
+        let (run, mut ledger) = watched();
+        let part = ProofPart::Mask(0);
+        ledger.demands = vec![demand(part, 0, false, 200)];
+        let notes = Notes::default();
+        let aggregator =
+            |ledger: &Snapshot| owed(Party::Aggregator, &[5; 32], &run, ledger, &notes);
+        let capacity = proof_capacity(&run);
+        assert_eq!(aggregator(&ledger), Ok(Step::OpenBuffer(capacity)));
+        ledger.buffer = Some(BufferView { capacity: 1 });
+        assert_eq!(aggregator(&ledger), Ok(Step::CloseBuffer));
+        ledger.buffer = Some(BufferView { capacity });
+        let answer = Step::AnswerDemand {
+            round: 1,
+            part,
+            leaf: 0,
+            address: [9; 32],
+        };
+        assert_eq!(aggregator(&ledger), Ok(answer));
+        ledger.demands[0].answered = true;
+        assert_eq!(aggregator(&ledger), Ok(Step::CloseBuffer));
+    }
+
+    #[test]
+    fn a_paid_out_round_is_closed_unless_it_is_the_latest() {
+        let (run, mut ledger) = watched();
+        ledger.buffer = None;
+        let log = run.round(1).unwrap().clone();
+        let mut paid = mirrored(&log, ROUND_FINAL, 50);
+        paid.claimed = paid.cohort;
+        ledger.rounds.insert(1, paid.clone());
+        let notes = Notes::default();
+        let task_at = |round| {
+            let mut ledger = ledger.clone();
+            ledger.task.as_mut().unwrap().round = round;
+            ledger.rounds.insert(round, paid.clone());
+            ledger
+        };
+        let step = |ledger: &Snapshot| owed(Party::Aggregator, &[5; 32], &run, ledger, &notes);
+        assert_eq!(step(&task_at(2)), Ok(Step::CloseRound(1)));
+        assert_ne!(step(&task_at(1)), Ok(Step::CloseRound(1)));
+    }
+
+    #[test]
+    fn an_issuer_mirrors_its_lists_and_stops_with_the_run() {
+        let (mut run, mut ledger) = watched();
+        let mut notes = Notes::default();
+        notes.signed.insert(
+            7,
+            SignedList {
+                bits: 64,
+                set: vec![3, 9],
+            },
+        );
+        let init = Step::InitList { list: 7, bits: 64 };
+        let issuer = |run: &RunView, ledger: &Snapshot, notes: &Notes| {
+            owed(Party::Issuer, &ME, run, ledger, notes)
+        };
+        assert_eq!(issuer(&run, &ledger, &notes), Ok(init));
+        let mut held = StatusView {
+            bits: 64,
+            set: vec![3],
+        };
+        ledger.lists.insert(7, held.clone());
+        let next = Step::SetBit { list: 7, bit: 9 };
+        assert_eq!(issuer(&run, &ledger, &notes), Ok(next));
+        held.set.push(9);
+        ledger.lists.insert(7, held);
+        assert_eq!(issuer(&run, &ledger, &notes), Ok(Step::Wait(Wait::Run)));
+        run.ending = Ending::Finished;
+        assert_eq!(issuer(&run, &ledger, &notes), Ok(Step::Done));
+    }
+
     fn watched() -> (RunView, Snapshot) {
         let mut run = run(3, 2);
         let log = sealed(1, &[0, 2]);
@@ -927,7 +1287,11 @@ mod tests {
         ledger.buffer = Some(BufferView { capacity: 100 });
         assert_eq!(watcher(&ledger, &notes), Ok(Step::CloseBuffer));
         ledger.buffer = Some(BufferView { capacity });
-        let open = Step::OpenDispute { round: 1, leaf: 2 };
+        let open = Step::OpenDispute {
+            round: 1,
+            leaf: 2,
+            after: None,
+        };
         assert_eq!(watcher(&ledger, &notes), Ok(open));
 
         notes.disputed.insert(1);
@@ -1015,15 +1379,21 @@ mod tests {
     }
 
     #[test]
-    fn a_revocation_in_the_log_is_taken_to_the_ledger_once() {
+    fn a_revocation_in_the_log_is_taken_to_the_ledger_until_it_lands() {
         let (mut run, mut ledger) = watched();
         run.revoked.insert(2);
         let mut notes = with(Verdict::Sound);
         let step = owed(Party::Watcher, &ME, &run, &ledger, &notes);
         assert_eq!(step, Ok(Step::RevokeCheck(2)));
-        notes.checked.insert(2);
+        notes.checked.insert(2, ledger.slot);
         let waiting = Ok(Step::Wait(Wait::Window(100 + WINDOW)));
         assert_eq!(owed(Party::Watcher, &ME, &run, &ledger, &notes), waiting);
+
+        // The issuer's list may have come in since, so it is tried again.
+        ledger.slot += RECHECK_SLOTS;
+        let again = owed(Party::Watcher, &ME, &run, &ledger, &notes);
+        assert_eq!(again, Ok(Step::RevokeCheck(2)));
+        ledger.slot -= RECHECK_SLOTS;
 
         notes.checked.clear();
         ledger.task.as_mut().unwrap().revoked = [2].into_iter().collect();

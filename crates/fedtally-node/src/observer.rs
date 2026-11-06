@@ -9,11 +9,11 @@ use fedtally_core::keys::Identity;
 use fedtally_core::plan::Plan;
 use fedtally_core::record::{Body, Record};
 use fedtally_core::replay::Phase;
-use fedtally_core::vector::Digest;
+use fedtally_core::vector::{self, Digest, Manifest};
 
 use crate::follower::{Follower, Patience, Start};
 use crate::net::Client;
-use crate::wire::Object;
+use crate::wire::{Msg, Object};
 use crate::{NodeError, frame_limit};
 
 #[derive(Clone)]
@@ -87,4 +87,68 @@ pub async fn fetch_vector(
     )
     .await?;
     Follower::fetch(&mut client, plan.shape(), object, root, out).await
+}
+
+/// Keeps what can be had of a vector, chunk by chunk, in `out`, and returns the
+/// chunks that could not be: those the aggregator refuses, or sends wrong.
+pub async fn salvage(
+    config: &ObserverConfig,
+    object: Object,
+    root: Digest,
+    out: &Path,
+) -> Result<Vec<u64>, NodeError> {
+    let record = Record::parse(&config.plan_line)?;
+    let Body::Plan(plan) = &record.body else {
+        return Err(NodeError::Protocol("not a plan".into()));
+    };
+    let plan: &Plan = plan;
+    let shape = plan.shape();
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(false)
+        .open(out)?;
+    file.set_len(shape.coords * 8)?;
+    let all = || (0..shape.chunks()).collect::<Vec<u64>>();
+
+    let Ok(mut client) = Client::connect(
+        &config.addr,
+        plan.aggregator.tls_pin,
+        record.body_hash,
+        &config.identity,
+        frame_limit(plan),
+    )
+    .await
+    else {
+        return Ok(all());
+    };
+    client.send(&Msg::GetManifest { object }).await?;
+    let manifest = match client.reply().await {
+        Ok(Msg::Manifest { manifest, .. })
+            if manifest.root == root
+                && Manifest::root_of(&manifest.chunks) == root
+                && manifest.chunks.len() as u64 == shape.chunks() =>
+        {
+            manifest
+        }
+        _ => return Ok(all()),
+    };
+    let mut gone = Vec::new();
+    for chunk in 0..shape.chunks() {
+        client.send(&Msg::GetChunk { object, chunk }).await?;
+        match client.reply().await {
+            Ok(Msg::Chunk { chunk, data, .. })
+                if data.len() == shape.chunk_bytes(chunk)
+                    && vector::digest_chunk_bytes(&data) == manifest.chunks[chunk as usize] =>
+            {
+                vector::write_chunk_bytes(&file, shape, chunk, &data)?;
+            }
+            Ok(_) => gone.push(chunk),
+            Err(_) => {
+                gone.extend(chunk..shape.chunks());
+                break;
+            }
+        }
+    }
+    Ok(gone)
 }

@@ -5,8 +5,11 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use fedtally_ledger::bitmap::{self, SITE_BITMAP_LEN, SiteBitmap};
-use fedtally_ledger::client;
-use fedtally_ledger::state::{Buffer, Dispute, Enrollment, MAX_SITES, Round, TASK_OPEN, Task};
+use fedtally_ledger::client::{self, ProofPart};
+use fedtally_ledger::instructions::dispute_leaf::{PART_AGGREGATE, PART_INPUT, PART_MASK};
+use fedtally_ledger::state::{
+    Buffer, Demand, Dispute, Enrollment, MAX_SITES, Round, StatusList, TASK_OPEN, Task,
+};
 
 use crate::error::ChainError;
 use crate::rpc::{Account, Rpc, RpcError};
@@ -126,6 +129,26 @@ pub struct DisputeView {
     pub aggregate_given: bool,
 }
 
+/// A demand for one leaf, with the proof that answered it, if one has.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DemandView {
+    pub address: [u8; 32],
+    pub challenger: [u8; 32],
+    pub round: u32,
+    pub part: ProofPart,
+    pub leaf: u64,
+    pub answered: bool,
+    pub deadline: u64,
+    pub proof: Vec<u8>,
+}
+
+/// An issuer's list on the ledger.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct StatusView {
+    pub bits: u32,
+    pub set: Vec<u32>,
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct BufferView {
     pub capacity: u32,
@@ -213,6 +236,34 @@ pub fn dispute(account: Option<&Account>) -> Option<DisputeView> {
         seen_inputs: Sites(*dispute.seen_inputs()),
         seen_masks: dispute.seen_masks(),
         aggregate_given: dispute.aggregate_given(),
+    })
+}
+
+pub fn demand(address: [u8; 32], account: &Account) -> Option<DemandView> {
+    let demand = Demand::parse(ours(Some(account))?.data.as_slice()).ok()?;
+    let part = match (demand.kind(), demand.position()) {
+        (PART_INPUT, position) => ProofPart::Input(position),
+        (PART_MASK, helper) => ProofPart::Mask(u8::try_from(helper).ok()?),
+        (PART_AGGREGATE, _) => ProofPart::Aggregate,
+        _ => return None,
+    };
+    Some(DemandView {
+        address,
+        challenger: *demand.challenger(),
+        round: demand.round(),
+        part,
+        leaf: demand.leaf_index(),
+        answered: demand.answered(),
+        deadline: demand.deadline(),
+        proof: demand.proof().to_vec(),
+    })
+}
+
+pub fn status(account: Option<&Account>) -> Option<StatusView> {
+    let list = StatusList::parse(ours(account)?.data.as_slice()).ok()?;
+    Some(StatusView {
+        bits: list.bits(),
+        set: (0..list.bits()).filter(|bit| list.is_set(*bit)).collect(),
     })
 }
 

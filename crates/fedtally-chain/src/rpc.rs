@@ -235,6 +235,37 @@ impl Rpc {
         Ok(found)
     }
 
+    /// The accounts `program` owns whose data holds each of `matching` at its
+    /// offset, with their addresses.
+    pub fn program_accounts(
+        &self,
+        program: &[u8; 32],
+        matching: &[(usize, &[u8])],
+    ) -> Result<Vec<([u8; 32], Account)>, RpcError> {
+        const METHOD: &str = "getProgramAccounts";
+        let filters: Vec<Value> = matching
+            .iter()
+            .map(|(offset, bytes)| {
+                json!({"memcmp": {"offset": offset, "bytes": bs58::encode(bytes).into_string()}})
+            })
+            .collect();
+        let options = json!({"encoding": "base64", "commitment": COMMITMENT, "filters": filters});
+        let name = bs58::encode(program).into_string();
+        let result = self.call(METHOD, json!([name, options]))?;
+        let rows = result.as_array().ok_or(unreadable(METHOD, "not a list"))?;
+        rows.iter()
+            .map(|row| {
+                let address = row
+                    .get("pubkey")
+                    .and_then(Value::as_str)
+                    .and_then(|text| bs58::decode(text).into_vec().ok())
+                    .and_then(|bytes| <[u8; 32]>::try_from(bytes).ok());
+                let held = row.get("account").and_then(account);
+                address.zip(held).ok_or(unreadable(METHOD, "bad account"))
+            })
+            .collect()
+    }
+
     pub fn account(&self, address: &[u8; 32]) -> Result<Option<Account>, RpcError> {
         Ok(self.accounts(&[*address])?.pop().flatten())
     }

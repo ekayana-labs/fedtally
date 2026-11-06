@@ -9,15 +9,17 @@ use std::time::{Duration, Instant};
 use fedtally_core::keys::Identity;
 use fedtally_core::merkle;
 use fedtally_ledger::client::{self, ProofPart, TaskTerms};
-use fedtally_ledger::state::{ROUND_FINAL, TASK_SPACE};
+use fedtally_ledger::state::{
+    DEMAND_DISCRIMINATOR, DemandLayout, MAX_STATUS_BITS, ROUND_FINAL, TASK_SPACE,
+};
 use fedtally_node::NodeError;
 use fedtally_node::observer::{self, ObserverConfig};
 
 use crate::error::ChainError;
 use crate::ledger::{self, Ledger, Sink};
-use crate::owed::{self, Notes, Party, Snapshot, Step, Verdict, Wait};
+use crate::owed::{self, Notes, Party, SignedList, Snapshot, Step, Verdict, Wait, Wanted};
 use crate::rpc::{Rpc, RpcError};
-use crate::run::{Run, RunView};
+use crate::run::{Run, RunView, list_number};
 use crate::tx::Wallet;
 use crate::watch::Vault;
 
@@ -25,6 +27,8 @@ const REJECTIONS: u32 = 5;
 const RETRY_FIRST: Duration = Duration::from_millis(250);
 const RETRY_MAX: Duration = Duration::from_secs(10);
 const CONFIRM_EVERY: Duration = Duration::from_millis(150);
+/// Leaves a watcher asks for at a time.
+const DEMANDS_AT_ONCE: usize = 16;
 
 /// What a publisher sets beyond the plan.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -51,6 +55,8 @@ pub enum Role {
     Aggregator,
     Site,
     Watcher(Watching),
+    /// Mirrors this issuer's revocation lists from the log onto the ledger.
+    Issuer,
 }
 
 pub struct Config {
@@ -93,6 +99,10 @@ pub struct Anchor {
     give_up_after: Duration,
 }
 
+fn anchor_wallet(did: &str) -> Option<[u8; 32]> {
+    fedtally_core::anchor::wallet(did).ok()
+}
+
 fn name(address: &[u8; 32]) -> String {
     bs58::encode(address).into_string()
 }
@@ -132,9 +142,11 @@ fn ceiling(step: &Step, run: &RunView) -> u32 {
         | Step::Enroll
         | Step::OpenRound(_)
         | Step::OpenDispute { .. }
+        | Step::OpenDemand { .. }
+        | Step::InitList { .. }
         | Step::OpenBuffer(_) => 40_000,
         Step::CommitRoot(_) if run.terms.sample > 0 => 20_000 + 200 * u32::from(run.terms.sites),
-        Step::GiveLeaf { .. } => 30_000,
+        Step::GiveLeaf { .. } | Step::AnswerDemand { .. } => 30_000,
         _ => 10_000,
     }
 }
@@ -179,6 +191,7 @@ impl Anchor {
                 (Party::Site(index as u16), None)
             }
             Role::Watcher(_) => (Party::Watcher, None),
+            Role::Issuer => (Party::Issuer, None),
         };
         let task = client::task(&view.publisher, &view.terms.plan.0);
 
@@ -193,7 +206,18 @@ impl Anchor {
                 give_up_after: config.give_up_after,
             };
             mirror = Some(watching.runtime.spawn(observer::mirror_log(source.clone())));
-            vault = Some(Vault::new(source, watching.runtime, run.shape()));
+            vault = Some(Vault::new(source, Some(watching.runtime), run.shape()));
+        }
+        // The aggregator answers demands from its own spool, next to its log.
+        if let (Role::Aggregator, Some(dir)) = (&config.role, config.log.parent()) {
+            let source = ObserverConfig {
+                identity: config.identity.clone(),
+                plan_line: config.plan_line.clone(),
+                addr: String::new(),
+                dir: dir.to_owned(),
+                give_up_after: config.give_up_after,
+            };
+            vault = Some(Vault::new(source, None, run.shape()));
         }
         Ok(Anchor {
             party,
@@ -278,9 +302,22 @@ impl Anchor {
                 snapshot.task_rent = rent;
             }
             Party::Aggregator if latest > 0 => {
-                let round = rpc.account(&round_at(latest))?;
-                let round = ledger::round(round.as_ref(), helpers);
-                snapshot.rounds.extend(round.map(|round| (latest, round)));
+                let numbers: Vec<u32> = (self.cursor..=latest).collect();
+                let mut addresses = vec![client::buffer(&me)];
+                addresses.extend(numbers.iter().map(|number| round_at(*number)));
+                let mut accounts = rpc.accounts(&addresses)?.into_iter();
+                snapshot.buffer = ledger::buffer(accounts.next().flatten().as_ref());
+                for (number, account) in numbers.into_iter().zip(accounts) {
+                    let round = ledger::round(account.as_ref(), helpers);
+                    snapshot.rounds.extend(round.map(|round| (number, round)));
+                }
+                while self.cursor < latest && !snapshot.rounds.contains_key(&self.cursor) {
+                    self.cursor += 1;
+                }
+                let busy = snapshot.rounds.get(&latest).is_some_and(|r| r.disputes > 0);
+                if busy {
+                    snapshot.demands = self.open_demands(None)?;
+                }
             }
             Party::Aggregator => {}
             Party::Site(index) => {
@@ -298,9 +335,11 @@ impl Anchor {
                 }
                 // A final round this site has nothing left to take from is
                 // not read again.
-                while let Some(round) = snapshot.rounds.get(&self.cursor) {
-                    let done = round.state == ROUND_FINAL
-                        && (!round.cohort.has(index) || round.claimed.has(index));
+                while self.cursor < latest {
+                    let done = snapshot.rounds.get(&self.cursor).is_none_or(|round| {
+                        round.state == ROUND_FINAL
+                            && (!round.cohort.has(index) || round.claimed.has(index))
+                    });
                     if !done {
                         break;
                     }
@@ -308,14 +347,7 @@ impl Anchor {
                 }
             }
             Party::Watcher => {
-                let revoked: Vec<u16> = self
-                    .run
-                    .view()
-                    .revoked
-                    .iter()
-                    .filter(|site| !self.notes.checked.contains(site))
-                    .copied()
-                    .collect();
+                let revoked: Vec<u16> = self.run.view().revoked.iter().copied().collect();
                 let mut addresses = vec![
                     round_at(latest),
                     client::dispute(&self.task, latest, &me),
@@ -333,9 +365,70 @@ impl Anchor {
                         .enrollments
                         .extend(enrolled.map(|view| (site, view)));
                 }
+                snapshot.demands = self.open_demands(Some(&me))?;
+            }
+            Party::Issuer => {
+                let numbers: Vec<u32> = self.notes.signed.keys().copied().collect();
+                let addresses: Vec<[u8; 32]> = numbers
+                    .iter()
+                    .map(|list| client::status_list(&me, *list))
+                    .collect();
+                for (list, account) in numbers.into_iter().zip(rpc.accounts(&addresses)?) {
+                    let held = ledger::status(account.as_ref());
+                    snapshot.lists.extend(held.map(|held| (list, held)));
+                }
             }
         }
         Ok(snapshot)
+    }
+
+    /// The demands open on the task, or only those of one challenger.
+    fn open_demands(
+        &self,
+        challenger: Option<&[u8; 32]>,
+    ) -> Result<Vec<ledger::DemandView>, ChainError> {
+        let mut matching: Vec<(usize, &[u8])> = vec![
+            (0, &DEMAND_DISCRIMINATOR),
+            (std::mem::offset_of!(DemandLayout, task), &self.task),
+        ];
+        if let Some(challenger) = challenger {
+            matching.push((std::mem::offset_of!(DemandLayout, challenger), challenger));
+        }
+        let program = *fedtally_ledger::ID.as_array();
+        let found = self.ledger.rpc.program_accounts(&program, &matching)?;
+        Ok(found
+            .iter()
+            .filter_map(|(address, account)| ledger::demand(*address, account))
+            .collect())
+    }
+
+    /// What the log says this issuer has revoked, as the ledger can hold it.
+    fn read_signed(&mut self) {
+        let me = self.me();
+        self.notes.signed = self
+            .run
+            .replay()
+            .lists
+            .values()
+            .filter(|list| anchor_wallet(&list.issuer).is_some_and(|wallet| wallet == me))
+            .map(|list| {
+                let set = (0..MAX_STATUS_BITS)
+                    .filter(|bit| list.is_set(u64::from(*bit)))
+                    .collect();
+                let signed = SignedList {
+                    bits: MAX_STATUS_BITS,
+                    set,
+                };
+                (list_number(&list.id), signed)
+            })
+            .collect();
+    }
+
+    /// A round on the ledger is settled for good, so its vectors can go.
+    fn prune(&self, number: u32) {
+        if let Some(vault) = &self.vault {
+            let _ = std::fs::remove_dir_all(vault.source.dir.join(format!("round-{number}")));
+        }
     }
 
     /// Keeps the watcher's replica going and its copy of the vectors current.
@@ -344,9 +437,12 @@ impl Anchor {
             .mirror
             .as_ref()
             .is_some_and(|mirror| mirror.is_finished())
-            && let (Some(mirror), Some(vault)) = (self.mirror.take(), &self.vault)
+            && let (Some(mirror), Some(runtime)) = (
+                self.mirror.take(),
+                self.vault.as_ref().and_then(|vault| vault.runtime.as_ref()),
+            )
         {
-            match vault.runtime.block_on(mirror) {
+            match runtime.block_on(mirror) {
                 Ok(Ok(())) => {}
                 Ok(Err(e @ (NodeError::Disconnected(_) | NodeError::Io(_)))) => {
                     tracing::warn!("the log can no longer be followed: {e}");
@@ -414,6 +510,34 @@ impl Anchor {
                     "round {number}: the vectors behind the ledger's roots cannot be had: {e}"
                 );
                 self.quiet_until = Instant::now() + self.poll.max(RETRY_FIRST) * 4;
+                // Half the window goes to asking nicely. What's still refused
+                // then is asked for on the ledger.
+                let Some(task) = &snapshot.task else {
+                    return Ok(());
+                };
+                let (window, slot) = (task.challenge_slots, snapshot.slot);
+                let halfway = round.posted_slot + window / 2;
+                let end = round.posted_slot + window;
+                if slot >= end {
+                    tracing::error!("round {number}: nothing more can be asked for");
+                    self.notes.verdicts.insert(number, Verdict::Unprovable);
+                } else if slot >= halfway {
+                    let wanted = self.notes.wanted.entry(number).or_default();
+                    let asked = vault.missing(number, round, log, DEMANDS_AT_ONCE)?;
+                    for (part, leaf) in asked {
+                        if !wanted.iter().any(|w| w.part == part && w.leaf == leaf) {
+                            tracing::warn!(
+                                "round {number}: demanding leaf {leaf} of {part:?} on the ledger"
+                            );
+                            wanted.push(Wanted {
+                                part,
+                                leaf,
+                                opened: false,
+                                taken: false,
+                            });
+                        }
+                    }
+                }
             }
         }
         Ok(())
@@ -508,8 +632,11 @@ impl Anchor {
             }
             Step::OpenBuffer(capacity) => ("buffer_init", None, client::buffer_init(&me, capacity)),
             Step::CloseBuffer => ("buffer_close", None, client::buffer_close(&me)),
-            Step::OpenDispute { round, leaf } => {
-                let ix = client::dispute_open(&me, &task, round, leaf);
+            Step::OpenDispute { round, leaf, after } => {
+                let ix = match after {
+                    Some(part) => client::dispute_open_after_demand(&me, &task, round, part, leaf),
+                    None => client::dispute_open(&me, &task, round, leaf),
+                };
                 self.ledger.send("dispute_open", Some(round), ix, ceiling)?;
                 self.notes.disputed.insert(round);
                 return Ok(());
@@ -534,6 +661,75 @@ impl Anchor {
                 let ix = client::dispute_leaf(&me, &task, round, part);
                 (what, Some(round), ix)
             }
+            Step::OpenDemand { round, part, leaf } => {
+                let ix = client::demand_open(&me, &task, round, part, leaf);
+                self.ledger.send("demand_open", Some(round), ix, ceiling)?;
+                let wanted = self.notes.wanted.entry(round).or_default();
+                for one in wanted.iter_mut() {
+                    one.opened |= one.part == part && one.leaf == leaf;
+                }
+                return Ok(());
+            }
+            Step::TakeAnswer { round, part, leaf } => {
+                let found = snapshot
+                    .demands
+                    .iter()
+                    .find(|d| d.round == round && d.part == part && d.leaf == leaf);
+                if let (Some(demand), Some(held), Some(vault)) =
+                    (found, snapshot.rounds.get(&round), &mut self.vault)
+                {
+                    let empty = Default::default();
+                    let log = view.round(round).unwrap_or(&empty);
+                    vault.patch(round, held, log, part, leaf, &demand.proof)?;
+                }
+                let wanted = self.notes.wanted.entry(round).or_default();
+                for one in wanted.iter_mut() {
+                    one.taken |= one.part == part && one.leaf == leaf;
+                }
+                self.notes.verdicts.remove(&round);
+                self.quiet_until = Instant::now();
+                return Ok(());
+            }
+            Step::CloseDemand { round, part, leaf } => {
+                let address = client::demand(&task, &me, round, part, leaf);
+                let ix = client::demand_close(&task, round, address, &me, true);
+                ("demand_close", Some(round), ix)
+            }
+            Step::AnswerDemand {
+                round,
+                part,
+                leaf,
+                address,
+            } => {
+                let (Some(held), Some(vault)) = (snapshot.rounds.get(&round), &mut self.vault)
+                else {
+                    return Ok(());
+                };
+                let empty = Default::default();
+                let log = view.round(round).unwrap_or(&empty);
+                let proof = match vault.proof(round, held, log, leaf, part) {
+                    Ok(proof) => proof,
+                    Err(e) => {
+                        tracing::error!("round {round}: cannot answer for leaf {leaf}: {e}");
+                        std::thread::sleep(self.poll);
+                        return Ok(());
+                    }
+                };
+                for write in client::upload(&me, &proof) {
+                    self.ledger
+                        .send("buffer_write", Some(round), write, ceiling)?;
+                }
+                let ix = client::demand_answer(&me, &task, round, address);
+                ("demand_answer", Some(round), ix)
+            }
+            Step::CloseRound(number) => {
+                let ix = client::round_close(&view.aggregator, &task, number);
+                ("round_close", Some(number), ix)
+            }
+            Step::InitList { list, bits } => {
+                ("status_init", None, client::status_init(&me, list, bits))
+            }
+            Step::SetBit { list, bit } => ("revoke", None, client::revoke(&me, list, bit)),
             Step::CloseDispute(number) => {
                 let ix = client::dispute_close(&task, number, &me, &view.aggregator);
                 ("dispute_close", Some(number), ix)
@@ -545,11 +741,15 @@ impl Anchor {
                     .unwrap_or_default();
                 let ix = client::revoke_check(&task, site, &lists);
                 self.ledger.send("revoke_check", None, ix, ceiling)?;
-                self.notes.checked.insert(site);
+                self.notes.checked.insert(site, snapshot.slot);
                 return Ok(());
             }
         };
-        self.ledger.send(what, round, ix, ceiling)
+        self.ledger.send(what, round, ix, ceiling)?;
+        if let Step::Settle(number) = step {
+            self.prune(number);
+        }
+        Ok(())
     }
 
     fn say(&mut self, step: Step) {
@@ -572,6 +772,10 @@ impl Anchor {
         self.check_program()?;
         match self.party {
             Party::Watcher => self.watch()?,
+            Party::Issuer => {
+                self.run.refresh()?;
+                self.read_signed();
+            }
             _ => {
                 self.run.refresh()?;
             }
