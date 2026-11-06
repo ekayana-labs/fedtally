@@ -279,15 +279,18 @@ impl Site {
         let Some(dir) = self.standing.status_dir.clone() else {
             return Ok(());
         };
-        for list in newer_lists(&dir, &self.f.replay) {
+        let offered = newer_lists(&dir, &self.f.replay);
+        for list in &offered {
             let body = Body::Status {
                 plan: self.f.plan_id,
-                list,
+                list: list.clone(),
             };
             self.f.offer(client, &body).await?;
         }
         // An aggregator that won't log a revocation doesn't get this site's data.
-        if newer_lists(&dir, &self.f.replay).is_empty() {
+        // A list that turned up after the offers waits for the next round.
+        let missing = newer_lists(&dir, &self.f.replay);
+        if offered.iter().all(|list| !missing.contains(list)) {
             Ok(())
         } else {
             Err(NodeError::Refused(

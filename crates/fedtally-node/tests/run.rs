@@ -1218,6 +1218,37 @@ async fn revoking_a_grant_takes_the_site_out_of_the_next_round() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn a_list_published_while_sites_relay_costs_nobody_the_round() {
+    let dir = tempfile::tempdir().unwrap();
+    let init = initial_model(dir.path());
+    let mut opts = gated_options(3, 1);
+    opts.timeouts.collect_secs = 6;
+    let fed = Arc::new(LocalFederation::create(dir.path(), layout(), &init, &opts).unwrap());
+    // Lists keep coming, so one lands between a site's offers and its check of
+    // them. They revoke a site that isn't in this run.
+    let stop = Arc::new(AtomicBool::new(false));
+    let publisher = {
+        let (fed, stop) = (fed.clone(), stop.clone());
+        std::thread::spawn(move || {
+            while !stop.load(Ordering::SeqCst) {
+                fed.revoke_access(99).unwrap();
+                std::thread::sleep(Duration::from_millis(1));
+            }
+        })
+    };
+    let trainers: Vec<Box<dyn Trainer>> = (0..3)
+        .map(|_| Fixed::new(2.0, 1) as Box<dyn Trainer>)
+        .collect();
+    let (running, results) = run_all(&fed, trainers, None).await;
+    stop.store(true, Ordering::SeqCst);
+    publisher.join().unwrap();
+    running.aggregator.await.unwrap().unwrap();
+    for result in results {
+        assert_eq!(result.unwrap().rounds_contributed, [1]);
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn sampled_rounds_take_only_the_sites_drawn() {
     let dir = tempfile::tempdir().unwrap();
     let init = initial_model(dir.path());
