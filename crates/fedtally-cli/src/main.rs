@@ -730,7 +730,9 @@ async fn run(command: Command) -> Result<ExitCode, Failure> {
             }
             println!("{}", serde_json::to_string_pretty(&report)?);
             if !report.complete() {
-                eprintln!("valid, but with gaps: the run did not finish or a site was left out");
+                eprintln!(
+                    "valid, but with gaps: the run did not finish, a site was left out, or a round was given up"
+                );
                 return Ok(ExitCode::from(2));
             }
         }

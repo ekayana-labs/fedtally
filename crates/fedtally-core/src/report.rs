@@ -63,8 +63,8 @@ pub struct RoundReport {
     pub included: Vec<Contributor>,
     /// Signed a contribution but were left out of the round.
     pub excluded: Vec<String>,
-    /// The sites drawn for the round where the plan samples, or those left
-    /// after a retry.
+    /// The sites drawn for the round where the plan samples, those left after a
+    /// retry, or the cohort a redo must close over.
     pub invited: Option<Vec<String>>,
     /// Could have been in the round, but nothing from them is in it. They may
     /// have sat out, or the aggregator may have refused to log them.
@@ -75,7 +75,10 @@ pub struct RoundReport {
     pub total_weight: Option<u64>,
     pub model: Option<Digest>,
     pub sealed: bool,
-    /// Given up for a retry. Its sum is out and paid for, but made no model.
+    /// Given up for a retry or a removed helper. It's paid for and made no model.
+    /// Its sum may be out even if the log shows no Outcome, since helpers upload
+    /// their masks before their records are logged. After a removal, its whole
+    /// cohort shows under `unattested` and `unacked`, as nobody asked them to sign.
     pub voided: bool,
     /// The zCDP rho this round spent, in a private run.
     pub rho: Option<f64>,

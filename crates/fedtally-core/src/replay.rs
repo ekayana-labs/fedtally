@@ -182,7 +182,8 @@ pub struct RoundState {
     pub from: u32,
     /// Which model this round would make. Numbers count attempts, steps don't.
     pub step: u32,
-    /// Given up before its seal. Its sum is out and paid for, but made no model.
+    /// Given up before its seal. It's paid for, and its sum may be out, but it
+    /// made no model.
     pub voided: bool,
     /// The helpers this round's masks go to.
     pub active: Vec<usize>,
