@@ -9,7 +9,7 @@ use fedtally_core::admission::{self, Terms};
 use fedtally_core::credential::{Credential, Draft, StatusEntry};
 use fedtally_core::keys::{Identity, SigAlg, random_bytes};
 use fedtally_core::model::{Encoding, Layout, ModelFile, TensorView};
-use fedtally_core::plan::{AggregatorSpec, HelperSpec, Plan, Timeouts};
+use fedtally_core::plan::{AggregatorSpec, HelperSpec, Plan, ServerAdam, Timeouts};
 use fedtally_core::policy::Policy;
 use fedtally_core::pq_ucan::delegation::Delegation;
 use fedtally_core::pq_ucan::did::Did;
@@ -336,6 +336,8 @@ struct PlanSpec {
     retries: u32,
     #[serde(default)]
     min_helpers: u32,
+    #[serde(default)]
+    server_adam: Option<ServerAdam>,
 }
 
 impl PlanSpec {
@@ -540,7 +542,7 @@ async fn run(command: Command) -> Result<ExitCode, Failure> {
                 scoring: spec.scoring,
                 retries: spec.retries,
                 min_helpers: spec.min_helpers,
-                server_adam: None,
+                server_adam: spec.server_adam,
             };
             plan.validate()?;
             let record = Record::sign(&sponsor, &Body::Plan(Box::new(plan)))?;

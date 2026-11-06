@@ -210,6 +210,10 @@ The bound holds even though the aggregator picks the second cohort after seeing 
 
 A run with a retry is never `complete` in its report, and `fedtally verify` exits 2 for it. The given up round is listed as `voided`, with its silent sites under `unattested`. On a ledger, the aggregator's anchor follows with `void_round`. The budget it charged stays spent, nobody is paid for that round, and each step still pays its reward once.
 
+## Training choices
+
+**FedAdam** (`server_adam` in the plan) sends each round's average update through Adam on the server. Everyone works the next model out for themselves, so the moments are a file each party holds, and the Outcome commits to its digest. A site that sat a round out fetches them and checks that digest. Rust doesn't fuse floating point operations, so the same inputs give the same bits. That has only been run on one kind of machine.
+
 ## Losing a helper
 
 By default every helper is needed, and one honest helper is enough to keep updates hidden. A plan can trade some of that for surviving a helper that goes for good: `min_helpers` is the fewest the run may carry on with. It must be at least 2 and below the plan's helpers, and a grant refuses such a plan unless it says how many helpers it wants left.

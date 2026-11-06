@@ -141,6 +141,10 @@ impl Dirs {
             .join(format!("round-{round}.safetensors"))
     }
 
+    pub fn moments(&self, round: u32) -> PathBuf {
+        self.0.join("models").join(format!("round-{round}.moments"))
+    }
+
     pub fn drop_round(&self, round: u32) {
         let _ = std::fs::remove_dir_all(self.round_path(round));
     }

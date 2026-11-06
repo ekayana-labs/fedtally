@@ -13,7 +13,7 @@ use fedtally_core::credential::{Credential, Draft, StatusEntry};
 use fedtally_core::duo::{self, Purpose, Research};
 use fedtally_core::keys::{Identity, SigAlg, random_bytes};
 use fedtally_core::model::{Encoding, Layout};
-use fedtally_core::plan::{AggregatorSpec, HelperSpec, Plan, Timeouts};
+use fedtally_core::plan::{AggregatorSpec, HelperSpec, Plan, ServerAdam, Timeouts};
 use fedtally_core::policy::{About, Atom, Policy, Rule};
 use fedtally_core::pq_ucan::crypto::Signer;
 use fedtally_core::pq_ucan::time::Timestamp;
@@ -65,6 +65,8 @@ pub struct Options {
     pub retries: u32,
     /// The fewest helpers a run may carry on with, if it may lose any.
     pub min_helpers: u32,
+    /// Apply each round's update through Adam on the server.
+    pub server_adam: Option<ServerAdam>,
     /// Sites that play dishonest, with how many times past the plan's clip
     /// each one reaches. For tests and attack benchmarks.
     pub cheats: BTreeMap<usize, u64>,
@@ -99,6 +101,7 @@ struct Overrides {
     scoring: Option<u32>,
     retries: Option<u32>,
     min_helpers: Option<u32>,
+    server_adam: Option<ServerAdam>,
     cheats: Option<BTreeMap<usize, u64>>,
 }
 
@@ -140,6 +143,7 @@ impl Options {
             scoring: None,
             retries: 0,
             min_helpers: 0,
+            server_adam: None,
             cheats: BTreeMap::new(),
         }
     }
@@ -174,6 +178,7 @@ impl Options {
         options.scoring = given.scoring;
         set(&mut options.retries, given.retries);
         set(&mut options.min_helpers, given.min_helpers);
+        options.server_adam = given.server_adam;
         set(&mut options.cheats, given.cheats);
         Ok(options)
     }
@@ -522,7 +527,7 @@ impl LocalFederation {
             scoring: options.scoring.map(|group| Scoring { group }),
             retries: options.retries,
             min_helpers: options.min_helpers,
-            server_adam: None,
+            server_adam: options.server_adam,
         };
         edit(&mut plan);
         plan.validate().map_err(|e| check(&e))?;

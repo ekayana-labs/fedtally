@@ -136,6 +136,7 @@ pub struct Outcome {
     pub model: Digest,
     pub challenge: Digest,
     pub groups: Vec<Digest>,
+    pub moments: Option<Digest>,
 }
 
 #[derive(Clone, Debug)]
@@ -914,6 +915,7 @@ impl Replay {
                 aggregate,
                 model,
                 groups,
+                moments,
             } => {
                 from_aggregator()?;
                 same_run(id)?;
@@ -935,7 +937,9 @@ impl Replay {
                         want,
                     });
                 }
-                if groups.len() != group_count(plan, state) {
+                if groups.len() != group_count(plan, state)
+                    || moments.is_some() != plan.server_adam.is_some()
+                {
                     return Err(Fault::WrongLength(name));
                 }
                 state.outcome = Some(Outcome {
@@ -944,6 +948,7 @@ impl Replay {
                     model: *model,
                     challenge: head_after,
                     groups: groups.clone(),
+                    moments: *moments,
                 });
                 self.phase = Phase::Attesting;
                 Ok(())

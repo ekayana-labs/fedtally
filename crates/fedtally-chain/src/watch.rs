@@ -67,7 +67,8 @@ fn round_of(object: Object) -> u32 {
         | Object::Aggregate { round }
         | Object::GroupMask { round, .. }
         | Object::GroupAggregate { round, .. }
-        | Object::Model { round } => round,
+        | Object::Model { round }
+        | Object::Moments { round } => round,
         Object::InitialModel => 0,
     }
 }
@@ -108,6 +109,7 @@ impl Vault {
                 group,
             } => (round, format!("mask-{helper}-g{group}.bin")),
             Object::GroupAggregate { round, group } => (round, format!("aggregate-g{group}.bin")),
+            Object::Moments { round } => (round, "moments".to_owned()),
             Object::Model { round } => (round, "model".to_owned()),
             Object::InitialModel => (0, "model".to_owned()),
         };

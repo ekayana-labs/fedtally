@@ -17,6 +17,10 @@ pub enum Object {
     Model {
         round: u32,
     },
+    /// Adam's moments after a round, in a plan that uses it.
+    Moments {
+        round: u32,
+    },
     Upload {
         round: u32,
         site: u32,

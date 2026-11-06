@@ -199,6 +199,7 @@ impl Shared {
                 .round_path(round)
                 .join(format!("aggregate-g{group}.bin")),
             Object::Model { round } => self.dirs.model(round),
+            Object::Moments { round } => self.dirs.moments(round),
             Object::InitialModel => self.dirs.model(0),
         }
     }
@@ -688,7 +689,8 @@ fn readable(shared: &Shared, role: Role, object: Object) -> bool {
     match object {
         Object::Aggregate { round }
         | Object::GroupAggregate { round, .. }
-        | Object::Model { round } => !sum_held_back(&shared.lock(), round),
+        | Object::Model { round }
+        | Object::Moments { round } => !sum_held_back(&shared.lock(), round),
         Object::InitialModel => true,
         // A masked vector is noise to a site, so it's safe to audit, but only the
         // assigned auditor gets it. A site working with every helper could unmask
@@ -727,7 +729,8 @@ fn watchable(shared: &Shared, object: Object) -> bool {
         | Object::Aggregate { round }
         | Object::GroupMask { round, .. }
         | Object::GroupAggregate { round, .. }
-        | Object::Model { round } => round,
+        | Object::Model { round }
+        | Object::Moments { round } => round,
         Object::InitialModel => return true,
     };
     let state = shared.lock();
@@ -1087,7 +1090,10 @@ async fn send_file(
     data: &mpsc::Sender<Msg>,
 ) -> Result<(), NodeError> {
     use std::os::unix::fs::FileExt;
-    if !matches!(object, Object::Model { .. } | Object::InitialModel) {
+    if !matches!(
+        object,
+        Object::Model { .. } | Object::Moments { .. } | Object::InitialModel
+    ) {
         return Err(NodeError::Protocol("that object is not a file".into()));
     }
     let closed = |e: mpsc::error::SendError<Msg>| NodeError::Protocol(e.to_string());
@@ -1509,9 +1515,11 @@ fn next_round(shared: &Arc<Shared>) -> Result<(), NodeError> {
     }
     if from > 0 {
         let _ = std::fs::remove_file(shared.dirs.model(from));
+        let _ = std::fs::remove_file(shared.dirs.moments(from));
     }
     for given_up in from + 1..round {
         let _ = std::fs::remove_file(shared.dirs.model(given_up));
+        let _ = std::fs::remove_file(shared.dirs.moments(given_up));
     }
     if step >= shared.plan.rounds {
         let plan = shared.plan_id;
@@ -1795,7 +1803,10 @@ async fn outcome_round(shared: &Arc<Shared>) -> Result<(), NodeError> {
         .sum();
     let hook = shared.hook.clone();
     let hook_dir = dir.clone();
-    let (root, model_digest, manifest) = blocking(move || {
+    let from = state_copy.from;
+    let before_moments = (from > 0).then(|| shared.dirs.moments(from));
+    let next_moments = shared.dirs.moments(round);
+    let (root, model_digest, manifest, moments) = blocking(move || {
         let refs: Vec<&Path> = masks.iter().map(PathBuf::as_path).collect();
         let manifest = vector::combine(&aggregate, shape, &[&sum_path], &refs)?;
         let manifest = match hook {
@@ -1805,16 +1816,39 @@ async fn outcome_round(shared: &Arc<Shared>) -> Result<(), NodeError> {
             }
             None => manifest,
         };
-        model::apply_aggregate(
-            &plan.layout,
-            plan.encoding,
-            plan.chunk_coords,
-            &base,
-            &aggregate,
-            total_weight,
-            &next_model,
-        )?;
-        Ok((manifest.root, Digest::file(&next_model)?, manifest))
+        let mut moments = None;
+        match plan.server_adam {
+            Some(params) => {
+                let before = before_moments.as_deref();
+                let adam = model::AdamStep {
+                    params,
+                    moments: before,
+                    moments_out: &next_moments,
+                };
+                model::apply_aggregate_adam(
+                    &plan.layout,
+                    plan.encoding,
+                    plan.chunk_coords,
+                    &base,
+                    &aggregate,
+                    total_weight,
+                    &adam,
+                    &next_model,
+                )?;
+                File::open(&next_moments)?.sync_data()?;
+                moments = Some(Digest::file(&next_moments)?);
+            }
+            None => model::apply_aggregate(
+                &plan.layout,
+                plan.encoding,
+                plan.chunk_coords,
+                &base,
+                &aggregate,
+                total_weight,
+                &next_model,
+            )?,
+        }
+        Ok((manifest.root, Digest::file(&next_model)?, manifest, moments))
     })
     .await?;
     shared
@@ -1868,6 +1902,7 @@ async fn outcome_round(shared: &Arc<Shared>) -> Result<(), NodeError> {
         aggregate: root,
         model: model_digest,
         groups,
+        moments,
     })
 }
 

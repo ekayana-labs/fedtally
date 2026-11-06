@@ -386,6 +386,7 @@ impl Run {
             aggregate: Digest::of(b"aggregate"),
             model: Digest::of(format!("model {round}").as_bytes()),
             groups: vec![Digest::of(b"group sum"); self.group_count()],
+            moments: self.plan.server_adam.map(|_| Digest::of(b"moments")),
         }
     }
 
@@ -1410,6 +1411,87 @@ fn a_plan_with_server_adam_needs_sensible_settings() {
     assert_eq!(Run::with(adam).plan.validate(), Ok(()));
     let plain = serde_json::to_string(&Run::new().plan).unwrap();
     assert!(!plain.contains("server_adam"));
+}
+
+#[test]
+fn an_outcome_commits_to_the_moments_exactly_when_the_plan_uses_adam() {
+    let reach_outcome = |run: &mut Run| {
+        run.join(0..3);
+        run.open_and_close_all(1);
+        run.mask_sum(1);
+    };
+    let mut with = Run::with(adam);
+    reach_outcome(&mut with);
+    let aggregator = with.aggregator.clone();
+    let Body::Outcome {
+        plan,
+        round,
+        prev,
+        total_weight,
+        aggregate,
+        model,
+        groups,
+        ..
+    } = with.outcome_body(1, 30)
+    else {
+        unreachable!()
+    };
+    let without_moments = Body::Outcome {
+        plan,
+        round,
+        prev,
+        total_weight,
+        aggregate,
+        model,
+        groups,
+        moments: None,
+    };
+    assert!(matches!(
+        with.refuse(&aggregator, without_moments),
+        Fault::WrongLength(_)
+    ));
+    with.outcome(1, 30);
+    assert_eq!(
+        with.replay
+            .current()
+            .unwrap()
+            .outcome
+            .as_ref()
+            .unwrap()
+            .moments,
+        Some(Digest::of(b"moments"))
+    );
+
+    let mut plain = Run::new();
+    reach_outcome(&mut plain);
+    let aggregator = plain.aggregator.clone();
+    let Body::Outcome {
+        plan,
+        round,
+        prev,
+        total_weight,
+        aggregate,
+        model,
+        groups,
+        ..
+    } = plain.outcome_body(1, 30)
+    else {
+        unreachable!()
+    };
+    let with_moments = Body::Outcome {
+        plan,
+        round,
+        prev,
+        total_weight,
+        aggregate,
+        model,
+        groups,
+        moments: Some(Digest::of(b"moments")),
+    };
+    assert!(matches!(
+        plain.refuse(&aggregator, with_moments),
+        Fault::WrongLength(_)
+    ));
 }
 
 #[test]

@@ -9,7 +9,7 @@ use std::time::Duration;
 use fedtally_core::field::P;
 use fedtally_core::keys::{Identity, SigAlg};
 use fedtally_core::model::{Dtype, Layout, ModelFile, TensorSpec, TensorView, write_model};
-use fedtally_core::plan::Plan;
+use fedtally_core::plan::{Plan, ServerAdam};
 use fedtally_core::pq_ucan::Cid;
 use fedtally_core::pq_ucan::did::Did;
 use fedtally_core::pq_ucan::validate::RevocationStore;
@@ -2204,6 +2204,99 @@ fn a_removed_helper_can_stop_standing_on_the_registry() {
     assert!(fedtally_node::registry::check(&ledger, &fed.plan, &nobody).is_err());
     let removed = std::collections::BTreeSet::from([2]);
     assert!(fedtally_node::registry::check(&ledger, &fed.plan, &removed).is_ok());
+}
+
+fn adam_options(rounds: u32) -> Options {
+    let mut options = options(3, 1, rounds);
+    options.min_cohort = 2;
+    options.timeouts.collect_secs = 2;
+    options.server_adam = Some(ServerAdam {
+        rate: 0.5,
+        beta1: 0.9,
+        beta2: 0.99,
+        tau: 0.001,
+    });
+    options
+}
+
+/// Moves to 2.0 every round, sleeping through the first.
+struct LateFirst(bool);
+
+impl Trainer for LateFirst {
+    fn train(&mut self, _: &TrainContext, submit: &mut Submit<'_>) -> Result<(), String> {
+        if std::mem::replace(&mut self.0, false) {
+            std::thread::sleep(Duration::from_secs(3));
+        }
+        let (w, b) = (vec![2.0; 1000], vec![2.0; 24]);
+        submit(&[TensorView::F32(&w), TensorView::F64(&b)], 1)
+            .map(|_| ())
+            .map_err(|e| e.to_string())
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn adam_on_the_server_gives_every_site_the_model_the_formula_says() {
+    let dir = tempfile::tempdir().unwrap();
+    let init = initial_model(dir.path());
+    let fed = LocalFederation::create(dir.path(), layout(), &init, &adam_options(2)).unwrap();
+    let trainers = (0..3)
+        .map(|_| Fixed::new(2.0, 1) as Box<dyn Trainer>)
+        .collect();
+    let (running, results) = run_all(&fed, trainers, None).await;
+    let replay = running.aggregator.await.unwrap().unwrap();
+    let summaries: Vec<_> = results.into_iter().map(Result::unwrap).collect();
+    let log = fed.aggregator_dir().join("log.jsonl");
+    let report = verify_log(&log, Some(&summaries[0].final_model)).unwrap();
+    assert!(report.complete(), "{report:?}");
+    assert!(
+        summaries
+            .iter()
+            .all(|s| s.final_digest == summaries[0].final_digest)
+    );
+    assert!(
+        replay
+            .rounds
+            .iter()
+            .all(|r| r.outcome.as_ref().unwrap().moments.is_some())
+    );
+
+    // Every site moves to 2.0 from w = 1.0, and the second round's update is what
+    // is left. Rust's f32 model truncates between rounds, as this does.
+    let (mut x, mut m, mut v) = (1.0f32, 0.0f64, 0.0f64);
+    for _ in 0..2 {
+        let delta = 2.0 - f64::from(x);
+        m = 0.9 * m + 0.1 * delta;
+        v = 0.99 * v + 0.01 * delta * delta;
+        x = (f64::from(x) + 0.5 * m / (v.sqrt() + 0.001)) as f32;
+    }
+    let got = read_tensor_mean(&summaries[0].final_model);
+    assert!((got - f64::from(x)).abs() < 1e-3, "{got} {x}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_site_that_missed_a_round_fetches_the_moments_and_agrees() {
+    let dir = tempfile::tempdir().unwrap();
+    let init = initial_model(dir.path());
+    let fed = LocalFederation::create(dir.path(), layout(), &init, &adam_options(3)).unwrap();
+    let mut trainers = fixed_trainers(2);
+    trainers.push(Box::new(LateFirst(true)));
+    let (running, results) = run_all(&fed, trainers, None).await;
+    let replay = running.aggregator.await.unwrap().unwrap();
+    assert_eq!(replay.phase, Phase::Done, "{:?}", replay.abort);
+    assert_eq!(replay.rounds[0].included, [0, 1]);
+    assert!(
+        replay
+            .rounds
+            .iter()
+            .skip(1)
+            .any(|r| r.included.contains(&2))
+    );
+    let summaries: Vec<_> = results.into_iter().map(Result::unwrap).collect();
+    assert!(
+        summaries
+            .iter()
+            .all(|s| s.final_digest == summaries[0].final_digest)
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]

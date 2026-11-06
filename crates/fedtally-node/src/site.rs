@@ -391,6 +391,7 @@ impl Site {
             .map_or(0, |sealed| sealed.from);
         if before > 0 {
             let _ = std::fs::remove_file(self.f.dirs.model(before));
+            let _ = std::fs::remove_file(self.f.dirs.moments(before));
         }
         // A redo is built from the round before it, so that one stays until
         // the redo's own file is written.
@@ -406,7 +407,31 @@ impl Site {
         for given_up in rounds.iter().filter(|r| r.voided && !needed(r)) {
             self.f.dirs.drop_round(given_up.round);
             let _ = std::fs::remove_file(self.f.dirs.model(given_up.round));
+            let _ = std::fs::remove_file(self.f.dirs.moments(given_up.round));
         }
+    }
+
+    /// A site that sat out the round before fetches Adam's moments, checked
+    /// against the log. The first round starts from nothing.
+    async fn ensure_moments(
+        &mut self,
+        client: &mut Client,
+        state: &RoundState,
+    ) -> Result<(), NodeError> {
+        if self.f.plan.server_adam.is_none() || state.from == 0 {
+            return Ok(());
+        }
+        let sealed = self.f.replay.rounds.get(state.from as usize - 1);
+        let digest = sealed
+            .and_then(|r| r.outcome.as_ref())
+            .and_then(|o| o.moments)
+            .ok_or_else(|| NodeError::Protocol("no moments in the log".into()))?;
+        let path = self.f.dirs.moments(state.from);
+        if path.exists() && Digest::file(&path)? == digest {
+            return Ok(());
+        }
+        let object = Object::Moments { round: state.from };
+        self.f.fetch_file(client, object, digest, &path).await
     }
 
     async fn collect(&mut self, client: &mut Client, state: &RoundState) -> Result<(), NodeError> {
@@ -738,25 +763,50 @@ impl Site {
                 &aggregate_path,
             )
             .await?;
+        self.ensure_moments(client, state).await?;
         let plan = self.f.plan.clone();
         let base = self.f.dirs.model(state.from);
         let next = self.f.dirs.model(round);
         let total_weight = outcome.total_weight;
-        let (aggregate, model_digest) = blocking(move || {
+        let from = state.from;
+        let before_moments = self.f.dirs.moments(from);
+        let next_moments = self.f.dirs.moments(round);
+        let (aggregate, model_digest, moments) = blocking(move || {
             let aggregate = vector::fingerprint_file(&aggregate_path, shape, rho)?;
-            model::apply_aggregate(
-                &plan.layout,
-                plan.encoding,
-                plan.chunk_coords,
-                &base,
-                &aggregate_path,
-                total_weight,
-                &next,
-            )?;
-            Ok((aggregate, Digest::file(&next)?))
+            let mut moments = None;
+            match plan.server_adam {
+                Some(params) => {
+                    let adam = model::AdamStep {
+                        params,
+                        moments: (from > 0).then_some(before_moments.as_path()),
+                        moments_out: &next_moments,
+                    };
+                    model::apply_aggregate_adam(
+                        &plan.layout,
+                        plan.encoding,
+                        plan.chunk_coords,
+                        &base,
+                        &aggregate_path,
+                        total_weight,
+                        &adam,
+                        &next,
+                    )?;
+                    moments = Some(Digest::file(&next_moments)?);
+                }
+                None => model::apply_aggregate(
+                    &plan.layout,
+                    plan.encoding,
+                    plan.chunk_coords,
+                    &base,
+                    &aggregate_path,
+                    total_weight,
+                    &next,
+                )?,
+            }
+            Ok((aggregate, Digest::file(&next)?, moments))
         })
         .await?;
-        if model_digest != outcome.model {
+        if model_digest != outcome.model || moments != outcome.moments {
             return Err(NodeError::Check(
                 "the model rebuilt from the aggregate has a different digest".into(),
             ));
@@ -1030,6 +1080,7 @@ impl Site {
         for given_up in self.f.replay.rounds.iter().filter(|r| r.voided) {
             self.f.dirs.drop_round(given_up.round);
             let _ = std::fs::remove_file(self.f.dirs.model(given_up.round));
+            let _ = std::fs::remove_file(self.f.dirs.moments(given_up.round));
         }
         let (round, digest) = (self.f.replay.round_number(), self.f.replay.model);
         self.ensure_model(client, round, digest).await

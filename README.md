@@ -100,7 +100,7 @@ The difference underneath is that **the log is the only control state**. Aggrega
 
 ## What it doesn't do yet
 
-- Anything but FedAvg over float32 and float64 tensors. No server optimisers, asynchronous rounds or personalisation.
+- Anything but FedAvg and FedAdam over float32 and float64 tensors. No asynchronous rounds or personalisation.
 - An exact norm bound for large models. Above roughly a hundred thousand parameters the proof holds a dishonest site to a multiple of the bound, and a site working with a helper can pass anything.
 - Scores for single sites, which would contradict the privacy guarantee. Scored groups can't be anchored on the ledger yet, which pays equal shares.
 - Run on a public cluster. The ledger program and its clients are tested on a local validator only.

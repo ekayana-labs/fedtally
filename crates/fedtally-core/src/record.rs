@@ -112,6 +112,9 @@ pub enum Body {
         /// The unmasked sum of each scored group.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         groups: Vec<Digest>,
+        /// Adam's moments after this round, in a plan that uses it.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        moments: Option<Digest>,
     },
     /// Site: the fingerprint of its own masked vector. An honest site signs this
     /// only after checking the helpers' shares for it against its own seeds.
