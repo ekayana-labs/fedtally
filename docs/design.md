@@ -26,7 +26,7 @@ Joining     open when ready                        join
 Collecting  close when ready                       train, contribute, upload
 Screening   close when checked  check norm proofs  (bounded plans only)
 Masking     outcome when ready  sum masks, upload
-Attesting   seal when ready     attest             check, attest
+Attesting   seal, or retry      attest             check, attest
 Acking      next round                             check, acknowledge
 ```
 
@@ -34,7 +34,7 @@ Consequences:
 
 - **A restart is a replay.** All state is the log and the spool. Kill any process and the rest reconnect, and it works out what to do next from the log.
 - **An auditor is a site with no data.** `fedtally verify` runs the same rules as the protocol, offline.
-- **A round finishes with every included site's signature on one head, or the run stops.** A later round can't open until that's true, so a site shown a forked log never sees it continue.
+- **A round finishes with every included site's signature on one head, or the run stops.** A later round can't open until that's true, so a site shown a forked log never sees it continue. A plan that allows retries can give a round up before its seal and do it again without a silent site, but no model ever comes from a round given up.
 - **Every rule is integer arithmetic over the log.** The privacy budget, the cohort draw and credential checks all replay to the same answer on every machine. Anything that needs the outside world, such as a clock or a registry, is asked by each party for itself and never decides what a replay accepts.
 
 ## One round
@@ -82,7 +82,7 @@ The noise in a sum is the noise of every site in it, so nobody has to trust the 
 
 **The guarantee is for a whole site's data.** Who took part in a round is public, so the guarantee is about what a site contributed, not whether it was there. Replacing all of one site's data with nothing changes a sum by at most `clip + sqrt(d) + 1` grid units, so a round over `k` sites, `c` of which are assumed to give their noise away, is `rho`-zCDP with `rho = (clip + sqrt(d) + 1)^2 / (2 * noise * (k - c))`.
 
-**The budget is one integer.** `rho` adds up across rounds, so the log tracks a single number in units of `2^-40`, computed in integers, and every replica agrees on it. A round is paid for when it closes, since the sum is as good as released once the cohort is fixed, whether or not the round is ever sealed. A round opens only if the budget covers it at the smallest cohort the plan allows, which is the dearest case. `epsilon` at the plan's `delta` is worked out from `rho` for people, with the conversion of Canonne, Kamath and Steinke, and plays no part in the rules.
+**The budget is one integer.** `rho` adds up across rounds, so the log tracks a single number in units of `2^-40`, computed in integers, and every replica agrees on it. A round is paid for when it closes, since the sum is as good as released once the cohort is fixed, whether or not the round is ever sealed. A round given up for a retry stays paid for, and the retry pays again at its own cohort. A round opens only if the budget covers it at the smallest cohort the plan allows, which is the dearest case. `epsilon` at the plan's `delta` is worked out from `rho` for people, with the conversion of Canonne, Kamath and Steinke, and plays no part in the rules.
 
 **What the code guarantees itself:**
 
@@ -93,7 +93,7 @@ The noise in a sum is the noise of every site in it, so nobody has to trust the 
 
 **If every mask is removed later**, each site's update still carries its own noise: `rho = (clip + sqrt(d) + 1)^2 / (2 * noise)` per round. The report prints this figure. It is `k` times weaker than the masked one.
 
-A site can make privacy a condition of joining: its grant can cap the run's whole budget and set the fewest colluding sites the accounting must assume.
+A site can make privacy a condition of joining: its grant can cap the run's whole budget and set the fewest colluding sites the accounting must assume. A grant refuses a plan that retries unless it says how many retries it accepts, and it can only say so if it caps the budget too. Its maximum rounds counts retries.
 
 ## Bounding a dishonest site
 
@@ -150,7 +150,7 @@ There's no CA to run. The aggregator's TLS certificate is pinned by digest in th
 
 Every party learns `A`, so a sum over a small cohort says a lot about each member. The default `min_cohort` is three quarters of the sites, and a site can demand more in its grant.
 
-A plan may **sample**: each round invites a fixed number of sites. The round's beacon is `SHA-256(plan, round, model the round starts from)`, each site's ticket is `SHA-256(beacon, site)`, and the sites with the smallest tickets are invited. Anyone can recompute the draw, only invited sites may contribute, and the report doesn't count the others as missing.
+A plan may **sample**: each round invites a fixed number of sites. The round's beacon is `SHA-256(plan, round, model the round starts from)`, each site's ticket is `SHA-256(beacon, site)`, and the sites with the smallest tickets are invited. The round in the beacon counts models, so a retry gets no new draw: it is open only to the sites that attested. Anyone can recompute the draw, only invited sites may contribute, and the report doesn't count the others as missing.
 
 After the first round, the model a beacon is drawn from carries updates or noise from honest sites, which the aggregator cannot know before the round that produced it has closed, as long as one helper is honest. The first round's beacon is fixed by the plan alone, so whoever writes the plan can steer that one draw.
 
@@ -170,13 +170,13 @@ The aggregator holds `y_i` and `Y`, and learns `A`. Without a seed `s_ih` for at
 
 | Adversary | Cannot | Can |
 |---|---|---|
-| Aggregator alone | Read an update. Get an acknowledgement for a model that isn't the committed sum. Spend past the privacy budget, or draw its own cohort after round 1 | Stop or stall the run. Leave invited sites out, down to `min_cohort`. Refuse to log a record: the site knows, and the report lists it as absent |
-| Helper alone | Read an update. Change the sum | Stop the run |
-| Site alone | Read another site's update. Spoil a seal by lying. Stay in after its credential is revoked and the list is logged. In a bounded plan, get an update longer than `norm` into a round | Without norm proofs, send any update it likes. Stop the run |
+| Aggregator alone | Read an update. Get an acknowledgement for a model that isn't the committed sum. Spend past the privacy budget, or draw its own cohort after round 1 | Stop or stall the run. Leave invited sites out, down to `min_cohort`. Refuse to log a record: the site knows, and the report lists it as absent. In a plan that retries, throw away a sum it dislikes by refusing one attestation, up to `retries` times, each one charged |
+| Helper alone | Read an update. Change the sum | Stop the run. In a plan that retries, push out a site of its choosing and let the run go on |
+| Site alone | Read another site's update. Spoil a seal by lying. Stay in after its credential is revoked and the list is logged. In a bounded plan, get an update longer than `norm` into a round | Without norm proofs, send any update it likes. Stop the run, in a plan that retries after using one up |
 | Site + helper | | Pass a norm proof for any update |
 | Aggregator + 1 site | Change the sum unnoticed, with `audits >= 1` | Read a victim's update if `min_cohort` is 2 and the run has no privacy terms |
 | Aggregator + `k` sites | Read an honest site's update if `min_cohort > k + 1`. Change the sum unnoticed if `k <= audits` | With `k > audits`, have its sites audit each other |
-| Aggregator + site + helper | | Choose that site's input after seeing the true sum. With no bound on inputs this means any model |
+| Aggregator + site + helper | | Choose that site's input after seeing the true sum. With no bound on inputs this means any model. In a plan that retries, the aggregator and one site are enough, or two sites |
 | Aggregator + every helper | Learn more than the per-site privacy figure allows, in a private run | Read each noisy update. Without privacy terms, read everything |
 | Issuer | Admit a site alone, where the policy asks for several issuers | Vouch falsely for what it issues. Revoke at any time |
 | Sponsor | Change the plan after signing. Meet a site's cohort condition with parties the site didn't list | Steer round 1's draw |
@@ -185,7 +185,30 @@ The aggregator holds `y_i` and `Y`, and learns `A`. Without a seed `s_ih` for at
 
 A site that drops before contributing is simply not in the Close. There's no secret-sharing round and no recovery phase, because masks only involve sites and helpers.
 
-**A site that drops after Close stops the run**, once the deadline passes. Redoing the round in place wouldn't be safe: the aggregator would hold two sums over nearly the same updates.
+**A site that drops after Close stops the run**, once the deadline passes, unless the plan signed up for retries. Redoing a round gives every party two sums over nearly the same updates, which is why it has to be asked for.
+
+**A retry** needs `retries` above 0 in the plan, privacy terms, no scoring, and a grant from every site that allows it. When the attestation deadline passes with every helper in and at least `min_cohort` sites attested, the aggregator signs a Retry. That round number is given up, and the next number starts from the same model, open only to the sites that attested. They train again, and a new number means new seeds, new pads and new noise. Numbers are never reused, because reusing one would reuse seeds, and then the difference of two mask totals would unmask a site.
+
+A retry can't help with a silent helper, silence after the seal, too few sites attesting, or a plan out of retries. Those still stop the run, and so does any silence in a plan with no noise or with scoring. A site that comes back sits the retry out and rejoins at the next model.
+
+The plan must be able to pay for every round and every retry at the dearest cohort, so spending the retries can't cut a run short. That has a price even if no retry happens: a plan sized to a target spreads its budget over rounds plus retries, so noise variance is `(rounds + retries) / rounds` times higher in every round. Nothing here measures what that costs in accuracy yet.
+
+**What a retry gives up.** Masks hide the lost site's update inside the first sum, and the second sum takes that cover away, leaving noise. With `A` over `k` sites and `A'` over the rest:
+
+| Plan | `A - A'` | |
+|---|---|---|
+| No noise | The lost update, exactly. A test shows this | Refused |
+| Noise | The lost update plus `(2k - 1) * noise` of variance per coordinate. A test measured 1.05 times that at `k = 4` | Two releases, both charged |
+
+The bound holds even though the aggregator picks the second cohort after seeing the first sum, since `rho` adds up under adaptive choices. The lost site pays `rho(k - c)`, and a site in both sums pays `rho(k - c) + rho(k - 1 - c)`. That is what the log charges and what `rho_spent_by` adds up. The plan's noise is what stands behind all of this, and a plan can set it low, so the real safeguard is that every site has to agree to the terms in its grant.
+
+**What a retry can't tell apart.** The log can't tell a dropout from an aggregator pretending to see one. Tests pin the last two of these:
+
+- The aggregator can force every retry. Only `retries`, `min_cohort` and the budget limit that. Choosing among sums also gives it some say over later draws.
+- A site in the retry can send a different update after reading the first sum, because nothing ties its two attempts together. Norm proofs limit this to `norm`.
+- A helper can push a chosen site out by signing a wrong share for it. The site refuses to attest, and the run goes on without it, where without retries the same lie stops the run.
+
+A run with a retry is never `complete` in its report, and `fedtally verify` exits 2 for it. The given up round is listed as `voided`, with its silent sites under `unattested`. A plan that retries can't be anchored to the ledger yet.
 
 ## The ledger
 
@@ -235,8 +258,8 @@ A chunk's root is checked on arrival, and an upload is synced before it can be c
 - **Norm proofs bound length, not direction.** A dishonest site can still send the worst update of the allowed length, and one working with a helper can send anything.
 - **Privacy with few sites is expensive.** Noise in the average falls with the cohort size, so tens of sites pay heavily in accuracy at small epsilon. [benchmarks.md](benchmarks.md) has measurements.
 - **Rewards follow groups, not sites.** A per-site score is a statistic about one site, which is exactly what site-level privacy hides. Scoring groups costs privacy in proportion, and the ledger still pays equal shares and slashes only what can be proven.
-- **One party can stop a run.** Any site or helper can. This trades liveness for the guarantee that nobody takes a model some party couldn't check.
-- **A helper's disk must survive.** "Once per round" rests on the helper's replica.
+- **One party can stop a run.** Any site or helper can, though a plan that retries gets past a silent site a few times. This trades liveness for the guarantee that nobody takes a model some party couldn't check.
+- **A helper's disk must survive.** "Once per round number" rests on the helper's replica.
 - **All helpers are needed**, and the aggregator is one process. A restart resumes it, but there's no failover.
 - **Fixed point costs bandwidth.** Coordinates are 8 bytes on the wire, twice float32.
 - **Time is each party's own.** The time in a Join is the site's word, held near the aggregator's clock. Credential dates are checked against it once, at joining, and each site checks its own before every round. A site and an aggregator together can backdate a Join.
