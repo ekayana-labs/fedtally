@@ -104,6 +104,26 @@ Flower's process-isolation setup does recover, as long as the ServerApp survives
 
 This is one synthetic task with a linear model of 201 parameters. It says nothing about deep models, where clipping bites harder, and three seeds give a rough mean and no interval.
 
+## A deep model
+
+`benchmarks/deep/run.py` trains a small convolutional network of 38,282 parameters on scikit-learn's handwritten digits, through a real federation: 8 sites, 25 rounds of 2 local epochs. The digits are split by a Dirichlet draw over the labels at alpha 0.3, except in the even split row, which deals them out at random. The 400 test digits are the same for all three seeds. Every row searched its own settings, including the local learning rate, on 200 validation digits and a site split that no reported run uses. Pooled training gets the same number of epochs in total. Each figure is a mean and sample standard deviation over the seeds.
+
+| Setup | Test accuracy | Chosen settings |
+|---|---|---|
+| Pooled | 0.993 +/- 0.001 | lr 0.2 |
+| FedAvg, masked, even split | 0.987 +/- 0.003 | lr 0.2 |
+| FedAvg, masked | 0.968 +/- 0.011 | lr 0.2 |
+| FedProx, masked | 0.971 +/- 0.006 | lr 0.2, mu 0.001 |
+| FedAdam, masked | 0.974 +/- 0.004 | lr 0.2, server rate 0.01 |
+| FedAvg, epsilon = 8 | 0.077 +/- 0.049 | lr 0.05, clip 3 |
+| FedAvg, epsilon = 3 | 0.103 +/- 0.004 | lr 0.05, clip 10 |
+
+**The skew costs about two points, and this run doesn't show a fix for it.** An even split comes within a point of pooled training, and the Dirichlet split loses about two more. FedProx and FedAdam end within one standard deviation of FedAvg on that split, so neither is shown to help here. FedProx's best mu is the smallest tried.
+
+**Site-level privacy doesn't work at this scale.** Both private rows are at chance or below it, 0.1 on ten digits, and they spent all of the epsilon they asked for. No private setting scored above 0.12 on validation, so the settings chosen mean little. Eight sites can't hide a whole site's update across 38,282 parameters for 25 rounds. This run says nothing about the hundreds or thousands of sites that private training usually needs, and we haven't tried it.
+
+Three seeds on a small dataset give a rough mean. Every row without privacy chose lr 0.2, the top of the grid, so those rows may be a little low, and the gaps between them could move on a wider grid.
+
 ## FLamby
 
 `benchmarks/flamby/run.py` runs the two tabular FLamby tasks through a real federation, with FLamby's centres and train and test splits. Data is fetched at run time from pinned sources and checked by hash. Five noise repeats per cell, 100 gradient steps in all.
