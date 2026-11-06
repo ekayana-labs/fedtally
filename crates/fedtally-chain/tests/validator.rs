@@ -27,7 +27,7 @@ use fedtally_chain::rpc::Rpc;
 use fedtally_chain::run::Run;
 use fedtally_chain::tx::{BUDGET_IX_UNITS, Wallet};
 use fedtally_chain::{Anchor, ChainError, Config, Role, Stakes, Watching};
-use fedtally_core::anchor;
+use fedtally_core::anchor::{self, Committed};
 use fedtally_core::keys::{Identity, SigAlg};
 use fedtally_core::model::{Dtype, Layout, TensorSpec, TensorView, write_model};
 use fedtally_core::privacy::Request;
@@ -899,6 +899,12 @@ fn revoked(runtime: &tokio::runtime::Runtime, validator: &Validator) {
 /// The aggregator's side, by hand: an honest round up to the aggregate, and
 /// then the root of one whose leaf 1 is not the sum.
 fn post_wrong_aggregate(running: &Running, price: Option<u64>) {
+    post_wrong_aggregate_after(running, price, 0);
+}
+
+/// Gives up `voided` rounds on the ledger, as the log did, and cheats in the next.
+fn post_wrong_aggregate_after(running: &Running, price: Option<u64>, voided: u32) {
+    let number = voided + 1;
     let aggregator = Ledger {
         rpc: running.rpc(),
         wallet: Wallet::new(running.fed.aggregator.clone()).unwrap(),
@@ -915,7 +921,7 @@ fn post_wrong_aggregate(running: &Running, price: Option<u64>) {
     .unwrap();
     let (committed, posted) = eventually("the first round in the log", || {
         run.refresh().unwrap();
-        let log = run.view().round(1)?;
+        let log = run.view().round(number)?;
         let sealed = log.acks.len() == SITES;
         log.committed
             .clone()
@@ -928,27 +934,39 @@ fn post_wrong_aggregate(running: &Running, price: Option<u64>) {
     eventually("every enrollment", || {
         running.task().filter(|task| task.enrolled.len() == SITES)
     });
-    send("open_round", client::open_round(&me, &task, 1), 40_000);
-    let cohort = client::site_bitmap(committed.cohort.iter().map(|site| *site as u16));
-    let commit = client::commit_root(
-        &me,
-        &task,
-        1,
-        &cohort,
-        &committed.inputs_root,
-        &committed.close_head.0,
-        &committed.threshold,
-    );
-    send("commit_root", commit, 10_000);
+    let commit = |number: u32, committed: &Committed| {
+        send("open_round", client::open_round(&me, &task, number), 40_000);
+        let cohort = client::site_bitmap(committed.cohort.iter().map(|site| *site as u16));
+        let commit = client::commit_root(
+            &me,
+            &task,
+            number,
+            &cohort,
+            &committed.inputs_root,
+            &committed.close_head.0,
+            &committed.threshold,
+        );
+        send("commit_root", commit, 10_000);
+    };
+    for given_up in 1..=voided {
+        let log = run.view().round(given_up).unwrap();
+        commit(given_up, log.committed.as_ref().unwrap());
+        let void = client::void_round(&me, &task, given_up, log.removed_helper);
+        send("void_round", void, 10_000);
+    }
+    commit(number, &committed);
 
-    let spool = running.fed.aggregator_dir().join("round-1/aggregate.bin");
+    let spool = running
+        .fed
+        .aggregator_dir()
+        .join(format!("round-{number}/aggregate.bin"));
     let wrong = flip(&spool, running.fed.plan.shape(), 1);
     assert_ne!(wrong, posted.aggregate_root);
     let masks: Vec<[u8; 32]> = posted.mask_roots.iter().map(|m| m.0).collect();
     let post = client::post_aggregate(
         &me,
         &task,
-        1,
+        number,
         &masks,
         &wrong.0,
         &posted.next_model.0,
@@ -1171,6 +1189,52 @@ fn lost_helper(runtime: &tokio::runtime::Runtime, validator: &Validator) {
         replay.rounds[1].outcome.as_ref().unwrap().model.0
     );
     assert!(running.was_sent("void_round").is_some());
+}
+
+/// The first helper is gone, so a proof's masks are numbered apart from the
+/// plan's helpers. The aggregator still answers for the sum it posted.
+fn fraud_after_a_removal(runtime: &tokio::runtime::Runtime, validator: &Validator) {
+    let lost = (Stage::BeforeSum { round: 1 }, Lost::Helper(0));
+    let running = start_losing(
+        runtime,
+        validator,
+        None,
+        150,
+        true,
+        |options| {
+            options.helpers = 3;
+            options.rounds = 2;
+            options.min_cohort = 2;
+            options.min_helpers = 2;
+            options.timeouts.collect_secs = 4;
+        },
+        Some(lost),
+    );
+    let mut anchors = Anchors::new();
+    anchors.start("publisher", running.publisher());
+    for site in 0..SITES {
+        anchors.start("site", running.site(site));
+    }
+    post_wrong_aggregate_after(&running, None, 1);
+    anchors.start("watcher", running.watching(runtime));
+
+    let ended = eventually("the dispute", || {
+        running.task().filter(|task| !task.is_open())
+    });
+    assert_eq!(
+        (ended.state, ended.fraud, ended.stake_held),
+        (TASK_ABORTED, true, 0)
+    );
+    assert_eq!(ended.removed_helpers, 1);
+    assert_eq!(running.round(2).unwrap().state, ROUND_FRAUD);
+    running.gate.open();
+    anchors.finish();
+}
+
+#[test]
+#[ignore = "needs solana-test-validator and the built program"]
+fn a_wrong_sum_after_a_removal_is_proven_against_the_helpers_left() {
+    with_validator(fraud_after_a_removal);
 }
 
 #[test]
