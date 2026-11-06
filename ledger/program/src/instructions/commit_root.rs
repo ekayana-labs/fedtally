@@ -54,8 +54,14 @@ pub fn process(accounts: &mut [AccountView], args: &[u8]) -> ProgramResult {
     Ok(())
 }
 
-/// Checks the cohort's size and that every member is a site of the task,
-/// enrolled and not revoked. Returns the size.
+/// Checks the cohort's size and that every member is a site of the task and
+/// enrolled. Returns the size.
+///
+/// A revoked site may still be in a cohort. The ledger runs behind the log, so
+/// the log may have closed this round before the revocation was applied here,
+/// and refusing would let anyone stall the task by applying it early. What
+/// keeps a revoked site out is the log's own rule, and that no honest site
+/// acknowledges a cohort other than the log's.
 fn check_cohort<D: Deref<Target = [u8]>>(
     task: &Task<D>,
     cohort: &SiteBitmap,
@@ -67,8 +73,7 @@ fn check_cohort<D: Deref<Target = [u8]>>(
     )?;
     require(
         !bitmap::any_from(cohort, task.sites() as usize)
-            && bitmap::is_subset(cohort, task.enrolled())
-            && !bitmap::intersects(cohort, task.revoked()),
+            && bitmap::is_subset(cohort, task.enrolled()),
         LedgerError::InvalidCohortMember,
     )?;
     Ok(count)

@@ -26,11 +26,6 @@ pub fn is_subset(bits: &SiteBitmap, of: &SiteBitmap) -> bool {
     words(bits).zip(words(of)).all(|(a, b)| a & !b == 0)
 }
 
-/// Whether `a` and `b` have a set bit in common.
-pub fn intersects(a: &SiteBitmap, b: &SiteBitmap) -> bool {
-    words(a).zip(words(b)).any(|(a, b)| a & b != 0)
-}
-
 /// Whether any bit at index `from` or above is set.
 pub fn any_from(bits: &SiteBitmap, from: usize) -> bool {
     let (byte, bit) = (from / 8, from % 8);
@@ -76,8 +71,6 @@ mod tests {
         let all = bitmap(&[1, 2, 3, 700]);
         assert!(is_subset(&bitmap(&[2, 700]), &all));
         assert!(!is_subset(&bitmap(&[2, 701]), &all));
-        assert!(intersects(&bitmap(&[5, 700]), &all));
-        assert!(!intersects(&bitmap(&[5, 701]), &all));
     }
 
     #[test]

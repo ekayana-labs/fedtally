@@ -199,15 +199,11 @@ fn a_set_bit_revokes_the_site_and_keeps_it_out_of_the_next_cohort() {
     run.settle(number);
     run.claim(2, number);
 
-    // It cannot be in a later cohort, and the others carry on without it.
+    // The log may have closed the next round before this was applied, so the
+    // ledger takes the log's cohort, and keeping the site out is the log's job.
     let next = run.open_round();
     let posting = Posting::filler(3, 1);
-    run.world.refuse(
-        run.commit_ix(next, &[1, 2, 3], &posting, &[0; 32]),
-        &[&run.aggregator],
-        LedgerError::InvalidCohortMember,
-    );
-    run.commit(next, &[1, 3], &posting);
+    run.commit(next, &[1, 2, 3], &posting);
 
     // Revoked, it takes its stake back while the task is still open, and
     // an active site does not.

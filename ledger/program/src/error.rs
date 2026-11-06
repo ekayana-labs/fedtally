@@ -47,7 +47,7 @@ ledger_errors! {
     BudgetExhausted = 6017, "The privacy budget does not cover this round";
     InvalidRoundState = 6018, "The round is not in the state this instruction needs";
     InvalidCohortSize = 6019, "The cohort is smaller than the minimum or larger than the task";
-    InvalidCohortMember = 6020, "A cohort member is not enrolled, is revoked, or is not a site";
+    InvalidCohortMember = 6020, "A cohort member is not enrolled or is not a site";
     InvalidThreshold = 6021, "The threshold does not invite exactly the sampled number of sites";
     NotInvited = 6022, "A cohort member's ticket is above the threshold";
     InvalidMaskRoots = 6023, "There must be one mask root per helper";
