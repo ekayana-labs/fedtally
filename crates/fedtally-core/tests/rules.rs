@@ -179,6 +179,8 @@ impl Run {
             trusted_helpers: vec![self.helper.did_string()],
             min_cohort: Some(2),
             max_rounds: Some(5),
+            max_budget: self.plan.privacy.as_ref().map(|p| p.budget),
+            max_retries: (self.plan.retries > 0).then_some(self.plan.retries),
             ..Terms::default()
         }
     }
@@ -454,7 +456,13 @@ impl Run {
     }
 
     fn complete_round_at(&mut self, round: u32, weight: u64) {
-        self.open_and_close_all_at(round, weight);
+        self.open(round);
+        self.complete_round_body_at(round, weight);
+    }
+
+    fn complete_round_body_at(&mut self, round: u32, weight: u64) {
+        let list: Vec<_> = (0..3).map(|s| self.contribute(s, round, weight)).collect();
+        self.close(round, &list);
         self.mask_sum(round);
         self.outcome(round, 3 * weight);
         self.seal(round);
@@ -463,6 +471,81 @@ impl Run {
             let site = self.site(i);
             self.apply(&site, body);
         }
+    }
+
+    /// The helper and sites 0 and 1 attest. Site 2 has gone silent.
+    fn lose_the_last_site(&mut self, round: u32) {
+        let n = numbers();
+        self.helper_attest(round, &n.shares);
+        for i in 0..2 {
+            let body = self.attest_body(round, n.masked[i]);
+            let site = self.site(i);
+            self.apply(&site, body);
+        }
+    }
+
+    fn retry_body(&self, round: u32) -> Body {
+        Body::Retry {
+            plan: self.plan_id,
+            round,
+            prev: self.replay.head,
+        }
+    }
+
+    fn retry(&mut self, round: u32) {
+        let body = self.retry_body(round);
+        let aggregator = self.aggregator.clone();
+        self.apply(&aggregator, body);
+    }
+
+    /// Round 1 is given up without site 2.
+    fn retried() -> Run {
+        let mut run = Run::with(retrying(4 << 40, 1));
+        run.join(0..3);
+        run.open_and_close_all_at(1, 1);
+        run.mask_sum(1);
+        run.outcome(1, 3);
+        run.lose_the_last_site(1);
+        run.retry(1);
+        run
+    }
+
+    /// Sites 0 and 1 take this round through to their acks.
+    fn complete_without_the_last_site(&mut self, round: u32) {
+        let list: Vec<_> = (0..2).map(|s| self.contribute(s, round, 1)).collect();
+        self.close(round, &list);
+        self.mask_sum(round);
+        self.outcome(round, 2);
+        let n = numbers();
+        self.helper_attest(round, &n.shares[..2]);
+        for i in 0..2 {
+            let body = self.attest_body(round, n.masked[i]);
+            let site = self.site(i);
+            self.apply(&site, body);
+        }
+        let sum = n.masked[0] + n.masked[1];
+        let aggregate = sum - (n.shares[0] + n.shares[1]);
+        let body = self.seal_body(round, &n.masked[..2], sum, aggregate);
+        let aggregator = self.aggregator.clone();
+        self.apply(&aggregator, body);
+        for i in 0..2 {
+            let body = self.ack_body(round);
+            let site = self.site(i);
+            self.apply(&site, body);
+        }
+    }
+
+    /// A whole run with one retry: rounds 1 and 2 make the first model, and
+    /// round 3 the second.
+    fn retried_to_the_end() -> Run {
+        let mut run = Run::retried();
+        run.complete_without_the_last_site(2);
+        run.open(3);
+        run.complete_round_body_at(3, 1);
+        let body = run.finish_body();
+        let aggregator = run.aggregator.clone();
+        run.apply(&aggregator, body);
+        run
     }
 
     fn complete_run() -> Run {
@@ -984,7 +1067,10 @@ fn a_plan_that_never_retries_is_the_same_plan_as_before() {
 fn a_default_grant_refuses_a_plan_that_retries() {
     let mut run = Run::with(retrying(4 << 40, 1));
     let site = run.site(0);
-    let terms = run.terms();
+    let terms = Terms {
+        max_retries: None,
+        ..run.terms()
+    };
     let body = run.join_body(0, &terms);
     assert!(matches!(run.refuse(&site, body), Fault::Admission(..)));
 }
@@ -1059,6 +1145,264 @@ fn a_plan_that_retries_cannot_be_anchored_yet() {
     let run = Run::with(retrying(4 << 40, 1));
     let refused = run.plan.ledger_terms(run.plan_id).unwrap_err();
     assert!(refused.contains("retries"), "{refused}");
+}
+
+#[test]
+fn a_retry_starts_over_from_the_same_model_without_the_silent_site() {
+    let run = Run::retried();
+    assert_eq!(run.replay.phase, Phase::Collecting);
+    assert_eq!(run.replay.retried, 1);
+    assert_eq!(run.replay.model, Digest::of(b"model 0"));
+    assert!(run.replay.rounds[0].voided);
+    let next = run.replay.current().unwrap();
+    assert_eq!((next.round, next.from, next.step), (2, 0, 1));
+    assert_eq!(next.base, Digest::of(b"model 0"));
+    assert_eq!(next.invited, Some(vec![0, 1]));
+    assert!(!next.voided);
+}
+
+#[test]
+fn nothing_from_a_given_up_round_carries_over() {
+    let mut run = Run::with(retrying(4 << 40, 1));
+    run.join(0..3);
+    let old = run.open_and_close_all_at(1, 1);
+    run.mask_sum(1);
+    run.outcome(1, 3);
+    run.lose_the_last_site(1);
+    let late = run.attest_body(1, numbers().masked[2]);
+    run.retry(1);
+
+    let silent = run.site(2);
+    let body = run.contribute_body(2, 1);
+    let refused = run.refuse(&silent, body).to_string();
+    assert!(refused.contains("not drawn"), "{refused}");
+
+    assert!(matches!(
+        run.refuse(&silent, late),
+        Fault::WrongPhase { .. }
+    ));
+
+    let body = run.close_body(2, &old[..2]);
+    let aggregator = run.aggregator.clone();
+    assert!(matches!(run.refuse(&aggregator, body), Fault::BadClose(_)));
+
+    let first = run.site(0);
+    let Body::Contribute {
+        plan,
+        base,
+        masked,
+        weight,
+        sealed,
+        proof,
+        ..
+    } = run.contribute_body(0, 1)
+    else {
+        unreachable!()
+    };
+    let stale = Body::Contribute {
+        plan,
+        round: 1,
+        base,
+        masked,
+        weight,
+        sealed,
+        proof,
+    };
+    assert!(matches!(
+        run.refuse(&first, stale),
+        Fault::WrongRound("contribute", 1, 2)
+    ));
+}
+
+#[test]
+fn a_retry_is_refused_unless_every_condition_holds() {
+    let attesting = |edit: fn(&mut Plan)| {
+        let mut run = Run::with(move |plan| {
+            retrying(4 << 40, 1)(plan);
+            edit(plan);
+        });
+        run.join(0..3);
+        run.open_and_close_all_at(1, 1);
+        run.mask_sum(1);
+        run.outcome(1, 3);
+        run
+    };
+    let refused = |run: &mut Run, who: Id, body: Body| {
+        let (head, entries) = (run.replay.head, run.replay.entries);
+        let fault = run.refuse(&who, body);
+        assert_eq!((run.replay.head, run.replay.entries), (head, entries));
+        assert_eq!(run.replay.retried, 0);
+        fault.to_string()
+    };
+
+    let mut run = attesting(|_| {});
+    let (aggregator, body) = (run.aggregator.clone(), run.retry_body(1));
+    let fault = refused(&mut run, aggregator.clone(), body);
+    assert!(fault.contains("has not attested"), "{fault}");
+
+    run.helper_attest(1, &numbers().shares);
+    let body = run.retry_body(1);
+    let fault = refused(&mut run, aggregator.clone(), body);
+    assert!(fault.contains("too few"), "{fault}");
+
+    let n = numbers();
+    for i in 0..2 {
+        let body = run.attest_body(1, n.masked[i]);
+        let site = run.site(i);
+        run.apply(&site, body);
+    }
+    let site = run.site(0);
+    let body = run.retry_body(1);
+    assert!(!matches!(run.refuse(&site, body), Fault::NoRetry(_)));
+    let body = Body::Retry {
+        plan: run.plan_id,
+        round: 1,
+        prev: Digest::of(b"another head"),
+    };
+    let fault = refused(&mut run, aggregator.clone(), body);
+    assert!(fault.contains("chain") || fault.contains("prev"), "{fault}");
+    let body = run.retry_body(2);
+    assert!(matches!(
+        run.refuse(&aggregator, body),
+        Fault::WrongRound("retry", 2, 1)
+    ));
+
+    let body = run.attest_body(1, n.masked[2]);
+    let last = run.site(2);
+    run.apply(&last, body);
+    let body = run.retry_body(1);
+    let fault = refused(&mut run, aggregator.clone(), body);
+    assert!(fault.contains("every site"), "{fault}");
+
+    let body = run.seal_body(1, &n.masked, n.sum, n.aggregate);
+    run.apply(&aggregator, body);
+    let body = run.retry_body(1);
+    assert!(matches!(
+        run.refuse(&aggregator, body),
+        Fault::WrongPhase { .. }
+    ));
+}
+
+#[test]
+fn a_plan_gets_only_the_retries_it_signed_for() {
+    let mut run = Run::with(private(4 << 40));
+    run.join(0..3);
+    run.open_and_close_all_at(1, 1);
+    run.mask_sum(1);
+    run.outcome(1, 3);
+    run.lose_the_last_site(1);
+    let (aggregator, body) = (run.aggregator.clone(), run.retry_body(1));
+    let fault = run.refuse(&aggregator, body).to_string();
+    assert!(fault.contains("no retries left"), "{fault}");
+
+    let mut run = Run::retried();
+    let list: Vec<_> = (0..2).map(|s| run.contribute(s, 2, 1)).collect();
+    run.close(2, &list);
+    run.mask_sum(2);
+    run.outcome(2, 2);
+    let n = numbers();
+    run.helper_attest(2, &n.shares[..2]);
+    let body = run.attest_body(2, n.masked[0]);
+    let site = run.site(0);
+    run.apply(&site, body);
+    let (aggregator, body) = (run.aggregator.clone(), run.retry_body(2));
+    let fault = run.refuse(&aggregator, body).to_string();
+    assert!(fault.contains("no retries left"), "{fault}");
+}
+
+#[test]
+fn a_retry_is_paid_for_again_and_shows_in_the_report() {
+    let run = Run::retried_to_the_end();
+    let (two, three) = (
+        run.plan.round_cost(2).unwrap(),
+        run.plan.round_cost(3).unwrap(),
+    );
+    assert_eq!(run.replay.spent, three + two + three);
+    let report = run.replay.report().unwrap();
+    assert!(report.finished);
+    assert!(!report.complete());
+    assert!(report.rounds[0].voided);
+    assert_eq!(report.rounds[0].unattested, [run.sites[2].did_string()]);
+    assert!(!report.rounds[1].voided);
+
+    let rho = |units: u64| units as f64 / (1u64 << 40) as f64;
+    let spent_by = |site: usize| report.rho_spent_by(&run.sites[site].did_string()).unwrap();
+    assert!((spent_by(0) - rho(three + two + three)).abs() < 1e-9);
+    assert!((spent_by(2) - rho(three + three)).abs() < 1e-9);
+}
+
+#[test]
+fn a_run_with_a_retry_finishes_after_the_steps_the_plan_asked_for() {
+    let mut run = Run::retried();
+    run.complete_without_the_last_site(2);
+    let aggregator = run.aggregator.clone();
+    let body = run.finish_body();
+    assert!(matches!(run.refuse(&aggregator, body), Fault::EarlyFinish));
+    run.open(3);
+    assert_eq!(run.replay.current().unwrap().step, 2);
+    assert_eq!(run.replay.current().unwrap().from, 2);
+    assert_eq!(run.replay.current().unwrap().base, Digest::of(b"model 2"));
+    run.complete_round_body_at(3, 1);
+    let body = Body::Open {
+        plan: run.plan_id,
+        round: 4,
+        prev: run.replay.head,
+        base: run.replay.model,
+    };
+    assert!(matches!(
+        run.refuse(&aggregator, body),
+        Fault::WrongRound("open", 4, 4)
+    ));
+    let body = run.finish_body();
+    run.apply(&aggregator, body);
+    assert_eq!(run.replay.phase, Phase::Done);
+    assert_eq!(run.replay.model, Digest::of(b"model 3"));
+}
+
+#[test]
+fn a_retry_keeps_its_draw_and_later_rounds_draw_by_step() {
+    let mut run = Run::with(|plan| {
+        retrying(4 << 40, 1)(plan);
+        plan.sample = Some(3);
+    });
+    run.join(0..3);
+    run.open_and_close_all_at(1, 1);
+    run.mask_sum(1);
+    run.outcome(1, 3);
+    run.lose_the_last_site(1);
+    run.retry(1);
+    assert_eq!(run.replay.current().unwrap().invited, Some(vec![0, 1]));
+    run.complete_without_the_last_site(2);
+    assert_eq!(
+        run.replay.committed(1).unwrap().beacon,
+        run.replay.committed(2).unwrap().beacon
+    );
+    run.open(3);
+    let list: Vec<_> = (0..3).map(|s| run.contribute(s, 3, 1)).collect();
+    run.close(3, &list);
+    assert_eq!(
+        run.replay.committed(3).unwrap().beacon,
+        sampling::beacon(&run.plan_id, 2, &Digest::of(b"model 2"))
+    );
+}
+
+#[test]
+fn a_log_with_a_retry_replays_and_catches_tampering() {
+    let run = Run::retried_to_the_end();
+    let again = replay_lines(&run.lines).unwrap();
+    assert_eq!(again.head, run.replay.head);
+    assert_eq!(again.retried, 1);
+    for i in 0..run.lines.len() - 1 {
+        let mut lines = run.lines.clone();
+        lines.remove(i);
+        assert!(replay_lines(&lines).is_err(), "removed line {i}");
+    }
+    for (i, line) in run.lines.iter().enumerate() {
+        let mut lines = run.lines.clone();
+        let middle = line.len() / 2;
+        lines[i][middle] ^= 1;
+        assert!(replay_lines(&lines).is_err(), "edited line {i}");
+    }
 }
 
 #[test]

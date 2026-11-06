@@ -63,7 +63,8 @@ pub struct RoundReport {
     pub included: Vec<Contributor>,
     /// Signed a contribution but were left out of the round.
     pub excluded: Vec<String>,
-    /// The sites drawn for the round, where the plan samples.
+    /// The sites drawn for the round where the plan samples, or those left
+    /// after a retry.
     pub invited: Option<Vec<String>>,
     /// Could have been in the round, but nothing from them is in it. They may
     /// have sat out, or the aggregator may have refused to log them.
@@ -74,6 +75,8 @@ pub struct RoundReport {
     pub total_weight: Option<u64>,
     pub model: Option<Digest>,
     pub sealed: bool,
+    /// Given up for a retry. Its sum is out and paid for, but made no model.
+    pub voided: bool,
     /// The zCDP rho this round spent, in a private run.
     pub rho: Option<f64>,
     /// The scored groups and their shares of the round's reward.
@@ -224,6 +227,7 @@ impl Replay {
                 total_weight: r.outcome.as_ref().map(|o| o.total_weight),
                 model: r.outcome.as_ref().map(|o| o.model),
                 sealed: r.seal.is_some(),
+                voided: r.voided,
                 rho: plan.privacy.map(|_| rho_units(r.cost)),
                 groups: plan
                     .groups(&r.close_head, r.included.len())

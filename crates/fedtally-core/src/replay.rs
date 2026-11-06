@@ -78,6 +78,8 @@ pub enum Fault {
     Unacknowledged(String),
     #[error("seal: helper {0} has not attested")]
     HelperMissing(String),
+    #[error("cannot retry: {0}")]
+    NoRetry(&'static str),
     #[error("ack names a different head")]
     WrongHead,
     #[error("finish before the last round")]
@@ -167,7 +169,8 @@ pub struct RoundState {
     pub acks: BTreeSet<usize>,
     /// What closing the round spent of the privacy budget.
     pub cost: u64,
-    /// The sites drawn for this round, where the plan samples.
+    /// The sites drawn for this round where the plan samples, or those left
+    /// after a retry.
     pub invited: Option<Vec<usize>>,
     /// The sites that could have been in the round when it closed.
     pub expected: Vec<usize>,
@@ -175,6 +178,8 @@ pub struct RoundState {
     pub from: u32,
     /// Which model this round would make. Numbers count attempts, steps don't.
     pub step: u32,
+    /// Given up before its seal. Its sum is out and paid for, but made no model.
+    pub voided: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -230,6 +235,7 @@ fn kind(body: &Body) -> &'static str {
         Body::Seal { .. } => "seal",
         Body::Ack { .. } => "ack",
         Body::Abort { .. } => "abort",
+        Body::Retry { .. } => "retry",
         Body::Status { .. } => "status",
         Body::Finish { .. } => "finish",
     }
@@ -314,6 +320,37 @@ impl Replay {
         self.plan = Some(Arc::new(plan.clone()));
         self.phase = Phase::Joining;
         Ok(())
+    }
+
+    /// Who the next attempt would be open to, if this round can be given up:
+    /// the sites that attested, as long as enough of them did.
+    pub fn retry_cohort(&self, plan: &Plan) -> Result<Vec<usize>, Fault> {
+        if self.phase != Phase::Attesting {
+            return Err(Fault::NoRetry("the round is not attesting"));
+        }
+        if self.retried >= plan.retries {
+            return Err(Fault::NoRetry("no retries left"));
+        }
+        let state = self.current().ok_or(Fault::NoPlan)?;
+        let helpers = &plan.helpers;
+        if let Some(h) = (0..helpers.len()).find(|h| !state.helper_attests.contains_key(h)) {
+            return Err(Fault::HelperMissing(helpers[h].did.clone()));
+        }
+        let attested = |site: &&usize| state.site_attests.contains_key(*site);
+        if state.included.iter().all(|site| attested(&site)) {
+            return Err(Fault::NoRetry("every site attested"));
+        }
+        let rest: Vec<usize> = state
+            .included
+            .iter()
+            .filter(attested)
+            .filter(|site| !self.revoked.contains_key(*site))
+            .copied()
+            .collect();
+        if rest.len() < plan.min_cohort as usize {
+            return Err(Fault::NoRetry("too few sites attested"));
+        }
+        Ok(rest)
     }
 
     /// A run moves on only when every site in the last round has signed the
@@ -1067,6 +1104,33 @@ impl Replay {
                 }
                 self.abort = Some(reason.clone());
                 self.phase = Phase::Aborted;
+                Ok(())
+            }
+
+            Body::Retry {
+                plan: id,
+                round,
+                prev,
+            } => {
+                from_aggregator()?;
+                same_run(id)?;
+                chained(prev)?;
+                self.wants(&[Phase::Attesting], body)?;
+                this_round(*round)?;
+                let invited = self.retry_cohort(plan)?;
+                let state = self.rounds.last_mut().ok_or(Fault::NoPlan)?;
+                state.voided = true;
+                let (base, from, step) = (state.base, state.from, state.step);
+                self.retried += 1;
+                self.rounds.push(RoundState {
+                    round: *round + 1,
+                    base,
+                    from,
+                    step,
+                    invited: Some(invited),
+                    ..RoundState::default()
+                });
+                self.phase = Phase::Collecting;
                 Ok(())
             }
 

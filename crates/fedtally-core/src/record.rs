@@ -153,6 +153,14 @@ pub enum Body {
         round: u32,
         reason: String,
     },
+    /// Aggregator: a site went silent before the seal, so this round number is
+    /// given up and the next one starts over without it. Who was silent follows
+    /// from the attestations in the log.
+    Retry {
+        plan: Digest,
+        round: u32,
+        prev: Digest,
+    },
     /// Aggregator: the last round is sealed.
     Finish { plan: Digest, prev: Digest },
 }
