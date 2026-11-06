@@ -19,7 +19,7 @@ use crate::error::ChainError;
 use crate::ledger::{self, Ledger, Sink};
 use crate::owed::{self, Notes, Party, SignedList, Snapshot, Step, Verdict, Wait, Wanted};
 use crate::rpc::{Rpc, RpcError};
-use crate::run::{Run, RunView, list_number};
+use crate::run::{Ending, Run, RunView, list_number};
 use crate::tx::Wallet;
 use crate::watch::Vault;
 
@@ -94,6 +94,9 @@ pub struct Anchor {
     /// When to try fetching ahead again. Apart from `quiet_until`, or a failing
     /// fetch would keep a round from ever being examined.
     fetch_again: Instant,
+    /// The slot this anchor first saw the log over at. A restart only lengthens
+    /// what depends on it.
+    log_ended: Option<u64>,
     said: Option<Step>,
     poll: Duration,
     give_up_after: Duration,
@@ -241,6 +244,7 @@ impl Anchor {
             reported: BTreeSet::new(),
             quiet_until: Instant::now(),
             fetch_again: Instant::now(),
+            log_ended: None,
             said: None,
             poll: config.poll,
             give_up_after: config.give_up_after,
@@ -282,9 +286,13 @@ impl Anchor {
                 kind: "task",
             });
         }
+        if self.run.view().ending != Ending::Running {
+            self.log_ended.get_or_insert(slot);
+        }
         let mut snapshot = Snapshot {
             slot,
             task,
+            log_ended: self.log_ended,
             ..Snapshot::default()
         };
         let Some(task) = &snapshot.task else {

@@ -42,6 +42,8 @@ pub struct Snapshot {
     pub demands: Vec<DemandView>,
     /// An issuer's lists on the ledger, by number.
     pub lists: BTreeMap<u32, StatusView>,
+    /// The slot at which this party first saw the log over.
+    pub log_ended: Option<u64>,
 }
 
 /// A leaf a watcher could not fetch and asks for on the ledger.
@@ -458,7 +460,12 @@ fn aggregator(run: &RunView, ledger: &Snapshot) -> Result<Step, Divergence> {
                     .iter()
                     .map(|site| *site as u16)
                     .find(|site| !task.enrolled.has(*site));
+                let short = committed
+                    .cohort
+                    .iter()
+                    .any(|site| !log.acks.contains(&(*site as u16)));
                 match missing {
+                    Some(_) if never_coming(task, run, ledger, short) => Step::Abort,
                     Some(site) => Step::Wait(Wait::Enrollment(site)),
                     None => Step::CommitRoot(number),
                 }
@@ -472,15 +479,10 @@ fn aggregator(run: &RunView, ledger: &Snapshot) -> Result<Step, Divergence> {
         ROUND_POSTED if log.posted.is_none() => return Err(Divergence::Ahead(number)),
         ROUND_POSTED if round.disputes > 0 => Step::Wait(Wait::Dispute),
         ROUND_POSTED if round.acked != round.cohort => {
-            // A site acknowledges here only what it acknowledged in its log. So
-            // an aborted log that is short of acks will never see them here,
-            // and once a log is over, a site that stays quiet is gone.
-            let quiet = task.last_change.saturating_add(task.stall_slots);
             let short = round.cohort.members().iter().any(|s| !log.acks.contains(s));
-            match run.ending {
-                Ending::Aborted if short => Step::Abort,
-                Ending::Aborted | Ending::Finished if ledger.slot > quiet => Step::Abort,
-                _ => Step::Wait(Wait::Acks),
+            match never_coming(task, run, ledger, short) {
+                true => Step::Abort,
+                false => Step::Wait(Wait::Acks),
             }
         }
         ROUND_POSTED if ledger.slot < window_end(task, round) => {
@@ -489,6 +491,23 @@ fn aggregator(run: &RunView, ledger: &Snapshot) -> Result<Step, Divergence> {
         ROUND_POSTED => Step::Settle(number),
         _ => Step::Done,
     })
+}
+
+/// Whether what a round is waiting for from its sites can no longer arrive. A
+/// site acts here only on what it did in its log, so an aborted log that is
+/// `short` of acks will never bring them. Once a log is over, a site still quiet
+/// after `stall_slots` more is gone.
+fn never_coming(task: &TaskView, run: &RunView, ledger: &Snapshot, short: bool) -> bool {
+    let quiet = task.last_change.saturating_add(task.stall_slots);
+    let waited = ledger.slot > quiet
+        && ledger
+            .log_ended
+            .is_some_and(|at| ledger.slot > at.saturating_add(task.stall_slots));
+    match run.ending {
+        Ending::Running => false,
+        Ending::Finished => waited,
+        Ending::Aborted => short || waited,
+    }
 }
 
 fn site(me: u16, wallet: &[u8; 32], run: &RunView, ledger: &Snapshot) -> Result<Step, Divergence> {
@@ -1551,8 +1570,12 @@ mod tests {
         run.ending = Ending::Aborted;
         assert_eq!(decide(Party::Aggregator, &run, &ledger), waiting);
 
-        // The site is quiet for as long as the ledger lets anyone stop a task.
-        ledger.slot = 1_101;
+        // Quiet for as long as the ledger lets anyone stop a task isn't enough:
+        // a site can only ack here once the ack is in its log.
+        ledger.slot = 5_000;
+        ledger.log_ended = Some(4_500);
+        assert_eq!(decide(Party::Aggregator, &run, &ledger), waiting);
+        ledger.slot = 5_501;
         assert_eq!(decide(Party::Aggregator, &run, &ledger), Ok(Step::Abort));
         run.ending = Ending::Finished;
         assert_eq!(decide(Party::Aggregator, &run, &ledger), Ok(Step::Abort));
@@ -1570,6 +1593,34 @@ mod tests {
         ledger.rounds.get_mut(&1).unwrap().disputes = 1;
         let dispute = Ok(Step::Wait(Wait::Dispute));
         assert_eq!(decide(Party::Aggregator, &run, &ledger), dispute);
+    }
+
+    #[test]
+    fn a_log_that_is_over_stops_the_wait_for_an_enrollment_that_cannot_come() {
+        let mut run = run(3, 2);
+        run.rounds.push(sealed(1, &[0, 1, 2]));
+        let mut held = task(&run);
+        (held.round, held.stall_slots, held.last_change) = (1, 1_000, 100);
+        held.enrolled = [0, 1].into_iter().collect();
+        let mut ledger = snapshot(held, 200);
+        let collecting = mirrored(&run.rounds[0], ROUND_COLLECTING, 0);
+        ledger.rounds.insert(1, collecting);
+        let waiting = Ok(Step::Wait(Wait::Enrollment(2)));
+
+        assert_eq!(decide(Party::Aggregator, &run, &ledger), waiting);
+        run.ending = Ending::Finished;
+        assert_eq!(decide(Party::Aggregator, &run, &ledger), waiting);
+        ledger.log_ended = Some(200);
+        ledger.slot = 1_201;
+        assert_eq!(decide(Party::Aggregator, &run, &ledger), Ok(Step::Abort));
+        run.ending = Ending::Running;
+        assert_eq!(decide(Party::Aggregator, &run, &ledger), waiting);
+
+        ledger.slot = 200;
+        ledger.log_ended = Some(200);
+        run.rounds[0].acks.remove(&2);
+        run.ending = Ending::Aborted;
+        assert_eq!(decide(Party::Aggregator, &run, &ledger), Ok(Step::Abort));
     }
 
     #[test]
