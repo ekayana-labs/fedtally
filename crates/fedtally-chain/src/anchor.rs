@@ -435,8 +435,9 @@ impl Anchor {
     }
 
     /// A round on the ledger is settled for good, so its vectors can go.
-    fn prune(&self, number: u32) {
-        if let Some(vault) = &self.vault {
+    fn prune(&mut self, number: u32) {
+        if let Some(vault) = &mut self.vault {
+            vault.forget(number);
             let _ = std::fs::remove_dir_all(vault.source.dir.join(format!("round-{number}")));
         }
     }
@@ -520,6 +521,17 @@ impl Anchor {
                     "round {number}: the vectors behind the ledger's roots cannot be had: {e}"
                 );
                 self.quiet_until = Instant::now() + self.poll.max(RETRY_FIRST) * 4;
+                match vault.recover(number, round, log) {
+                    Ok(Some(leaf)) => {
+                        tracing::error!(
+                            "round {number}: the aggregate is not the sum at leaf {leaf}, seen in the parts that could be had"
+                        );
+                        self.notes.verdicts.insert(number, Verdict::Wrong(leaf));
+                        return Ok(());
+                    }
+                    Ok(None) => {}
+                    Err(e) => tracing::warn!("round {number}: nothing recovered: {e}"),
+                }
                 // Half the window goes to asking nicely. What's still refused
                 // then is asked for on the ledger.
                 let Some(task) = &snapshot.task else {
@@ -533,7 +545,7 @@ impl Anchor {
                     self.notes.verdicts.insert(number, Verdict::Unprovable);
                 } else if slot >= halfway {
                     let wanted = self.notes.wanted.entry(number).or_default();
-                    let asked = vault.missing(number, round, log, DEMANDS_AT_ONCE)?;
+                    let asked = vault.missing(number, round, log, DEMANDS_AT_ONCE);
                     for (part, leaf) in asked {
                         if !wanted.iter().any(|w| w.part == part && w.leaf == leaf) {
                             tracing::warn!(

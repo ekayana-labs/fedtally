@@ -1,6 +1,7 @@
 //! A party outside the plan that the aggregator lets read: it keeps a replica
 //! of the log, replayed like any other, and downloads a round's vectors.
 
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
@@ -89,14 +90,24 @@ pub async fn fetch_vector(
     Follower::fetch(&mut client, plan.shape(), object, root, out).await
 }
 
-/// Keeps what can be had of a vector, chunk by chunk, in `out`, and returns the
-/// chunks that could not be: those the aggregator refuses, or sends wrong.
+/// What has been had of a vector so far.
+#[derive(Default)]
+pub struct Salvaged {
+    pub manifest: Option<Manifest>,
+    /// Chunks in the file that are known to be under the root.
+    pub held: BTreeSet<u64>,
+}
+
+/// Keeps what can be had of a vector, chunk by chunk, in `out`. Asks only for
+/// what `salvaged` does not have yet, and stops at the first broken connection:
+/// a chunk once checked stays good whatever the aggregator does later.
 pub async fn salvage(
     config: &ObserverConfig,
     object: Object,
     root: Digest,
     out: &Path,
-) -> Result<Vec<u64>, NodeError> {
+    salvaged: &mut Salvaged,
+) -> Result<(), NodeError> {
     let record = Record::parse(&config.plan_line)?;
     let Body::Plan(plan) = &record.body else {
         return Err(NodeError::Protocol("not a plan".into()));
@@ -109,7 +120,6 @@ pub async fn salvage(
         .truncate(false)
         .open(out)?;
     file.set_len(shape.coords * 8)?;
-    let all = || (0..shape.chunks()).collect::<Vec<u64>>();
 
     let Ok(mut client) = Client::connect(
         &config.addr,
@@ -120,35 +130,44 @@ pub async fn salvage(
     )
     .await
     else {
-        return Ok(all());
+        return Ok(());
     };
-    client.send(&Msg::GetManifest { object }).await?;
-    let manifest = match client.reply().await {
-        Ok(Msg::Manifest { manifest, .. })
-            if manifest.root == root
-                && Manifest::root_of(&manifest.chunks) == root
-                && manifest.chunks.len() as u64 == shape.chunks() =>
-        {
-            manifest
+    if salvaged.manifest.is_none() {
+        if client.send(&Msg::GetManifest { object }).await.is_err() {
+            return Ok(());
         }
-        _ => return Ok(all()),
+        match client.reply().await {
+            Ok(Msg::Manifest { manifest, .. })
+                if manifest.root == root
+                    && Manifest::root_of(&manifest.chunks) == root
+                    && manifest.chunks.len() as u64 == shape.chunks() =>
+            {
+                salvaged.manifest = Some(manifest);
+            }
+            _ => return Ok(()),
+        }
+    }
+    let Some(manifest) = &salvaged.manifest else {
+        return Ok(());
     };
-    let mut gone = Vec::new();
     for chunk in 0..shape.chunks() {
-        client.send(&Msg::GetChunk { object, chunk }).await?;
+        if salvaged.held.contains(&chunk) {
+            continue;
+        }
+        if client.send(&Msg::GetChunk { object, chunk }).await.is_err() {
+            break;
+        }
         match client.reply().await {
             Ok(Msg::Chunk { chunk, data, .. })
                 if data.len() == shape.chunk_bytes(chunk)
                     && vector::digest_chunk_bytes(&data) == manifest.chunks[chunk as usize] =>
             {
                 vector::write_chunk_bytes(&file, shape, chunk, &data)?;
+                salvaged.held.insert(chunk);
             }
-            Ok(_) => gone.push(chunk),
-            Err(_) => {
-                gone.extend(chunk..shape.chunks());
-                break;
-            }
+            Ok(_) => {}
+            Err(_) => break,
         }
     }
-    Ok(gone)
+    Ok(())
 }
