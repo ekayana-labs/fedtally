@@ -659,6 +659,81 @@ pub fn challenge(head: &Digest) -> Fp2 {
     }
 }
 
+fn zigzag(word: u64) -> Option<u64> {
+    if word >= P {
+        return None;
+    }
+    let value = Fp::new(word).centered();
+    Some(((value << 1) ^ (value >> 63)) as u64)
+}
+
+fn unzigzag(packed: u64) -> u64 {
+    let value = ((packed >> 1) as i64) ^ -((packed & 1) as i64);
+    Fp::from_i64(value).value()
+}
+
+/// A chunk at the fewest bits each leaf's values take, closest to zero, for a
+/// vector whose values are small: a width byte, then that many bits per value.
+/// `None` if the bytes aren't field elements or wouldn't get any smaller.
+pub fn pack(bytes: &[u8]) -> Option<Vec<u8>> {
+    let mut out = Vec::with_capacity(bytes.len() / 2);
+    for block in bytes.chunks(LEAF_COORDS as usize * WORD) {
+        let values = block
+            .as_chunks::<WORD>()
+            .0
+            .iter()
+            .map(|word| zigzag(u64::from_le_bytes(*word)))
+            .collect::<Option<Vec<u64>>>()?;
+        let width = values.iter().fold(0, |all, v| all | v);
+        let width = u64::BITS - width.leading_zeros();
+        out.push(width as u8);
+        let (mut held, mut bits) = (0u128, 0);
+        for value in values {
+            held |= u128::from(value) << bits;
+            bits += width;
+            while bits >= 8 {
+                out.push(held as u8);
+                held >>= 8;
+                bits -= 8;
+            }
+        }
+        if bits > 0 {
+            out.push(held as u8);
+        }
+    }
+    (out.len() < bytes.len()).then_some(out)
+}
+
+/// The `len` bytes `pack` was given. `None` for anything `pack` can't have made,
+/// though what it returns still has to match the chunk's digest.
+pub fn unpack(packed: &[u8], len: usize) -> Option<Vec<u8>> {
+    let mut out = Vec::with_capacity(len);
+    let mut rest = packed;
+    for start in (0..len).step_by(LEAF_COORDS as usize * WORD) {
+        let coords = (len - start).min(LEAF_COORDS as usize * WORD) / WORD;
+        let (width, after) = rest.split_first()?;
+        let width = u32::from(*width);
+        if width > u64::BITS {
+            return None;
+        }
+        let (block, after) = after.split_at_checked((coords * width as usize).div_ceil(8))?;
+        rest = after;
+        let mask = u64::MAX.checked_shr(u64::BITS - width).unwrap_or(0);
+        let (mut held, mut bits) = (0u128, 0);
+        let mut next = block.iter();
+        for _ in 0..coords {
+            while bits < width {
+                held |= u128::from(*next.next()?) << bits;
+                bits += 8;
+            }
+            out.extend_from_slice(&unzigzag(held as u64 & mask).to_le_bytes());
+            held >>= width;
+            bits -= width;
+        }
+    }
+    rest.is_empty().then_some(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1173,5 +1248,59 @@ mod tests {
         for i in 0..1000u32 {
             assert_ne!(challenge(&Digest::of(&i.to_le_bytes())).b, Fp::ZERO);
         }
+    }
+
+    fn as_bytes(values: &[u64]) -> Vec<u8> {
+        values.iter().flat_map(|v| v.to_le_bytes()).collect()
+    }
+
+    #[test]
+    fn small_values_of_either_sign_pack_and_come_back() {
+        let values: Vec<u64> = (0..200i64)
+            .map(|i| Fp::from_i64(i * i - 3000).value())
+            .collect();
+        let bytes = as_bytes(&values);
+        let packed = pack(&bytes).unwrap();
+        assert!(packed.len() < bytes.len() / 3, "{}", packed.len());
+        assert_eq!(unpack(&packed, bytes.len()).unwrap(), bytes);
+    }
+
+    #[test]
+    fn a_wide_leaf_does_not_widen_the_others() {
+        let mut values = vec![1u64; LEAF_COORDS as usize * 3];
+        values[LEAF_COORDS as usize * 2] = P - P / 3;
+        let bytes = as_bytes(&values);
+        let packed = pack(&bytes).unwrap();
+        let wide = LEAF_COORDS as usize * 8;
+        assert!(packed.len() < wide + 2 * (LEAF_COORDS as usize) + 3);
+        assert_eq!(unpack(&packed, bytes.len()).unwrap(), bytes);
+    }
+
+    #[test]
+    fn zeros_take_a_width_byte_a_leaf() {
+        let bytes = vec![0; LEAF_COORDS as usize * 8 * 2 + 8];
+        let packed = pack(&bytes).unwrap();
+        assert_eq!(packed, [0, 0, 0]);
+        assert_eq!(unpack(&packed, bytes.len()).unwrap(), bytes);
+    }
+
+    #[test]
+    fn what_would_not_get_smaller_or_is_no_field_element_stays_as_it_is() {
+        let uniform: Vec<u64> = (1..=64u64).map(|i| P / 2 - i * 7).collect();
+        assert_eq!(pack(&as_bytes(&uniform)), None);
+        assert_eq!(pack(&as_bytes(&[P, 1, 1, 1])), None);
+    }
+
+    #[test]
+    fn a_packed_chunk_of_the_wrong_shape_is_refused() {
+        let bytes = as_bytes(&vec![5; 100]);
+        let packed = pack(&bytes).unwrap();
+        assert_eq!(unpack(&packed, bytes.len() - 16), None);
+        assert_eq!(unpack(&packed, bytes.len() + 16), None);
+        assert_eq!(unpack(&packed[..packed.len() - 1], bytes.len()), None);
+        assert_eq!(unpack(&[65, 0, 0], 8), None);
+        let mut longer = packed.clone();
+        longer.push(0);
+        assert_eq!(unpack(&longer, bytes.len()), None);
     }
 }
