@@ -1678,7 +1678,7 @@ async fn close_round(shared: &Arc<Shared>) -> Result<(), NodeError> {
             .filter(|(site, _)| kept.contains(site))
             .map(|(_, path)| path.as_path())
             .collect();
-        let manifest = vector::combine(&sum_path, shape, &chosen, &[])?;
+        let manifest = vector::combine_unsynced(&sum_path, shape, &chosen)?;
         Ok((kept, manifest))
     })
     .await?;
@@ -1768,7 +1768,7 @@ async fn outcome_round(shared: &Arc<Shared>) -> Result<(), NodeError> {
     blocking(move || {
         ensure_vector(&sum_for_build, shape, expected, || {
             let refs: Vec<&Path> = inputs.iter().map(PathBuf::as_path).collect();
-            Ok(vector::combine(&sum_for_build, shape, &refs, &[])?)
+            Ok(vector::combine_unsynced(&sum_for_build, shape, &refs)?)
         })
     })
     .await?;

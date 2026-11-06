@@ -360,6 +360,15 @@ pub fn build<F>(path: &Path, shape: Shape, fill: F) -> io::Result<Manifest>
 where
     F: Fn(u64, &mut [u64], &mut Vec<u64>) -> io::Result<()> + Sync,
 {
+    let (file, manifest) = fill_chunks(path, shape, fill)?;
+    file.sync_data()?;
+    Ok(manifest)
+}
+
+fn fill_chunks<F>(path: &Path, shape: Shape, fill: F) -> io::Result<(File, Manifest)>
+where
+    F: Fn(u64, &mut [u64], &mut Vec<u64>) -> io::Result<()> + Sync,
+{
     let file = OpenOptions::new()
         .create(true)
         .write(true)
@@ -377,8 +386,7 @@ where
             })
         })
         .collect();
-    file.sync_data()?;
-    Ok(Manifest::new(chunks?))
+    Ok((file, Manifest::new(chunks?)))
 }
 
 /// Sums vectors: `add` are added, `sub` subtracted.
@@ -389,6 +397,16 @@ pub fn combine(out: &Path, shape: Shape, add: &[&Path], sub: &[&Path]) -> io::Re
     build(out, shape, |chunk, buf, scratch| {
         sum_chunk(shape, chunk, &add, &sub, buf, scratch)
     })
+}
+
+/// Sums vectors into a file nothing needs after a power cut, since the sum can be
+/// worked out again from its inputs and checked against the log.
+pub fn combine_unsynced(out: &Path, shape: Shape, add: &[&Path]) -> io::Result<Manifest> {
+    let add: Vec<File> = add.iter().map(File::open).collect::<io::Result<_>>()?;
+    let filled = fill_chunks(out, shape, |chunk, buf, scratch| {
+        sum_chunk(shape, chunk, &add, &[], buf, scratch)
+    });
+    filled.map(|(_, manifest)| manifest)
 }
 
 /// Adds one chunk of every file in `add` to `acc` and takes off every file in `sub`.
