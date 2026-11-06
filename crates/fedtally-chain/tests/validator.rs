@@ -21,7 +21,7 @@ use std::time::{Duration, Instant};
 use fedtally_chain::ledger::{self, Ledger, RoundView, Sent, Sink, TaskView};
 use fedtally_chain::program::client;
 use fedtally_chain::program::state::{
-    ENROLLMENT_SPACE, ROUND_FINAL, ROUND_FRAUD, TASK_ABORTED, TASK_FINISHED,
+    ENROLLMENT_SPACE, ROUND_FINAL, ROUND_FRAUD, SITE_WITHDRAWN, TASK_ABORTED, TASK_FINISHED,
 };
 use fedtally_chain::rpc::Rpc;
 use fedtally_chain::run::Run;
@@ -50,6 +50,7 @@ const PATIENCE: Duration = Duration::from_secs(300);
 /// The README's LiteSVM figure for each instruction, for the nearest case it
 /// measures.
 const LITESVM: &[(&str, u64)] = &[
+    ("round_close", 751),
     ("publish", 2398),
     ("back", 1722),
     ("enroll", 3371),
@@ -260,12 +261,24 @@ fn start(
     window: u64,
     gated: bool,
 ) -> Running {
+    start_with(runtime, validator, price, window, gated, |_| {})
+}
+
+fn start_with(
+    runtime: &tokio::runtime::Runtime,
+    validator: &Validator,
+    price: Option<u64>,
+    window: u64,
+    gated: bool,
+    edit: impl FnOnce(&mut Options),
+) -> Running {
     let dir = tempfile::tempdir().unwrap();
     let init = dir.path().join("init.safetensors");
     write_model(&init, &layout(), &[TensorView::F32(&[0.5; 300])]).unwrap();
     let mut options = Options::new(SITES, 1, ROUNDS);
     options.chunk_coords = LEAF_COORDS;
     options.did_bio = Some("localnet".into());
+    edit(&mut options);
     let fed = LocalFederation::create(dir.path(), layout(), &init, &options).unwrap();
     let watcher = Arc::new(Identity::generate(SigAlg::Ed25519).unwrap());
 
@@ -638,14 +651,14 @@ fn honest(runtime: &tokio::runtime::Runtime, validator: &Validator, price: Optio
     assert_eq!(task.state, TASK_FINISHED);
     assert_eq!((task.round, task.settled), (ROUNDS, ROUNDS));
     assert_eq!((task.owed, task.stake_held), (0, 0));
-    for number in 1..=ROUNDS {
-        let round = running.round(number).unwrap();
-        let outcome = replay.rounds[number as usize - 1].outcome.as_ref().unwrap();
-        assert_eq!(round.state, ROUND_FINAL);
-        assert_eq!(round.next_model, outcome.model.0);
-        assert_eq!(round.acked, round.cohort);
-        assert_eq!(round.claimed, round.cohort);
-    }
+    let last = running.round(ROUNDS).unwrap();
+    let outcome = replay.rounds[ROUNDS as usize - 1].outcome.as_ref().unwrap();
+    assert_eq!(last.state, ROUND_FINAL);
+    assert_eq!(last.next_model, outcome.model.0);
+    assert_eq!(last.acked, last.cohort);
+    assert_eq!(last.claimed, last.cohort);
+    // Earlier rounds, once paid out, are closed and their rent is back.
+    assert!(running.was_sent("settle").is_some());
 
     let costs = costs(&running);
     let rent = running.rpc().rent_exempt_minimum(ENROLLMENT_SPACE).unwrap();
@@ -688,6 +701,154 @@ fn flip(path: &Path, shape: vector::Shape) -> vector::Digest {
 /// The log is honest, but the aggregator swaps the aggregate it serves and
 /// posts the root of that one. No site acknowledges it, and the watcher takes
 /// the aggregator's stake.
+/// A finished run, anchored afterwards, with a watcher that can't reach the
+/// aggregator. Everything it needs must come through the ledger.
+fn blind_watcher(running: &Running, runtime: &tokio::runtime::Runtime) -> Config {
+    let dir = running.fed.root.join("watcher");
+    std::fs::create_dir_all(&dir).unwrap();
+    let log = running.fed.aggregator_dir().join("log.jsonl");
+    std::fs::copy(log, dir.join("log.jsonl")).unwrap();
+    let watching = Watching {
+        addr: "127.0.0.1:1".to_owned(),
+        dir,
+        runtime: runtime.handle().clone(),
+    };
+    running.config(Role::Watcher(watching), &running.watcher, PathBuf::new())
+}
+
+fn finish_offline(runtime: &tokio::runtime::Runtime, running: &mut Running) {
+    let aggregator = running.aggregator.take().unwrap();
+    let sites = std::mem::take(&mut running.sites);
+    runtime.block_on(async {
+        aggregator.await.unwrap().unwrap();
+        for site in sites {
+            site.await.unwrap().unwrap();
+        }
+    });
+}
+
+fn anchor_parties(running: &Running, anchors: &mut Anchors) {
+    anchors.start("publisher", running.publisher());
+    for site in 0..SITES {
+        anchors.start("site", running.site(site));
+    }
+    anchors.start("aggregator", running.aggregator());
+}
+
+/// The aggregator has lost its vectors, so nobody can answer: it pays.
+fn withheld(runtime: &tokio::runtime::Runtime, validator: &Validator) {
+    let mut running = start(runtime, validator, None, 80, false);
+    finish_offline(runtime, &mut running);
+    let spool = running.fed.aggregator_dir();
+    for number in 1..=ROUNDS {
+        std::fs::remove_dir_all(spool.join(format!("round-{number}"))).unwrap();
+    }
+    let before = running.balance(&running.watcher);
+    let mut anchors = Anchors::new();
+    anchor_parties(&running, &mut anchors);
+    anchors.start("watcher", blind_watcher(&running, runtime));
+    let started = Instant::now();
+    anchors.finish();
+
+    let task = running.task().unwrap();
+    assert_eq!(
+        (task.state, task.fraud, task.stake_held),
+        (TASK_ABORTED, true, 0)
+    );
+    assert_eq!(running.round(1).unwrap().state, ROUND_FRAUD);
+    let costs = costs(&running);
+    let paid = fees_of(&costs, &running.watcher);
+    assert_eq!(
+        running.balance(&running.watcher),
+        before + AGGREGATOR_STAKE - paid,
+        "the watcher ends with the stake and its bonds back, less the fees"
+    );
+    println!(
+        "\nwithheld vectors: the aggregator was slashed in {:.1}s, {} transactions by the watcher, {paid} lamports in fees",
+        started.elapsed().as_secs_f64(),
+        by(&costs, &running.watcher).count(),
+    );
+}
+
+/// The aggregator holds its vectors and answers from its spool, so the watcher
+/// gets them through the ledger, finds the sum right, and everyone is paid.
+fn answered(runtime: &tokio::runtime::Runtime, validator: &Validator) {
+    let mut running = start(runtime, validator, None, 80, false);
+    finish_offline(runtime, &mut running);
+    let mut anchors = Anchors::new();
+    anchor_parties(&running, &mut anchors);
+    anchors.start("watcher", blind_watcher(&running, runtime));
+    let started = Instant::now();
+    anchors.finish();
+
+    let task = running.task().unwrap();
+    assert_eq!((task.state, task.fraud), (TASK_FINISHED, false));
+    assert_eq!((task.settled, task.stake_held), (ROUNDS, 0));
+    let costs = costs(&running);
+    let answers = costs
+        .iter()
+        .filter(|c| c.sent.what == "demand_answer")
+        .count();
+    assert!(answers >= 15, "only {answers} answers");
+    let spool = running.fed.aggregator_dir().join("round-1");
+    assert!(!spool.exists(), "a settled round's vectors were kept");
+    println!(
+        "\nanswered demands: {answers} leaves through the ledger, the run settled in {:.1}s, {} lamports in fees for the watcher",
+        started.elapsed().as_secs_f64(),
+        fees_of(&costs, &running.watcher),
+    );
+}
+
+/// A data access committee revokes a grant in mid run. Its issuer anchor posts
+/// the list, and the watcher applies it to the site's enrollment.
+fn revoked(runtime: &tokio::runtime::Runtime, validator: &Validator) {
+    let mut running = start_with(runtime, validator, None, 60, true, |options| {
+        options.credentials = true;
+        options.did_bio = None;
+        options.min_cohort = 2;
+        options.timeouts.join_secs = 30;
+        options.rounds = 3;
+    });
+    let issuers = running.fed.issuers.as_ref().unwrap();
+    let key = running.fed.root.join("committee.key");
+    issuers.committee.save(&key).unwrap();
+    let committee = Arc::new(Identity::load(&key).unwrap());
+    validator.fund(&[wallet_of(&committee)]);
+
+    // The grant goes while round 2 trains, so round 3 is the first without it.
+    let log = running.fed.aggregator_dir().join("log.jsonl");
+    let mut run = Run::open(&running.fed.plan_line, &log).unwrap();
+    eventually("round 2 in the log", || {
+        run.refresh().unwrap();
+        (run.view().rounds.len() == 2).then_some(())
+    });
+    running.fed.revoke_access(2).unwrap();
+    running.gate.open();
+
+    let (mut anchors, _) = running.anchors(runtime);
+    anchors.start("aggregator", running.aggregator());
+    anchors.start("issuer", running.config(Role::Issuer, &committee, log));
+    anchors.finish();
+
+    let replay = runtime.block_on(running.aggregator.take().unwrap());
+    assert_eq!(replay.unwrap().unwrap().abort, None);
+
+    let task = running.task().unwrap();
+    assert_eq!(task.state, TASK_FINISHED);
+    assert!(
+        task.revoked.has(2),
+        "the revocation never reached the ledger"
+    );
+    let address = client::enrollment(&running.task_address(), 2);
+    let site = ledger::enrollment(running.rpc().account(&address).unwrap().as_ref()).unwrap();
+    // Revoked, it took its stake back without waiting for the task to end.
+    assert_eq!(site.status, SITE_WITHDRAWN);
+    let sent = running.sent.lock().unwrap();
+    for what in ["status_init", "revoke", "revoke_check"] {
+        assert!(sent.iter().any(|one| one.what == what), "no {what}");
+    }
+}
+
 fn fraud(runtime: &tokio::runtime::Runtime, validator: &Validator, price: Option<u64>) -> Units {
     let running = start(runtime, validator, price, 150, true);
     let fed = &running.fed;
@@ -822,4 +983,30 @@ fn the_roles_settle_an_honest_run_and_slash_a_dishonest_aggregator() {
     add(&mut plain, fraud(&runtime, &validator, None));
     add(&mut priced, fraud(&runtime, &validator, Some(PRICE)));
     print_units(&plain, &priced, PRICE);
+}
+
+fn with_validator(scenario: fn(&tokio::runtime::Runtime, &Validator)) {
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    scenario(&runtime, &Validator::start());
+}
+
+#[test]
+#[ignore = "needs solana-test-validator and the built program"]
+fn an_aggregator_that_cannot_answer_a_demand_loses_its_stake() {
+    with_validator(withheld);
+}
+
+#[test]
+#[ignore = "needs solana-test-validator and the built program"]
+fn a_watcher_cut_off_from_the_aggregator_gets_what_it_needs_through_the_ledger() {
+    with_validator(answered);
+}
+
+#[test]
+#[ignore = "needs solana-test-validator and the built program"]
+fn a_revocation_in_the_log_reaches_the_ledger() {
+    with_validator(revoked);
 }
