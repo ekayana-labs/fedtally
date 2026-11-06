@@ -49,7 +49,7 @@ private = ft.LocalFederation(
 print(private.report["privacy"]["epsilon_spent"])
 ```
 
-For separate processes, see `fedtally --help`, `ft.run_site`, `fedtally site` to train with any command, and `crates/fedtally-cli/tests/cli.rs`, which goes through the setup one party at a time. [notebooks/walkthrough.ipynb](notebooks/walkthrough.ipynb) trains a small model, looks at what the aggregator holds, tampers with the log, runs with privacy and revokes a credential.
+To anchor a run to Solana, pass `ledger=ft.Ledger(rpc, ft.Stakes(...))` to `run`, after funding `fed.wallets()`. For separate processes, see `fedtally --help`, `ft.run_site`, `ft.run_anchor`, `fedtally site` to train with any command, and `crates/fedtally-cli/tests/cli.rs`, which goes through the setup one party at a time. [notebooks/walkthrough.ipynb](notebooks/walkthrough.ipynb) trains a small model, looks at what the aggregator holds, tampers with the log, runs with privacy and revokes a credential.
 
 To run the tests:
 
