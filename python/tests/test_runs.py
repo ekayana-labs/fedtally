@@ -235,6 +235,18 @@ def test_a_run_without_privacy_says_so(tmp_path):
     assert result.report["privacy"] is None
 
 
+def test_a_plan_that_may_retry_needs_noise(tmp_path):
+    with pytest.raises(ft.FedtallyError, match="no noise"):
+        fed(tmp_path / "open", sites=4, min_cohort=2, retries=1)
+    privacy = ft.Privacy(epsilon=8.0, delta=1e-5, clip=1.0)
+    result = fed(
+        tmp_path / "private", sites=4, min_cohort=2, retries=1, privacy=privacy
+    ).run(toward([1.0, 1.0, 1.0, 1.0]))
+    assert result.ok, result.sites
+    assert len(result.report["rounds"]) == 1
+    assert not result.report["rounds"][0]["voided"]
+
+
 def test_an_impossible_privacy_target_is_refused(tmp_path):
     with pytest.raises(ft.FedtallyError):
         fed(tmp_path, privacy=ft.Privacy(epsilon=1.0, delta=1e-5, clip=-1.0))
