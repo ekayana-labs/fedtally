@@ -11,7 +11,7 @@ use fedtally_core::keys::Identity;
 use fedtally_core::log::LogFile;
 use fedtally_core::plan::Plan;
 use fedtally_core::record::{Body, Record};
-use fedtally_core::replay::Replay;
+use fedtally_core::replay::{Phase, Replay};
 use fedtally_core::vector::{self, Digest, Manifest, Shape};
 
 use crate::net::Client;
@@ -200,7 +200,9 @@ impl Follower {
                 line: record.line.clone(),
             })
             .await?;
-        let moment = (self.replay.phase, self.replay.round_number());
+        // The aggregator answers every record, by logging it or refusing it, so
+        // wait for that. Backlog read first may show the log moving on, and
+        // leaving then would let the refusal reach whoever reads next.
         loop {
             let batch = client.entries().await?;
             let mine = batch.contains(&record.line);
@@ -208,9 +210,9 @@ impl Follower {
             if mine {
                 return Ok(());
             }
-            if (self.replay.phase, self.replay.round_number()) != moment {
+            if matches!(self.replay.phase, Phase::Done | Phase::Aborted) {
                 return Err(NodeError::Refused(
-                    "the log moved on without this record".into(),
+                    "the run ended without this record".into(),
                 ));
             }
         }

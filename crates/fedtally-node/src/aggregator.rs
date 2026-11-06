@@ -1345,8 +1345,18 @@ fn retry_round(shared: &Shared) -> Result<(), NodeError> {
     shared.apply(&mut state, &record)?;
     state.uploads.clear();
     state.manifests.clear();
-    state.attests.clear();
+    refuse_attests(&mut state, "the round was given up");
     Ok(())
+}
+
+/// Every attestation gets an answer, since its site is waiting for one.
+fn refuse_attests(state: &mut State, reason: &str) {
+    for pending in std::mem::take(&mut state.attests) {
+        if let Some(p) = state.peers.get(&pending.peer) {
+            let reason = reason.to_owned();
+            let _ = p.control.send(Msg::Refused { reason });
+        }
+    }
 }
 
 fn abort(shared: &Shared, reason: String) -> Result<(), NodeError> {
@@ -1872,13 +1882,7 @@ fn seal_round(shared: &Arc<Shared>) -> Result<(), NodeError> {
         aggregate: sum - masks,
         shares: state.shares.clone(),
     };
-    for pending in std::mem::take(&mut state.attests) {
-        if let Some(p) = state.peers.get(&pending.peer) {
-            let _ = p.control.send(Msg::Refused {
-                reason: "the round was sealed before this attestation agreed".into(),
-            });
-        }
-    }
+    refuse_attests(state, "the round was sealed before this attestation agreed");
     let record = Record::sign(&shared.identity, &body)?;
     shared.apply(state, &record)
 }
