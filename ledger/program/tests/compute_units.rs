@@ -314,6 +314,28 @@ fn compute_unit_report() {
 }
 
 #[test]
+fn void_round_units() {
+    let mut report = Report::default();
+    let mut run = Run::in_world(World::fixed(), 16, |terms| {
+        (terms.sensitivity, terms.noise) = (262146, 1 << 34);
+        terms.budget = 40 << 40;
+        terms.retries = 1;
+    });
+    run.publish();
+    run.back();
+    let cohort: Vec<u16> = (0..16).collect();
+    for index in &cohort {
+        run.enroll(*index);
+    }
+    let number = run.open_round();
+    run.commit(number, &cohort, &Posting::filler(number, 1));
+    let aggregator = run.aggregator.insecure_clone();
+    let void = client::void_round(&key(&run.aggregator), &run.task, number, false);
+    report.add("void_round", run.world.run(void, &[&aggregator]));
+    report.print();
+}
+
+#[test]
 fn a_compute_unit_limit_does_not_change_what_an_instruction_costs() {
     let commit = |with_limit: bool| {
         let mut run = Run::in_world(World::fixed(), 4, |_| {});

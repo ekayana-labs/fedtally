@@ -68,6 +68,7 @@ Errors are custom codes from 6000, listed in
 | `demand_answer` | responder (signer), task, round, demand, buffer | | Checks the proof in the responder's buffer, keeps it in the demand, and pays the responder its fee. |
 | `demand_close` | task, round, demand, challenger | | Closes a demand. An unanswered one past its deadline slashes the aggregator. |
 | `round_close` | aggregator, task, round | | Returns the rent of a round nothing will read again. A final round closes once it is paid out, or 16 challenge windows after it settled, and what was not claimed stops being owed. The latest round closes only when the task is over, the aggregator's stake is gone and no dispute is open. |
+| `void_round` | aggregator (signer), task, round | remove helper u8 | Gives up a committed round the log gave up, for a silent site or with a helper removed. Its budget stays spent and nobody is paid for it. The next round opens from the same model, with the same draw. A posted round can't be voided, because it could still settle and adopt a model the log refused. A round a cohort member never enrolled for can't be committed, so it can't be voided either: the anchor waits, and once the log has ended and `stall_slots` have passed it aborts the task, which leaves stakes to be withdrawn and slashes nobody. |
 | `status_init` | issuer (signer), status list, system program | list u32, bits u32 | Creates a status list. |
 | `revoke` | issuer (signer), status list | bit u32 | Sets a bit, once. |
 | `revoke_check` | task, enrollment, then the status lists it names | | Revokes the enrollment if a named bit is set. |
@@ -142,45 +143,46 @@ cargo clippy --all-targets -- -D warnings
 Measured by `cargo test --test compute_units -- --nocapture` with fixed
 wallets, so the figures are reproducible. An instruction that creates an
 account searches for its bump, which costs more or less depending on the
-address. The binary is about 109 KB.
+address. The binary is about 129 KB.
 
 | Instruction | CU |
 | --- | --- |
-| `publish` | 2398 |
+| `publish` | 2429 |
 | `back` | 1722 |
 | `enroll` (16 sites, 2 status references) | 3371 |
-| `open_round` | 3035 |
-| `commit_root` (no sampling, cohort of 16) | 3004 |
-| `commit_root` (sampling 8 of 16) | 5473 |
-| `commit_root` (sampling 32 of 128) | 22345 |
-| `commit_root` (sampling 64 of 1024) | 159077 |
-| `post_aggregate` (1 helper) | 957 |
-| `ack` | 750 |
-| `settle` | 911 |
-| `claim` | 1074 |
+| `open_round` | 3043 |
+| `commit_root` (no sampling, cohort of 16) | 2928 |
+| `commit_root` (sampling 8 of 16) | 5397 |
+| `commit_root` (sampling 32 of 128) | 22269 |
+| `commit_root` (sampling 64 of 1024) | 159001 |
+| `post_aggregate` (1 helper) | 974 |
+| `ack` | 751 |
+| `settle` | 920 |
+| `claim` | 1075 |
 | `dispute_open` | 2851 |
-| `dispute_leaf` (input of 16, full leaf, 2-level path) | 6164 |
-| `dispute_leaf` (mask, full leaf, 2-level path) | 4910 |
-| `dispute_leaf` (aggregate, full leaf, 2-level path) | 4006 |
-| `dispute_leaf` (aggregate, full leaf, 20-level path) | 7435 |
-| `dispute_leaf` (input of 16, full leaf, 20-level path) | 9608 |
-| `dispute_close` (aggregate upheld) | 1308 |
-| `dispute_close` (fraud) | 1312 |
-| `demand_open` | 3028 |
-| `demand_answer` (input of 3, full leaf) | 3328 |
+| `dispute_leaf` (input of 16, full leaf, 2-level path) | 6189 |
+| `dispute_leaf` (mask, full leaf, 2-level path) | 4926 |
+| `dispute_leaf` (aggregate, full leaf, 2-level path) | 4019 |
+| `dispute_leaf` (aggregate, full leaf, 20-level path) | 7448 |
+| `dispute_leaf` (input of 16, full leaf, 20-level path) | 9633 |
+| `dispute_close` (aggregate upheld) | 1320 |
+| `dispute_close` (fraud) | 1324 |
+| `demand_open` | 3043 |
+| `demand_answer` (input of 3, full leaf) | 3344 |
 | `demand_close` (answered) | 1205 |
 | `round_close` | 3935 |
-| `status_init` (80000 bits) | 2738 |
-| `status_init` (64 bits) | 2032 |
-| `revoke` | 414 |
+| `void_round` | 879 |
+| `status_init` (80000 bits) | 2739 |
+| `status_init` (64 bits) | 2033 |
+| `revoke` | 413 |
 | `revoke_check` (2 status lists) | 1335 |
 | `abort` | 545 |
-| `withdraw` (site) | 749 |
-| `withdraw` (aggregator) | 470 |
-| `withdraw` (publisher) | 651 |
+| `withdraw` (site) | 750 |
+| `withdraw` (aggregator) | 471 |
+| `withdraw` (publisher) | 652 |
 | `buffer_init` (4000 bytes) | 2322 |
 | `buffer_write` (900 bytes) | 427 |
-| `buffer_close` | 380 |
+| `buffer_close` | 382 |
 
 Sampling costs one hash per site of the task, about 155 CU each. At 1024
 sites `commit_root` fits the default limit of 200,000 CU with little to

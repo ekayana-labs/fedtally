@@ -27,7 +27,11 @@ pub fn process(accounts: &mut [AccountView], args: &[u8]) -> ProgramResult {
         check_wallet(aggregator, task.aggregator())?;
         require(task.is_open(), LedgerError::TaskNotOpen)?;
         require(task.backed(), LedgerError::NotBacked)?;
-        require(task.round() < task.rounds(), LedgerError::NoRoundsLeft)?;
+        let steps = task
+            .round()
+            .checked_sub(task.voided())
+            .ok_or(ProgramError::InvalidAccountData)?;
+        require(steps < task.rounds(), LedgerError::NoRoundsLeft)?;
         require(
             task.settled() == task.round(),
             LedgerError::PreviousRoundNotFinal,
@@ -46,7 +50,9 @@ pub fn process(accounts: &mut [AccountView], args: &[u8]) -> ProgramResult {
         task.set_last_change(current_slot()?);
         (
             number,
-            sampling::beacon(task.plan_id(), number, task.model()),
+            // A redo draws as the round it redoes would, so numbers it burned
+            // don't change the draw.
+            sampling::beacon(task.plan_id(), number - task.voided(), task.model()),
         )
     };
 

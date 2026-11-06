@@ -550,6 +550,16 @@ pub fn demand_close(
     )
 }
 
+/// Gives up a committed round the log has given up, maybe with a helper removed.
+pub fn void_round(
+    aggregator: &[u8; 32],
+    task: &[u8; 32],
+    number: u32,
+    remove_helper: bool,
+) -> Instruction {
+    aggregator_step(crate::ix::VOID_ROUND, aggregator, task, number).raw(&[u8::from(remove_helper)])
+}
+
 /// Closes a final, fully claimed round and returns its rent to the aggregator.
 pub fn round_close(aggregator: &[u8; 32], task: &[u8; 32], number: u32) -> Instruction {
     Instruction::new(

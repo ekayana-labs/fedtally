@@ -64,6 +64,7 @@ pub mod ix {
     pub const DEMAND_ANSWER: [u8; 8] = [76, 254, 20, 65, 181, 107, 171, 157];
     pub const DEMAND_CLOSE: [u8; 8] = [107, 127, 189, 229, 211, 29, 172, 254];
     pub const ROUND_CLOSE: [u8; 8] = [5, 157, 205, 71, 76, 34, 229, 65];
+    pub const VOID_ROUND: [u8; 8] = [102, 72, 126, 187, 12, 18, 16, 96];
     pub const STATUS_INIT: [u8; 8] = [20, 18, 138, 138, 31, 14, 2, 29];
     pub const REVOKE: [u8; 8] = [170, 23, 31, 34, 133, 173, 93, 242];
     pub const REVOKE_CHECK: [u8; 8] = [239, 53, 173, 18, 53, 253, 110, 115];
@@ -105,6 +106,7 @@ pub fn process_instruction(
         ix::DEMAND_ANSWER => demand::answer(accounts, args),
         ix::DEMAND_CLOSE => demand::close(accounts, args),
         ix::ROUND_CLOSE => round_close::process(accounts, args),
+        ix::VOID_ROUND => void_round::process(accounts, args),
         ix::STATUS_INIT => status_init::process(accounts, args),
         ix::REVOKE => revoke::process(accounts, args),
         ix::REVOKE_CHECK => revoke_check::process(accounts, args),
@@ -147,6 +149,7 @@ mod tests {
             ("demand_answer", ix::DEMAND_ANSWER),
             ("demand_close", ix::DEMAND_CLOSE),
             ("round_close", ix::ROUND_CLOSE),
+            ("void_round", ix::VOID_ROUND),
             ("status_init", ix::STATUS_INIT),
             ("revoke", ix::REVOKE),
             ("revoke_check", ix::REVOKE_CHECK),

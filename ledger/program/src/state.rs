@@ -82,6 +82,8 @@ pub const ROUND_COMMITTED: u8 = 1;
 pub const ROUND_POSTED: u8 = 2;
 pub const ROUND_FINAL: u8 = 3;
 pub const ROUND_FRAUD: u8 = 4;
+/// Given up by the log before its seal. It stays charged, and pays nobody.
+pub const ROUND_VOID: u8 = 5;
 
 #[inline(always)]
 fn array_at<const N: usize>(data: &[u8], offset: usize) -> &[u8; N] {

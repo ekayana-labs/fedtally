@@ -55,7 +55,7 @@ pub fn process(accounts: &mut [AccountView], args: &[u8]) -> ProgramResult {
     *task.model_mut() = *round.next_model();
     task.set_owed(owed);
     task.set_settled(round.round());
-    if round.round() == task.rounds() {
+    if round.round() - task.voided() == task.rounds() {
         task.set_state(TASK_FINISHED);
     }
     task.set_last_change(slot);

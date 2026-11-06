@@ -19,4 +19,5 @@ pub mod revoke_check;
 pub mod round_close;
 pub mod settle;
 pub mod status_init;
+pub mod void_round;
 pub mod withdraw;
