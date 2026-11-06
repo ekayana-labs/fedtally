@@ -49,7 +49,7 @@ private = ft.LocalFederation(
 print(private.report["privacy"]["epsilon_spent"])
 ```
 
-For separate processes, see `fedtally --help`, `ft.run_site`, and `crates/fedtally-cli/tests/cli.rs`, which goes through the setup one party at a time. [notebooks/walkthrough.ipynb](notebooks/walkthrough.ipynb) trains a small model, looks at what the aggregator holds, tampers with the log, runs with privacy and revokes a credential.
+For separate processes, see `fedtally --help`, `ft.run_site`, `fedtally site` to train with any command, and `crates/fedtally-cli/tests/cli.rs`, which goes through the setup one party at a time. [notebooks/walkthrough.ipynb](notebooks/walkthrough.ipynb) trains a small model, looks at what the aggregator holds, tampers with the log, runs with privacy and revokes a credential.
 
 To run the tests:
 
@@ -77,7 +77,7 @@ The ledger program has its own workspace and needs the Solana tools. See [ledger
 | **Who is in a round** | Fixed by the plan, or drawn each round from a beacon over the model | `sampling.rs` |
 | **Identities** | `did:key`, or `did:bio` with a check against the Solana registry before each round | `keys.rs`, `registry.rs` |
 | **Who is paid** | Equal shares, or shares by score for groups of sites, with the privacy cost of scoring charged to the budget | `scoring.rs` |
-| **A neutral arbiter** | A Solana program holds stake and rewards, mirrors the budget and the draw, and slashes the aggregator when one leaf of a Merkle tree shows the aggregate is not the sum. `fedtally anchor` posts a run to it, and a watcher disputes a wrong round | `ledger/`, `crates/fedtally-chain` |
+| **A neutral arbiter** | A Solana program holds stake and rewards, mirrors the budget and the draw, and slashes the aggregator when one leaf of a Merkle tree shows the aggregate is not the sum, or when it won't publish a leaf someone demands. `fedtally anchor` posts a run to it, and a watcher disputes a wrong round | `ledger/`, `crates/fedtally-chain` |
 | **Record of a run** | Signed, hash chained and replayable offline | `log.rs`, `report.rs` |
 
 [docs/design.md](docs/design.md) has the protocol, why each check is sound, and a table of what each adversary can and can't do.
