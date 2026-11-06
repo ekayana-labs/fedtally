@@ -1157,22 +1157,6 @@ async fn a_site_that_lacks_a_credential_is_kept_out_and_the_rest_carry_on() {
     assert_eq!(report.rounds[0].included.len(), 2);
 }
 
-/// Runs something once, just before training in one round.
-struct Before {
-    round: u32,
-    act: Box<dyn Fn() + Send>,
-    then: Box<Fixed>,
-}
-
-impl Trainer for Before {
-    fn train(&mut self, ctx: &TrainContext, submit: &mut Submit<'_>) -> Result<(), String> {
-        if ctx.round == self.round {
-            (self.act)();
-        }
-        self.then.train(ctx, submit)
-    }
-}
-
 #[tokio::test(flavor = "multi_thread")]
 async fn revoking_a_grant_takes_the_site_out_of_the_next_round() {
     let dir = tempfile::tempdir().unwrap();
@@ -1180,19 +1164,17 @@ async fn revoking_a_grant_takes_the_site_out_of_the_next_round() {
     let fed = Arc::new(
         LocalFederation::create(dir.path(), layout(), &init, &gated_options(3, 2)).unwrap(),
     );
-    // The committee takes back site 2's grant while round 1 is still open.
-    // Nothing reads the list again until round 2 is about to open.
+    // The committee takes back site 2's grant once round 1 has its contributions.
+    // Sites read the list when they start a round, so nobody sees it until round 2.
     let committee = fed.clone();
-    let trainers: Vec<Box<dyn Trainer>> = vec![
-        Box::new(Before {
-            round: 1,
-            act: Box::new(move || committee.revoke_access(2).unwrap()),
-            then: Fixed::new(1.0, 1),
-        }),
-        Fixed::new(1.0, 1),
-        Fixed::new(4.0, 1),
-    ];
-    let (running, results) = run_all(&fed, trainers, None).await;
+    let hook: Hook = Arc::new(move |stage, _| {
+        if stage == (Stage::BeforeSum { round: 1 }) {
+            committee.revoke_access(2).unwrap();
+        }
+    });
+    let trainers: Vec<Box<dyn Trainer>> =
+        vec![Fixed::new(1.0, 1), Fixed::new(1.0, 1), Fixed::new(4.0, 1)];
+    let (running, results) = run_all(&fed, trainers, Some(hook)).await;
     running.aggregator.await.unwrap().unwrap();
     let summaries: Vec<_> = results.into_iter().map(Result::unwrap).collect();
 
