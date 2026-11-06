@@ -853,8 +853,7 @@ fn flush_attests(shared: &Shared, state: &mut State) {
     if current.round != round || state.replay.phase != Phase::Attesting {
         return;
     }
-    let helpers = shared.plan.helpers.len();
-    if current.helper_attests.len() < helpers {
+    if current.helper_attests.len() < current.active.len() {
         return;
     }
     for pending in std::mem::take(&mut state.attests) {
@@ -1117,6 +1116,7 @@ enum Decision {
     Fingerprints,
     Seal,
     Retry,
+    RemoveHelper(usize),
     Next,
     Abort(String),
     Stop,
@@ -1153,7 +1153,7 @@ fn ready_sites(shared: &Shared, state: &State) -> Vec<usize> {
                     .sealed
                     .iter()
                     .enumerate()
-                    .all(|(h, want)| sealed_ok(**site, h, want))
+                    .all(|(h, want)| *want == Digest::default() || sealed_ok(**site, h, want))
                 && contribution
                     .proof
                     .is_none_or(|want| shared.holds(proof, &want))
@@ -1197,6 +1197,15 @@ fn decide(shared: &Shared, state: &State, elapsed: Duration) -> Decision {
                     Decision::Close
                 }
             };
+            if let Some(cohort) = state.replay.current().and_then(|r| r.redo.as_ref()) {
+                return if ready == *cohort {
+                    close()
+                } else if past(plan.timeouts.collect_secs) {
+                    Decision::Abort("a site did not come back for the redo".into())
+                } else {
+                    Decision::Wait
+                };
+            }
             if everyone && ready.len() >= min {
                 close()
             } else if past(plan.timeouts.collect_secs) {
@@ -1232,11 +1241,15 @@ fn decide(shared: &Shared, state: &State, elapsed: Duration) -> Decision {
             }
         }
         Phase::Masking => {
-            let done = state.replay.current().map_or(0, |r| r.masks.len());
-            if done == plan.helpers.len() {
+            let done = state
+                .replay
+                .current()
+                .is_some_and(|r| r.masks.len() == r.active.len());
+            if done {
                 Decision::Outcome
             } else if past(plan.timeouts.collect_secs) {
-                Decision::Abort("a helper did not deliver its mask total".into())
+                let long_past = past(plan.timeouts.collect_secs * 2);
+                helper_late(state, long_past, "a helper did not deliver its mask total")
             } else {
                 Decision::Wait
             }
@@ -1252,7 +1265,7 @@ fn decide(shared: &Shared, state: &State, elapsed: Duration) -> Decision {
             if !have_prints {
                 return Decision::Fingerprints;
             }
-            let helpers_in = current.helper_attests.len() == plan.helpers.len();
+            let helpers_in = current.helper_attests.len() == current.active.len();
             let silent: Vec<&str> = current
                 .included
                 .iter()
@@ -1265,11 +1278,12 @@ fn decide(shared: &Shared, state: &State, elapsed: Duration) -> Decision {
                 if state.replay.retry_cohort(plan).is_ok() {
                     return Decision::Retry;
                 }
-                Decision::Abort(if helpers_in {
-                    format!("no valid attestation from {}", silent.join(", "))
+                if helpers_in {
+                    Decision::Abort(format!("no valid attestation from {}", silent.join(", ")))
                 } else {
-                    "a helper did not attest".to_owned()
-                })
+                    let long_past = past(plan.timeouts.attest_secs * 2);
+                    helper_late(state, long_past, "a helper did not attest")
+                }
             } else {
                 Decision::Wait
             }
@@ -1290,6 +1304,18 @@ fn decide(shared: &Shared, state: &State, elapsed: Duration) -> Decision {
                 Decision::Wait
             }
         }
+    }
+}
+
+/// A helper is past its deadline. If the run can lose it, it gets longer than
+/// that, since a removal is for good.
+fn helper_late(state: &State, long_past: bool, reason: &str) -> Decision {
+    let plan = state.replay.plan();
+    let owing = plan.and_then(|plan| state.replay.removable(plan).ok());
+    match owing.as_ref().and_then(|owing| owing.first()) {
+        Some(helper) if long_past => Decision::RemoveHelper(*helper),
+        Some(_) => Decision::Wait,
+        None => Decision::Abort(reason.to_owned()),
     }
 }
 
@@ -1320,6 +1346,7 @@ async fn drive(shared: &Arc<Shared>) -> Result<(), NodeError> {
             Decision::Fingerprints => fingerprints(shared).await?,
             Decision::Seal => seal_round(shared)?,
             Decision::Retry => retry_round(shared)?,
+            Decision::RemoveHelper(helper) => remove_helper(shared, helper)?,
             Decision::Next => next_round(shared)?,
         }
     }
@@ -1357,6 +1384,33 @@ fn refuse_attests(state: &mut State, reason: &str) {
             let _ = p.control.send(Msg::Refused { reason });
         }
     }
+}
+
+/// Takes a silent helper out of the run. The round starts over, and sites mask
+/// the same updates again without it.
+fn remove_helper(shared: &Shared, helper: usize) -> Result<(), NodeError> {
+    let mut state = shared.lock();
+    let owing = state.replay.removable(&shared.plan);
+    if !owing.is_ok_and(|owing| owing.contains(&helper)) {
+        return Ok(());
+    }
+    let round = state.replay.round_number();
+    tracing::warn!(
+        "round {round}: removing silent helper {}",
+        shared.plan.helpers[helper].did
+    );
+    let body = Body::RemoveHelper {
+        plan: shared.plan_id,
+        round,
+        helper: helper as u32,
+        prev: state.replay.head,
+    };
+    let record = Record::sign(&shared.identity, &body)?;
+    shared.apply(&mut state, &record)?;
+    state.uploads.clear();
+    state.manifests.clear();
+    refuse_attests(&mut state, "the round was given up");
+    Ok(())
 }
 
 fn abort(shared: &Shared, reason: String) -> Result<(), NodeError> {
@@ -1691,11 +1745,13 @@ async fn outcome_round(shared: &Arc<Shared>) -> Result<(), NodeError> {
     })
     .await?;
 
-    let masks: Vec<PathBuf> = (0..shared.plan.helpers.len())
+    let masks: Vec<PathBuf> = state_copy
+        .active
+        .iter()
         .map(|h| {
             shared.upload_path(Object::Mask {
                 round,
-                helper: h as u32,
+                helper: *h as u32,
             })
         })
         .collect();

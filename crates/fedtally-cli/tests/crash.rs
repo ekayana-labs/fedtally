@@ -185,6 +185,84 @@ impl Trainer for Small {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn a_redo_survives_every_party_being_killed_around_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    let init: PathBuf = root.join("init.safetensors");
+    let small = Layout {
+        tensors: vec![TensorSpec {
+            name: "w".into(),
+            dtype: Dtype::F32,
+            shape: vec![256],
+        }],
+    };
+    write_model(&init, &small, &[TensorView::F32(&[0.0; 256])]).unwrap();
+
+    let mut options = Options::new(3, 3, 1);
+    options.chunk_coords = 64;
+    options.min_cohort = 2;
+    options.min_helpers = 2;
+    options.timeouts.collect_secs = 4;
+    options.timeouts.attest_secs = 4;
+    let fed = LocalFederation::create(root, small, &init, &options).unwrap();
+    fed.save().unwrap();
+
+    let addr = free_port();
+    let mut aggregator = spawn_aggregator(root, &init, &addr);
+    let mut helpers: Vec<_> = (0..3)
+        .map(|h| tokio::spawn(run_helper(fed.helper_config(h, &addr))))
+        .collect();
+    let mut sites: Vec<_> = (0..3)
+        .map(|i| tokio::spawn(run_site(fed.site_config(i, &addr), Box::new(Small))))
+        .collect();
+
+    // Helper 2 goes while the cohort is being fixed, so it never gives a mask.
+    let started = Instant::now();
+    while !log_kinds(root).iter().any(|k| k == "contribute") {
+        assert!(started.elapsed() < Duration::from_secs(60));
+        tokio::time::sleep(Duration::from_millis(1)).await;
+    }
+    helpers[2].abort();
+
+    kill_when(&mut aggregator, root, &init, &addr, "remove_helper", 1)
+        .await
+        .unwrap();
+    // A site dies while it may be masking again, and so does a helper.
+    sites[0].abort();
+    helpers[0].abort();
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    sites[0] = tokio::spawn(run_site(fed.site_config(0, &addr), Box::new(Small)));
+    helpers[0] = tokio::spawn(run_helper(fed.helper_config(0, &addr)));
+    // The removed helper comes back too, and has no part left to play.
+    helpers[2] = tokio::spawn(run_helper(fed.helper_config(2, &addr)));
+    kill_when(&mut aggregator, root, &init, &addr, "outcome", 1)
+        .await
+        .unwrap();
+
+    let mut summaries = Vec::new();
+    for site in sites {
+        summaries.push(site.await.unwrap().unwrap());
+    }
+    for helper in helpers {
+        helper.await.unwrap().unwrap();
+    }
+    let status = tokio::task::spawn_blocking(move || aggregator.wait().unwrap())
+        .await
+        .unwrap();
+    assert!(status.success());
+
+    let report = verify_log(
+        &root.join("aggregator/log.jsonl"),
+        Some(&summaries[0].final_model),
+    )
+    .unwrap();
+    assert!(report.finished, "{report:?}");
+    assert_eq!(report.rounds.len(), 2);
+    assert!(report.rounds[0].voided);
+    assert_eq!(report.removed_helpers.len(), 1);
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn a_retry_survives_the_aggregator_and_a_site_being_killed_around_it() {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path();

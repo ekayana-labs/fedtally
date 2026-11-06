@@ -60,6 +60,14 @@ pub async fn run_helper(config: HelperConfig) -> Result<(), NodeError> {
                 tracing::info!("helper reconnecting: {e}");
                 tokio::time::sleep(Duration::from_millis(100)).await;
             }
+            // It may have been removed while it worked, which the log it has
+            // yet to read would say.
+            Err(NodeError::Refused(why))
+                if follower.plan.min_helpers > 0 && patience.allows(follower.replay.entries) =>
+            {
+                tracing::warn!("record refused: {why}");
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
             Err(e) => return Err(e),
         }
     }
@@ -79,6 +87,10 @@ async fn session(
             f.absorb(batch)?;
         }
         let before = f.replay.entries;
+        // Nothing more is asked about a given up round, and its mask is large.
+        for given_up in f.replay.rounds.iter().filter(|r| r.voided) {
+            f.dirs.drop_round(given_up.round);
+        }
         match f.replay.phase {
             Phase::Done => return Ok(()),
             Phase::Aborted => {
@@ -86,6 +98,8 @@ async fn session(
                     f.replay.abort.clone().unwrap_or_default(),
                 ));
             }
+            // Out of the run: it only follows the log to the end.
+            _ if f.replay.removed.contains(&me) => {}
             Phase::Screening => check_step(f, &mut client, me, seeds).await?,
             Phase::Masking => mask_step(f, &mut client, me, seeds).await?,
             Phase::Attesting => attest_step(f, &mut client, me, seeds, hook).await?,

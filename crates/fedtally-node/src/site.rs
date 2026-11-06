@@ -13,7 +13,7 @@ use fedtally_core::credential::Credential;
 use fedtally_core::field::{Fp, Fp2, P};
 use fedtally_core::keys::{Identity, random_bytes, seal};
 use fedtally_core::model::{
-    self, EncodeRequest, Encoded, ModelError, PAD, PrivateRequest, TensorView,
+    self, EncodeRequest, Encoded, ModelError, PAD, PrivateRequest, Remask, TensorView,
 };
 use fedtally_core::norm::{self, Challenge, Params};
 use fedtally_core::pq_ucan::Cid;
@@ -219,6 +219,20 @@ impl Site {
             store,
         )
         .map_err(|e| NodeError::Refused(e.to_string()))?;
+        if let Some(state) = self
+            .f
+            .replay
+            .current()
+            .filter(|_| !self.f.replay.removed.is_empty())
+        {
+            admission::grants_cover_helpers(
+                &self.f.plan_id,
+                &self.f.plan,
+                &self.proofs,
+                &state.active,
+            )
+            .map_err(|e| NodeError::Refused(e.to_string()))?;
+        }
         Ok(())
     }
 
@@ -327,6 +341,8 @@ impl Site {
         let Some(state) = self.f.replay.current().cloned() else {
             return Ok(());
         };
+        // Every phase, as a batch of the log can carry a site past Collecting.
+        self.tidy(&state);
         match self.f.replay.phase {
             Phase::Collecting => self.collect(client, &state).await,
             Phase::Attesting => self.attest(client, &state).await,
@@ -367,7 +383,18 @@ impl Site {
         if before > 0 {
             let _ = std::fs::remove_file(self.f.dirs.model(before));
         }
-        for given_up in rounds.iter().filter(|r| r.voided) {
+        // A redo is built from the round before it, so that one stays until
+        // the redo's own file is written.
+        let in_redo = state.redo.as_ref().is_some_and(|c| c.contains(&self.me));
+        let building = in_redo
+            && !self
+                .f
+                .dirs
+                .round_path(state.round)
+                .join("round.json")
+                .exists();
+        let needed = |r: &&RoundState| building && r.round + 1 == state.round;
+        for given_up in rounds.iter().filter(|r| r.voided && !needed(r)) {
             self.f.dirs.drop_round(given_up.round);
             let _ = std::fs::remove_file(self.f.dirs.model(given_up.round));
         }
@@ -375,7 +402,6 @@ impl Site {
 
     async fn collect(&mut self, client: &mut Client, state: &RoundState) -> Result<(), NodeError> {
         let round = state.round;
-        self.tidy(state);
         let round_dir = self.f.dirs.round(round)?;
         let meta = round_dir.join("round.json");
         let spool = round_dir.join("masked.bin");
@@ -399,7 +425,22 @@ impl Site {
             }
             self.ensure_model(client, state.from, state.base).await?;
             if !meta.exists() {
-                self.train_round(state, &meta, &spool).await?;
+                if state.redo.is_some() {
+                    if !self
+                        .f
+                        .dirs
+                        .round_path(round - 1)
+                        .join("round.json")
+                        .exists()
+                    {
+                        tracing::warn!("round {round}: nothing left to redo it from");
+                        self.refused.push(round);
+                        return Ok(());
+                    }
+                    self.remask_round(state, &meta, &spool).await?;
+                } else {
+                    self.train_round(state, &meta, &spool).await?;
+                }
             }
             let file: RoundFile = read_round_file(&meta)?;
             let body = Body::Contribute {
@@ -420,7 +461,7 @@ impl Site {
             return Ok(());
         }
         let file = read_round_file(&meta)?;
-        for (h, _) in self.f.plan.helpers.iter().enumerate() {
+        for h in state.active.iter().copied() {
             let data = std::fs::read(round_dir.join(format!("sealed-{h}.bin")))?;
             client
                 .send(&Msg::PutSealed {
@@ -449,6 +490,72 @@ impl Site {
         Ok(())
     }
 
+    /// Draws a seed for each active helper and seals it. The digests are in
+    /// plan order, zero for a helper that has been removed.
+    fn seal_seeds(&self, state: &RoundState) -> Result<(Vec<[u8; 32]>, Vec<Digest>), NodeError> {
+        let plan = &self.f.plan;
+        let did = self.f.identity.did_string();
+        let round_dir = self.f.dirs.round(state.round)?;
+        let mut seeds = Vec::with_capacity(state.active.len());
+        let mut sealed = vec![Digest::default(); plan.helpers.len()];
+        for h in state.active.iter().copied() {
+            let helper = &plan.helpers[h];
+            let seed = random_bytes::<32>();
+            let context = seal_context(&self.f.plan_id, state.round, &did, &helper.did);
+            let boxed = seal(&helper.seal, &context, &seed)?;
+            sealed[h] = Digest::of(&boxed);
+            std::fs::write(round_dir.join(format!("sealed-{h}.bin")), boxed)?;
+            seeds.push(seed);
+        }
+        Ok((seeds, sealed))
+    }
+
+    /// Prepares a redo: the update from the round before, under new masks and a
+    /// new pad. Nothing is trained, so its sum says nothing new.
+    async fn remask_round(
+        &mut self,
+        state: &RoundState,
+        meta: &Path,
+        spool: &Path,
+    ) -> Result<(), NodeError> {
+        let old_dir = self.f.dirs.round_path(state.round - 1);
+        let old = read_round_file(&old_dir.join("round.json"))?;
+        let old_seeds = decode_seeds(&old)?;
+        let (seeds, sealed) = self.seal_seeds(state)?;
+        let plan = self.f.plan.clone();
+        let (meta, spool) = (meta.to_owned(), spool.to_owned());
+        blocking(move || {
+            let from = old_dir.join("masked.bin");
+            if vector::manifest_of(&from, plan.shape())?.root != old.manifest.root {
+                return Err(NodeError::Check(
+                    "the update to redo is not the one this site committed to".into(),
+                ));
+            }
+            let manifest = model::remask(&Remask {
+                layout: &plan.layout,
+                chunk_coords: plan.chunk_coords,
+                from: &from,
+                old_seeds: &old_seeds,
+                pad: [random_field(), random_field()],
+                seeds: &seeds,
+                out: &spool,
+            })?;
+            let file = RoundFile {
+                seeds: seeds.iter().map(hex::encode).collect(),
+                weight: old.weight,
+                manifest,
+                sealed,
+                proof: None,
+            };
+            let text = serde_json::to_vec(&file).map_err(|e| NodeError::Protocol(e.to_string()))?;
+            let partial = meta.with_extension("partial");
+            std::fs::write(&partial, text)?;
+            std::fs::rename(&partial, &meta)?;
+            Ok(())
+        })
+        .await
+    }
+
     async fn train_round(
         &mut self,
         state: &RoundState,
@@ -458,16 +565,8 @@ impl Site {
         let (round, step) = (state.round, state.step);
         let plan = self.f.plan.clone();
         let base = self.f.dirs.model(state.from);
-        let seeds: Vec<[u8; 32]> = plan.helpers.iter().map(|_| random_bytes::<32>()).collect();
-        let mut sealed = Vec::with_capacity(seeds.len());
-        let did = self.f.identity.did_string();
+        let (seeds, sealed) = self.seal_seeds(state)?;
         let round_dir = self.f.dirs.round(round)?;
-        for (h, (helper, seed)) in plan.helpers.iter().zip(&seeds).enumerate() {
-            let context = seal_context(&self.f.plan_id, round, &did, &helper.did);
-            let boxed = seal(&helper.seal, &context, seed)?;
-            sealed.push(Digest::of(&boxed));
-            std::fs::write(round_dir.join(format!("sealed-{h}.bin")), boxed)?;
-        }
 
         let mut trainer = self
             .trainer
@@ -609,7 +708,7 @@ impl Site {
             Ok((masked, shares))
         })
         .await?;
-        for (h, share) in shares.iter().enumerate() {
+        for (h, share) in state.active.iter().copied().zip(&shares) {
             if state.helper_attests[&h].per_site[position] != *share {
                 return Err(NodeError::Check(format!(
                     "round {round}: helper {} claims a mask this site's seed did not produce",
@@ -847,7 +946,7 @@ impl Site {
             return Ok(());
         };
         if state.site_attests.contains_key(&self.me)
-            || state.helper_attests.len() < self.f.plan.helpers.len()
+            || state.helper_attests.len() < state.active.len()
         {
             return Ok(());
         }
@@ -916,6 +1015,10 @@ impl Site {
 
     /// The final state may have arrived while this site was offline.
     async fn settle(&mut self, client: &mut Client) -> Result<(), NodeError> {
+        for given_up in self.f.replay.rounds.iter().filter(|r| r.voided) {
+            self.f.dirs.drop_round(given_up.round);
+            let _ = std::fs::remove_file(self.f.dirs.model(given_up.round));
+        }
         let (round, digest) = (self.f.replay.round_number(), self.f.replay.model);
         self.ensure_model(client, round, digest).await
     }

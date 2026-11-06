@@ -22,7 +22,7 @@ use fedtally_node::aggregator::{Hook, Stage, run_aggregator};
 use fedtally_node::helper::{ShareHook, run_helper};
 use fedtally_node::local::{LocalFederation, Options};
 use fedtally_node::observer::{ObserverConfig, fetch_vector};
-use fedtally_node::site::{SiteSummary, Submit, TrainContext, Trainer, run_site};
+use fedtally_node::site::{SiteConfig, SiteSummary, Submit, TrainContext, Trainer, run_site};
 use fedtally_node::wire::Object;
 use tokio::sync::oneshot;
 use tokio::task::{AbortHandle, JoinHandle};
@@ -1454,22 +1454,40 @@ async fn start_losing(
     trainers: Vec<Box<dyn Trainer>>,
     losses: Vec<(Stage, usize)>,
 ) -> Losing {
-    start_losing_with(fed, trainers, losses, None).await
+    start_losing_with(fed, trainers, losses, Vec::new(), None).await
 }
 
 async fn start_losing_with(
     fed: &LocalFederation,
     trainers: Vec<Box<dyn Trainer>>,
     losses: Vec<(Stage, usize)>,
+    lost_helpers: Vec<(Stage, usize)>,
     share_hook: Option<ShareHook>,
 ) -> Losing {
+    let same = |_: usize, _: &mut SiteConfig| {};
+    start_losing_configured(fed, trainers, losses, lost_helpers, share_hook, same).await
+}
+
+async fn start_losing_configured(
+    fed: &LocalFederation,
+    trainers: Vec<Box<dyn Trainer>>,
+    losses: Vec<(Stage, usize)>,
+    lost_helpers: Vec<(Stage, usize)>,
+    share_hook: Option<ShareHook>,
+    edit: impl Fn(usize, &mut SiteConfig),
+) -> Losing {
     let handles: Arc<Mutex<BTreeMap<usize, AbortHandle>>> = Arc::default();
+    let helper_handles: Arc<Mutex<BTreeMap<usize, AbortHandle>>> = Arc::default();
     let hook: Hook = Arc::new({
-        let handles = handles.clone();
+        let (handles, helper_handles) = (handles.clone(), helper_handles.clone());
         move |stage, _| {
-            for (when, site) in &losses {
+            let sites = losses.iter().map(|(when, at)| (when, at, &handles));
+            let helpers = lost_helpers
+                .iter()
+                .map(|(when, at)| (when, at, &helper_handles));
+            for (when, at, handles) in sites.chain(helpers) {
                 if *when == stage
-                    && let Some(handle) = handles.lock().unwrap().remove(site)
+                    && let Some(handle) = handles.lock().unwrap().remove(at)
                 {
                     handle.abort();
                     // An abort lands when the task next yields, which may be
@@ -1491,12 +1509,20 @@ async fn start_losing_with(
     for h in 0..fed.helpers.len() {
         let mut helper = fed.helper_config(h, &addr);
         helper.share_hook = share_hook.clone();
-        tokio::spawn(run_helper(helper));
+        let helper = tokio::spawn(run_helper(helper));
+        helper_handles
+            .lock()
+            .unwrap()
+            .insert(h, helper.abort_handle());
     }
     let sites: Vec<_> = trainers
         .into_iter()
         .enumerate()
-        .map(|(i, t)| tokio::spawn(run_site(fed.site_config(i, &addr), t)))
+        .map(|(i, t)| {
+            let mut config = fed.site_config(i, &addr);
+            edit(i, &mut config);
+            tokio::spawn(run_site(config, t))
+        })
         .collect();
     let mut held = handles.lock().unwrap();
     for (i, site) in sites.iter().enumerate() {
@@ -1816,7 +1842,8 @@ async fn a_lying_helper_can_force_a_site_out_of_a_plan_that_retries() {
             shares[3] = shares[3] + shares[0];
         }
     });
-    let losing = start_losing_with(&fed, fixed_trainers(4), Vec::new(), Some(hook)).await;
+    let losing =
+        start_losing_with(&fed, fixed_trainers(4), Vec::new(), Vec::new(), Some(hook)).await;
     let (replay, results) = losing.finish().await;
     assert_eq!(replay.phase, Phase::Done);
     assert_eq!(replay.retried, 1);
@@ -1826,6 +1853,229 @@ async fn a_lying_helper_can_force_a_site_out_of_a_plan_that_retries() {
         results[3]
     );
     assert_eq!(replay.rounds[1].included, [0, 1, 2]);
+}
+
+/// Three helpers, of which a run must keep two, and short deadlines.
+fn spare_helper_options(rounds: u32) -> Options {
+    let mut options = options(3, 3, rounds);
+    options.min_cohort = 2;
+    options.min_helpers = 2;
+    options.timeouts.collect_secs = 3;
+    options.timeouts.attest_secs = 3;
+    options
+}
+
+type Trained = Arc<Mutex<Vec<u32>>>;
+
+fn counted_trainers(n: usize) -> (Vec<Box<dyn Trainer>>, Vec<Trained>) {
+    let fixed: Vec<_> = (0..n).map(|_| Fixed::new(1.5, 1)).collect();
+    let trained = fixed.iter().map(|f| f.rounds.clone()).collect();
+    let trainers = fixed.into_iter().map(|f| f as Box<dyn Trainer>).collect();
+    (trainers, trained)
+}
+
+fn stage_sum(round: u32) -> Stage {
+    Stage::BeforeSum { round }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_run_redoes_a_round_without_a_helper_lost_before_its_mask() {
+    let dir = tempfile::tempdir().unwrap();
+    let init = initial_model(dir.path());
+    let fed =
+        LocalFederation::create(dir.path(), layout(), &init, &spare_helper_options(2)).unwrap();
+    let (trainers, trained) = counted_trainers(3);
+    let lost = vec![(stage_sum(1), 2)];
+    let losing = start_losing_with(&fed, trainers, Vec::new(), lost, None).await;
+    let (replay, results) = losing.finish().await;
+
+    assert_eq!(replay.phase, Phase::Done, "{:?}", replay.abort);
+    assert_eq!(replay.retried, 1);
+    assert_eq!(replay.rounds.len(), 3);
+    assert!(replay.removed.contains(&2));
+    let (first, redo) = (&replay.rounds[0], &replay.rounds[1]);
+    assert_eq!(first.included, redo.included);
+    assert_eq!(redo.active, [0, 1]);
+    assert_eq!(replay.rounds[2].active, [0, 1]);
+    for site in &redo.included {
+        let (old, new) = (&first.contributions[site], &redo.contributions[site]);
+        assert_ne!(old.masked, new.masked);
+        assert_ne!(old.sealed[0], new.sealed[0]);
+        assert_eq!(new.sealed[2], Digest::default());
+    }
+    // Nothing was trained again: step 1 once, then step 2.
+    for rounds in trained {
+        assert_eq!(*rounds.lock().unwrap(), [1, 2]);
+    }
+    let summary = results[0].as_ref().unwrap().as_ref().unwrap();
+    let log = fed.aggregator_dir().join("log.jsonl");
+    let report = verify_log(&log, Some(&summary.final_model)).unwrap();
+    assert!(report.finished);
+    assert!(!report.complete());
+    assert_eq!(report.removed_helpers, [fed.plan.helpers[2].did.clone()]);
+    assert!(!fed.site_dir(0).join("round-1").exists());
+    for h in 0..2 {
+        let kept = fed.root.join(format!("helper-{h}/round-1"));
+        assert!(
+            !kept.exists(),
+            "helper {h} kept the mask of a given up round"
+        );
+    }
+}
+
+/// The sum of the first round is out by the time the helper goes, as it would
+/// be if a colluding helper had handed its mask over and pretended to be gone.
+/// The redo must give nothing away in its place: not even training noise.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_redo_after_the_sum_is_out_releases_the_same_sum() {
+    let dir = tempfile::tempdir().unwrap();
+    let init = initial_model(dir.path());
+    let fed =
+        LocalFederation::create(dir.path(), layout(), &init, &spare_helper_options(1)).unwrap();
+    let (trainers, trained) = counted_trainers(3);
+    let lost = vec![(stage_outcome(1), 2)];
+    let losing = start_losing_with(&fed, trainers, Vec::new(), lost, None).await;
+    let (replay, _) = losing.finish().await;
+
+    assert_eq!(replay.phase, Phase::Done, "{:?}", replay.abort);
+    assert_eq!(replay.rounds.len(), 2);
+    for rounds in trained {
+        assert_eq!(*rounds.lock().unwrap(), [1]);
+    }
+    let (first, second) = (read_aggregate(&fed, 1), read_aggregate(&fed, 2));
+    let plain = layout().coords() as usize;
+    assert_eq!(first[..plain], second[..plain]);
+    assert_ne!(first[plain..], second[plain..], "the pad should be fresh");
+    let model = |r: usize| replay.rounds[r].outcome.as_ref().unwrap().model;
+    assert_eq!(model(0), model(1));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_redo_in_a_private_plan_reuses_the_noise_and_is_paid_for() {
+    let dir = tempfile::tempdir().unwrap();
+    let init = initial_model(dir.path());
+    let mut options = spare_helper_options(1);
+    options.privacy = private_options(3, 1).privacy;
+    let fed = LocalFederation::create(dir.path(), layout(), &init, &options).unwrap();
+    let lost = vec![(stage_outcome(1), 2)];
+    let losing = start_losing_with(&fed, fixed_trainers(3), Vec::new(), lost, None).await;
+    let (replay, _) = losing.finish().await;
+    assert_eq!(replay.phase, Phase::Done, "{:?}", replay.abort);
+    let (first, second) = (read_aggregate(&fed, 1), read_aggregate(&fed, 2));
+    let plain = layout().coords() as usize;
+    assert_eq!(first[..plain], second[..plain]);
+    assert_eq!(replay.spent, 2 * fed.plan.round_cost(3).unwrap());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_site_lost_in_a_redo_stops_the_run() {
+    let dir = tempfile::tempdir().unwrap();
+    let init = initial_model(dir.path());
+    let fed =
+        LocalFederation::create(dir.path(), layout(), &init, &spare_helper_options(1)).unwrap();
+    let helper = vec![(stage_outcome(1), 2)];
+    let site = vec![(stage_outcome(1), 1)];
+    let losing = start_losing_with(&fed, fixed_trainers(3), site, helper, None).await;
+    let (replay, _) = losing.finish().await;
+    assert_eq!(replay.phase, Phase::Aborted);
+    assert_eq!(replay.rounds.len(), 2);
+    let reason = replay.abort.unwrap();
+    assert!(reason.contains("come back for the redo"), "{reason}");
+    assert!(replay.rounds[1].close_head == Digest::default());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_run_stops_at_its_floor_of_helpers() {
+    let dir = tempfile::tempdir().unwrap();
+    let init = initial_model(dir.path());
+    let fed =
+        LocalFederation::create(dir.path(), layout(), &init, &spare_helper_options(1)).unwrap();
+    let lost = vec![(stage_sum(1), 2), (stage_sum(2), 1)];
+    let losing = start_losing_with(&fed, fixed_trainers(3), Vec::new(), lost, None).await;
+    let (replay, _) = losing.finish().await;
+    assert_eq!(replay.phase, Phase::Aborted);
+    assert_eq!(replay.removed.len(), 1);
+    let reason = replay.abort.unwrap();
+    assert!(reason.contains("did not deliver"), "{reason}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_plan_that_needs_every_helper_still_stops_without_one() {
+    let dir = tempfile::tempdir().unwrap();
+    let init = initial_model(dir.path());
+    let mut options = options(3, 2, 1);
+    options.min_cohort = 2;
+    options.timeouts.collect_secs = 2;
+    let fed = LocalFederation::create(dir.path(), layout(), &init, &options).unwrap();
+    let lost = vec![(stage_sum(1), 1)];
+    let losing = start_losing_with(&fed, fixed_trainers(3), Vec::new(), lost, None).await;
+    let (replay, _) = losing.finish().await;
+    assert_eq!(replay.phase, Phase::Aborted);
+    assert!(replay.removed.is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_removed_helper_that_comes_back_only_follows_the_log() {
+    let dir = tempfile::tempdir().unwrap();
+    let init = initial_model(dir.path());
+    let fed =
+        LocalFederation::create(dir.path(), layout(), &init, &spare_helper_options(2)).unwrap();
+    let lost = vec![(stage_sum(1), 2)];
+    let losing = start_losing_with(&fed, fixed_trainers(3), Vec::new(), lost, None).await;
+    let log = fed.aggregator_dir().join("log.jsonl");
+    let waited = tokio::time::timeout(Duration::from_secs(120), async {
+        while !std::fs::read_to_string(&log)
+            .is_ok_and(|text| text.contains(r#""kind":"remove_helper""#))
+        {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    });
+    waited.await.expect("no removal in the log");
+    let back = tokio::spawn(run_helper(fed.helper_config(2, &losing.addr)));
+    let (replay, _) = losing.finish().await;
+    assert_eq!(replay.phase, Phase::Done, "{:?}", replay.abort);
+    back.await.unwrap().unwrap();
+    assert_eq!(
+        replay
+            .rounds
+            .iter()
+            .filter(|r| r.masks.contains_key(&2))
+            .count(),
+        0
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_site_outside_a_redo_drops_what_it_kept_of_the_given_up_round() {
+    struct Slow;
+    impl Trainer for Slow {
+        fn train(&mut self, _: &TrainContext, submit: &mut Submit<'_>) -> Result<(), String> {
+            std::thread::sleep(Duration::from_secs(5));
+            let (w, b) = (vec![1.5; 1000], vec![1.5; 24]);
+            submit(&[TensorView::F32(&w), TensorView::F64(&b)], 1)
+                .map(|_| ())
+                .map_err(|e| e.to_string())
+        }
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let init = initial_model(dir.path());
+    let fed =
+        LocalFederation::create(dir.path(), layout(), &init, &spare_helper_options(1)).unwrap();
+    let mut trainers = fixed_trainers(2);
+    trainers.push(Box::new(Slow));
+    let lost = vec![(stage_sum(1), 2)];
+    let losing = start_losing_with(&fed, trainers, Vec::new(), lost, None).await;
+    let (replay, results) = losing.finish().await;
+    assert_eq!(replay.phase, Phase::Done, "{:?}", replay.abort);
+    assert_eq!(replay.rounds[0].included, [0, 1]);
+    assert!(
+        matches!(results[2], Some(Ok(_))),
+        "a late site should sit out"
+    );
+    assert!(
+        !fed.site_dir(2).join("round-1").exists(),
+        "a site left out kept its seeds and update"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]
