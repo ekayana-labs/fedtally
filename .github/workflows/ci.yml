@@ -34,6 +34,9 @@ jobs:
       - run: cargo fmt --all --check
       - run: cargo clippy --all-targets -- -D warnings
       - run: cargo test
+      - name: Run every anchor role against a local validator
+        working-directory: .
+        run: cargo test -p fedtally-chain --test validator -- --ignored --test-threads=1
 
   python:
     runs-on: ubuntu-latest
