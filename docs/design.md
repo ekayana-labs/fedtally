@@ -205,7 +205,11 @@ The program enforces the same privacy arithmetic and the same cohort draw as the
 
 A leaf gives away nothing a watcher couldn't fetch anyway: inputs are masked, and a mask total sums over the whole cohort.
 
-Recovering a whole withheld chunk takes one demand per leaf, and each holds a bond and rent until it closes. That is fine for small chunks and heavy for large ones, so a plan meant for a ledger should pick its chunk size with that in mind.
+A watcher does not need a vector whole to prove a wrong sum. The aggregate is one sum per leaf, so one leaf of every input, every mask and the aggregate is the whole proof. A watcher refused part of a vector keeps every chunk it can check against the vector's manifest, adds up the chunks it holds of all vectors, and looks at every leaf that answers have completed. It asks for the leaves missing from the fewest vectors first, and finishes a leaf before starting the next. When it finds a wrong leaf it stops asking and disputes that leaf, so withholding other chunks hides nothing.
+
+Recovering a whole withheld chunk still takes one demand per leaf, and each holds a bond and rent until it closes. That is fine for small chunks and heavy for large ones, so a plan meant for a ledger should pick its chunk size with that in mind. An aggregator that won't give the manifest leaves only demands, since a chunk can't be checked without it.
+
+A site has 16 challenge windows to claim its share of a settled round. After that the round can be closed, what was not claimed stops being owed, and the publisher can take it back. So a site that disappears locks up nothing for good. The latest round's rent comes back too, once the task is over and the aggregator's stake is gone.
 
 **An issuer's anchor** mirrors its revocation lists from the log to the ledger, for the first 80,000 bits. The watcher then applies them to enrollments, trying again until the bit lands. The ledger runs behind the log, so it takes the log's cohort even if a member has since been revoked there: refusing would let anyone stall a task by applying a revocation early. What keeps a revoked site out is the log's rule, and that no honest site acknowledges another cohort. **Round accounts** return their rent once every share is claimed.
 
