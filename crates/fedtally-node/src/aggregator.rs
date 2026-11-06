@@ -92,6 +92,8 @@ struct State {
     log: LogFile,
     peers: HashMap<u64, Peer>,
     next_peer: u64,
+    /// The latest round whose aggregate each named watcher has come for.
+    watched: HashMap<String, u32>,
     uploads: HashMap<Object, Upload>,
     manifests: HashMap<Object, Manifest>,
     attests: Vec<PendingAttest>,
@@ -118,6 +120,25 @@ struct Shared {
 }
 
 impl Shared {
+    /// A run can end before a watcher has its last round, and that round's
+    /// challenge window is still open. The aggregate is what a watcher fetches
+    /// last, so asking for it means it's nearly done.
+    fn awaited(&self) -> bool {
+        let state = self.lock();
+        let posted = state
+            .replay
+            .rounds
+            .last()
+            .is_some_and(|r| r.outcome.is_some());
+        let last = state.replay.rounds.len() as u32;
+        !state.peers.is_empty()
+            || (posted
+                && self
+                    .watchers
+                    .iter()
+                    .any(|w| state.watched.get(w).is_none_or(|round| *round < last)))
+    }
+
     fn lock(&self) -> MutexGuard<'_, State> {
         match self.state.lock() {
             Ok(guard) => guard,
@@ -261,6 +282,7 @@ pub async fn run_aggregator(config: AggregatorConfig) -> Result<Replay, NodeErro
             lines,
             log,
             peers: HashMap::new(),
+            watched: HashMap::new(),
             next_peer: 0,
             uploads: HashMap::new(),
             manifests: HashMap::new(),
@@ -297,7 +319,7 @@ pub async fn run_aggregator(config: AggregatorConfig) -> Result<Replay, NodeErro
 
 async fn linger(shared: &Shared) {
     let started = Instant::now();
-    while started.elapsed() < LINGER && !shared.lock().peers.is_empty() {
+    while started.elapsed() < LINGER && shared.awaited() {
         tokio::time::sleep(TICK).await;
     }
 }
@@ -606,7 +628,14 @@ async fn handle(
         }
         Msg::GetManifest { object } => {
             let answer = match manifest_for(shared, role, object).await {
-                Ok(Some(manifest)) => Msg::Manifest { object, manifest },
+                Ok(Some(manifest)) => {
+                    if let (Role::Watcher, Object::Aggregate { round }) = (role, object) {
+                        let mut state = shared.lock();
+                        let seen = state.watched.entry(did.to_owned()).or_default();
+                        *seen = round.max(*seen);
+                    }
+                    Msg::Manifest { object, manifest }
+                }
                 _ => Msg::Unavailable { object },
             };
             reply(data, answer).await

@@ -4,19 +4,23 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
+use fedtally_core::keys::{Identity, SigAlg};
 use fedtally_core::model::{Dtype, Layout, ModelFile, TensorSpec, TensorView, write_model};
 use fedtally_core::plan::Plan;
 use fedtally_core::pq_ucan::Cid;
 use fedtally_core::pq_ucan::did::Did;
 use fedtally_core::pq_ucan::validate::RevocationStore;
 use fedtally_core::privacy::Request;
+use fedtally_core::replay::Replay;
 use fedtally_core::report::verify_log;
 use fedtally_core::vector::{self, Digest};
 use fedtally_node::NodeError;
 use fedtally_node::aggregator::{Hook, Stage, run_aggregator};
 use fedtally_node::helper::run_helper;
 use fedtally_node::local::{LocalFederation, Options};
+use fedtally_node::observer::{ObserverConfig, fetch_vector};
 use fedtally_node::site::{SiteSummary, Submit, TrainContext, Trainer, run_site};
+use fedtally_node::wire::Object;
 use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
 
@@ -1370,6 +1374,60 @@ async fn a_gated_run_works_with_post_quantum_keys_and_credentials() {
     let text = std::fs::read_to_string(log).unwrap();
     assert!(text.contains("mldsa65-jcs-2024"));
     assert!(!text.contains("eddsa-jcs-2022"));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_aggregator_waits_for_a_named_watcher_to_fetch_the_last_round() {
+    let dir = tempfile::tempdir().unwrap();
+    let init = initial_model(dir.path());
+    let fed = LocalFederation::create(dir.path(), layout(), &init, &options(2, 1, 1)).unwrap();
+    let watcher = Arc::new(Identity::generate(SigAlg::Ed25519).unwrap());
+    let (tx, rx) = oneshot::channel();
+    let mut config = fed.aggregator_config("127.0.0.1:0");
+    config.keep_spool = true;
+    config.watchers = vec![watcher.did_string()];
+    config.on_ready = Some(Box::new(move |addr| {
+        let _ = tx.send(addr);
+    }));
+    let aggregator = tokio::spawn(run_aggregator(config));
+    let addr = rx.await.unwrap();
+    let helper = tokio::spawn(run_helper(fed.helper_config(0, &addr)));
+    let sites: Vec<_> = fixed_trainers(2)
+        .into_iter()
+        .enumerate()
+        .map(|(i, t)| tokio::spawn(run_site(fed.site_config(i, &addr), t)))
+        .collect();
+    for site in sites {
+        site.await.unwrap().unwrap();
+    }
+    helper.await.unwrap().unwrap();
+
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    assert!(!aggregator.is_finished(), "it left before the watcher came");
+
+    let mut replay = Replay::new();
+    let log = std::fs::read(fed.aggregator_dir().join("log.jsonl")).unwrap();
+    for line in log.split(|b| *b == b'\n').filter(|l| !l.is_empty()) {
+        replay.apply_line(line).unwrap();
+    }
+    let root = replay.rounds[0].outcome.as_ref().unwrap().aggregate;
+    let source = ObserverConfig {
+        identity: watcher,
+        plan_line: fed.plan_line.clone(),
+        addr,
+        dir: dir.path().join("watcher"),
+        give_up_after: Duration::from_secs(10),
+    };
+    let out = dir.path().join("aggregate.bin");
+    let object = Object::Aggregate { round: 1 };
+    fetch_vector(&source, object, root, &out).await.unwrap();
+
+    // Well short of what it would wait for a watcher that never comes.
+    tokio::time::timeout(Duration::from_secs(10), aggregator)
+        .await
+        .expect("it stayed after the watcher had what it came for")
+        .unwrap()
+        .unwrap();
 }
 
 #[tokio::test(flavor = "multi_thread")]
