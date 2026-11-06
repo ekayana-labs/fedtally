@@ -2,9 +2,11 @@
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use fedtally_core::field::P;
 use fedtally_core::keys::{Identity, SigAlg};
 use fedtally_core::model::{Dtype, Layout, ModelFile, TensorSpec, TensorView, write_model};
 use fedtally_core::plan::Plan;
@@ -17,7 +19,7 @@ use fedtally_core::report::verify_log;
 use fedtally_core::vector::{self, Digest};
 use fedtally_node::NodeError;
 use fedtally_node::aggregator::{Hook, Stage, run_aggregator};
-use fedtally_node::helper::run_helper;
+use fedtally_node::helper::{ShareHook, run_helper};
 use fedtally_node::local::{LocalFederation, Options};
 use fedtally_node::observer::{ObserverConfig, fetch_vector};
 use fedtally_node::site::{SiteSummary, Submit, TrainContext, Trainer, run_site};
@@ -1452,6 +1454,15 @@ async fn start_losing(
     trainers: Vec<Box<dyn Trainer>>,
     losses: Vec<(Stage, usize)>,
 ) -> Losing {
+    start_losing_with(fed, trainers, losses, None).await
+}
+
+async fn start_losing_with(
+    fed: &LocalFederation,
+    trainers: Vec<Box<dyn Trainer>>,
+    losses: Vec<(Stage, usize)>,
+    share_hook: Option<ShareHook>,
+) -> Losing {
     let handles: Arc<Mutex<BTreeMap<usize, AbortHandle>>> = Arc::default();
     let hook: Hook = Arc::new({
         let handles = handles.clone();
@@ -1478,7 +1489,9 @@ async fn start_losing(
     let aggregator = tokio::spawn(run_aggregator(config));
     let addr = rx.await.unwrap();
     for h in 0..fed.helpers.len() {
-        tokio::spawn(run_helper(fed.helper_config(h, &addr)));
+        let mut helper = fed.helper_config(h, &addr);
+        helper.share_hook = share_hook.clone();
+        tokio::spawn(run_helper(helper));
     }
     let sites: Vec<_> = trainers
         .into_iter()
@@ -1680,6 +1693,139 @@ async fn a_lost_site_that_comes_back_sits_out_the_retry_and_rejoins_after_it() {
     let summary = results[3].as_ref().unwrap().as_ref().unwrap();
     verify_log(&log, Some(&summary.final_model)).unwrap();
     assert!(!fed.site_dir(3).join("round-1").exists());
+}
+
+/// The coordinates of a stored aggregate, as signed values in grid units.
+fn read_aggregate(fed: &LocalFederation, round: u32) -> Vec<i128> {
+    let path = fed
+        .aggregator_dir()
+        .join(format!("round-{round}/aggregate.bin"));
+    let file = std::fs::File::open(path).unwrap();
+    let shape = fed.plan.shape();
+    let mut all = Vec::new();
+    let mut chunk = Vec::new();
+    for at in 0..shape.chunks() {
+        vector::read_chunk(&file, shape, at, &mut chunk).unwrap();
+        all.extend(chunk.iter().map(|v| match *v > P / 2 {
+            true => i128::from(*v) - i128::from(P),
+            false => i128::from(*v),
+        }));
+    }
+    all
+}
+
+/// Two sums over cohorts of 4 and 3 differ by the lost site's update and the
+/// noise of 7 sites' worth: its own, and two draws from each of the others.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_retry_hides_the_lost_update_behind_noise_alone() {
+    let dir = tempfile::tempdir().unwrap();
+    let init = initial_model(dir.path());
+    let fed =
+        LocalFederation::create(dir.path(), layout(), &init, &retrying_options(4, 1, 1)).unwrap();
+    let mut trainers = fixed_trainers(3);
+    trainers.push(Fixed::new(2.0, 1));
+    let losing = start_losing(&fed, trainers, vec![(stage_outcome(1), 3)]).await;
+    let (replay, _) = losing.finish().await;
+    assert_eq!(replay.phase, Phase::Done);
+
+    let (first, second) = (read_aggregate(&fed, 1), read_aggregate(&fed, 2));
+    // The first tensor, where every other site's update is exactly zero.
+    let gaps: Vec<f64> = first[..1000]
+        .iter()
+        .zip(&second[..1000])
+        .map(|(a, b)| (a - b) as f64)
+        .collect();
+    let mean = gaps.iter().sum::<f64>() / gaps.len() as f64;
+    let variance = gaps.iter().map(|g| (g - mean).powi(2)).sum::<f64>() / (gaps.len() - 1) as f64;
+    let noise = fed.plan.privacy.as_ref().unwrap().noise as f64;
+    let ratio = variance / (7.0 * noise);
+    eprintln!("variance over 7 sites' noise: {ratio:.3}");
+    // Over 1000 samples the estimate has a spread of about 4.5%.
+    assert!((0.75..1.25).contains(&ratio), "{ratio}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn without_noise_two_sums_give_the_missing_update_away_exactly() {
+    let sum_of = |values: Vec<f32>| async move {
+        let dir = tempfile::tempdir().unwrap();
+        let init = initial_model(dir.path());
+        let mut options = options(values.len(), 1, 1);
+        options.min_cohort = 2;
+        let fed = LocalFederation::create(dir.path(), layout(), &init, &options).unwrap();
+        let trainers = values
+            .into_iter()
+            .map(|value| Fixed::new(value, 1) as Box<dyn Trainer>)
+            .collect();
+        let (replay, _) = start_losing(&fed, trainers, Vec::new())
+            .await
+            .finish()
+            .await;
+        assert_eq!(replay.phase, Phase::Done);
+        (read_aggregate(&fed, 1), options.encoding.frac_bits)
+    };
+    let (with, frac_bits) = sum_of(vec![1.0, 1.5, 3.0]).await;
+    let (without, _) = sum_of(vec![1.0, 1.5]).await;
+    // The base is 1.0, so the third site's update is 2.0 in every coordinate.
+    let update = 2i128 << frac_bits;
+    for (a, b) in with[..1000].iter().zip(&without[..1000]) {
+        assert_eq!(a - b, update);
+    }
+}
+
+/// Trains towards a different value each time it is asked.
+struct Changing(Vec<f32>);
+
+impl Trainer for Changing {
+    fn train(&mut self, _: &TrainContext, submit: &mut Submit<'_>) -> Result<(), String> {
+        let value = self.0.remove(0);
+        let w = vec![value; 1000];
+        let b = vec![f64::from(value); 24];
+        submit(&[TensorView::F32(&w), TensorView::F64(&b)], 1)
+            .map(|_| ())
+            .map_err(|e| e.to_string())
+    }
+}
+
+/// This is a limit, not a feature: nothing in the log can tell an honest
+/// retrain from a site that read the first sum and changed its mind.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_site_in_a_retry_can_send_a_different_update() {
+    let dir = tempfile::tempdir().unwrap();
+    let init = initial_model(dir.path());
+    let fed =
+        LocalFederation::create(dir.path(), layout(), &init, &retrying_options(4, 1, 1)).unwrap();
+    let mut trainers = fixed_trainers(3);
+    trainers.insert(0, Box::new(Changing(vec![1.0, -5.0])));
+    let losing = start_losing(&fed, trainers, vec![(stage_outcome(1), 3)]).await;
+    let (replay, _) = losing.finish().await;
+    assert_eq!(replay.phase, Phase::Done);
+    assert_eq!(replay.rounds[1].included, [0, 1, 2]);
+}
+
+/// Also a limit: a helper can push a site of its choosing out of a run that
+/// then carries on. Without retries the same lie stops the run.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_lying_helper_can_force_a_site_out_of_a_plan_that_retries() {
+    let dir = tempfile::tempdir().unwrap();
+    let init = initial_model(dir.path());
+    let fed =
+        LocalFederation::create(dir.path(), layout(), &init, &retrying_options(4, 1, 1)).unwrap();
+    let lied = AtomicBool::new(false);
+    let hook: ShareHook = Arc::new(move |shares| {
+        if !lied.swap(true, Ordering::SeqCst) {
+            shares[3] = shares[3] + shares[0];
+        }
+    });
+    let losing = start_losing_with(&fed, fixed_trainers(4), Vec::new(), Some(hook)).await;
+    let (replay, results) = losing.finish().await;
+    assert_eq!(replay.phase, Phase::Done);
+    assert_eq!(replay.retried, 1);
+    assert!(
+        matches!(&results[3], Some(Err(NodeError::Check(why))) if why.contains("helper")),
+        "{:?}",
+        results[3]
+    );
+    assert_eq!(replay.rounds[1].included, [0, 1, 2]);
 }
 
 #[tokio::test(flavor = "multi_thread")]

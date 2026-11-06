@@ -6,6 +6,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use fedtally_core::model::{Dtype, Layout, TensorSpec, TensorView, write_model};
+use fedtally_core::privacy::Request;
 use fedtally_core::report::verify_log;
 use fedtally_node::helper::run_helper;
 use fedtally_node::local::{LocalFederation, Options};
@@ -171,6 +172,93 @@ async fn a_killed_aggregator_resumes_and_nobody_trains_twice() {
     let header = u64::from_le_bytes(bytes[..8].try_into().unwrap()) as usize;
     let first = f32::from_le_bytes(bytes[8 + header..8 + header + 4].try_into().unwrap());
     assert!((first - 1.5).abs() < 1e-5, "{first}");
+}
+
+struct Small;
+
+impl Trainer for Small {
+    fn train(&mut self, _: &TrainContext, submit: &mut Submit<'_>) -> Result<(), String> {
+        submit(&[TensorView::F32(&[0.5; 256])], 1)
+            .map(|_| ())
+            .map_err(|e| e.to_string())
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_retry_survives_the_aggregator_and_a_site_being_killed_around_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    let init: PathBuf = root.join("init.safetensors");
+    let small = Layout {
+        tensors: vec![TensorSpec {
+            name: "w".into(),
+            dtype: Dtype::F32,
+            shape: vec![256],
+        }],
+    };
+    write_model(&init, &small, &[TensorView::F32(&[0.0; 256])]).unwrap();
+
+    let mut options = Options::new(4, 1, 1);
+    options.chunk_coords = 64;
+    options.min_cohort = 2;
+    options.retries = 1;
+    options.timeouts.attest_secs = 8;
+    options.privacy = Some(Request {
+        epsilon: 8.0,
+        delta: 1e-5,
+        clip: 1.0,
+        colluding: 0,
+    });
+    let fed = LocalFederation::create(root, small, &init, &options).unwrap();
+    fed.save().unwrap();
+
+    let addr = free_port();
+    let mut aggregator = spawn_aggregator(root, &init, &addr);
+    let helper = tokio::spawn(run_helper(fed.helper_config(0, &addr)));
+    let mut sites: Vec<_> = (0..4)
+        .map(|i| tokio::spawn(run_site(fed.site_config(i, &addr), Box::new(Small))))
+        .collect();
+
+    // Site 3 is gone before it can attest, so the round is given up.
+    let started = Instant::now();
+    while !log_kinds(root).iter().any(|k| k == "close") {
+        assert!(started.elapsed() < Duration::from_secs(60));
+        tokio::time::sleep(Duration::from_millis(1)).await;
+    }
+    sites[3].abort();
+
+    kill_when(&mut aggregator, root, &init, &addr, "retry", 1)
+        .await
+        .unwrap();
+    // A site dies while it may be retraining, and comes back.
+    sites[0].abort();
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    sites[0] = tokio::spawn(run_site(fed.site_config(0, &addr), Box::new(Small)));
+    kill_when(&mut aggregator, root, &init, &addr, "outcome", 2)
+        .await
+        .unwrap();
+
+    let lost = sites.pop().unwrap();
+    assert!(lost.await.unwrap_err().is_cancelled());
+    let mut summaries = Vec::new();
+    for site in sites {
+        summaries.push(site.await.unwrap().unwrap());
+    }
+    helper.await.unwrap().unwrap();
+    let status = tokio::task::spawn_blocking(move || aggregator.wait().unwrap())
+        .await
+        .unwrap();
+    assert!(status.success());
+
+    let report = verify_log(
+        &root.join("aggregator/log.jsonl"),
+        Some(&summaries[0].final_model),
+    )
+    .unwrap();
+    assert!(report.finished);
+    assert_eq!(report.rounds.len(), 2);
+    assert!(report.rounds[0].voided);
+    assert_eq!(report.rounds[1].included.len(), 3);
 }
 
 #[test]
