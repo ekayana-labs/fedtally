@@ -16,6 +16,7 @@ pub mod post_aggregate;
 pub mod publish;
 pub mod revoke;
 pub mod revoke_check;
+pub mod round_close;
 pub mod settle;
 pub mod status_init;
 pub mod withdraw;

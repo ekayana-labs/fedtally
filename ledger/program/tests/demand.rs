@@ -265,6 +265,35 @@ fn a_demand_needs_a_posted_round_inside_its_window_and_a_real_part() {
 }
 
 #[test]
+fn a_paid_out_round_closes_and_returns_its_rent_to_the_aggregator() {
+    let mut run = Run::started(2, |_| {});
+    let first = run.settle_round(&[0, 1]);
+    let second = run.settle_round(&[0, 1]);
+    let aggregator = key(&run.aggregator);
+    let close = |run: &Run, number| client::round_close(&aggregator, &run.task, number);
+
+    run.world
+        .refuse(close(&run, first), &[], LedgerError::SharesUnclaimed);
+    run.claim(0, first);
+    run.world
+        .refuse(close(&run, first), &[], LedgerError::SharesUnclaimed);
+    run.claim(1, first);
+
+    let before = run.world.balance(&aggregator);
+    run.world.run(close(&run, first), &[]);
+    assert_eq!(
+        run.world.balance(&aggregator),
+        before + run.world.rent(ROUND_SPACE)
+    );
+    assert!(!run.world.exists(&client::round(&run.task, first)));
+
+    run.claim(0, second);
+    run.claim(1, second);
+    run.world
+        .refuse(close(&run, second), &[], LedgerError::LatestRound);
+}
+
+#[test]
 fn a_burst_of_demands_cannot_outrun_an_honest_aggregator() {
     let vectors = honest();
     let (mut run, number) = posted(&vectors);

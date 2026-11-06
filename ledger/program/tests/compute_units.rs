@@ -332,3 +332,47 @@ fn a_compute_unit_limit_does_not_change_what_an_instruction_costs() {
     };
     assert_eq!(commit(true), commit(false));
 }
+
+#[test]
+fn demand_and_round_close_units() {
+    use common::vectors::Vectors;
+
+    let mut run = Run::in_world(World::fixed(), 3, |t| t.rounds = 3);
+    run.publish();
+    run.back();
+    for index in 0..3 {
+        run.enroll(index);
+    }
+    let first = run.settle_round(&[0, 1, 2]);
+    for index in 0..3 {
+        run.claim(index, first);
+    }
+    let vectors = Vectors::honest(3, 1, 296, 5);
+    let number = run.post_round(&[0, 1, 2], &vectors.posting(2));
+    let challenger = run.challenger();
+    let who = key(&challenger);
+    let part = ProofPart::Input(1);
+
+    let open = run.world.run(
+        client::demand_open(&who, &run.task, number, part, 0),
+        &[&challenger],
+    );
+    let demand = client::demand(&run.task, &who, number, part, 0);
+    run.world.upload(&challenger, &vectors.proof(part, 0));
+    let answer = run.world.run(
+        client::demand_answer(&who, &run.task, number, demand),
+        &[&challenger],
+    );
+    let close = run.world.run(
+        client::demand_close(&run.task, number, demand, &who, true),
+        &[&challenger],
+    );
+    let round = run.world.run(
+        client::round_close(&key(&run.aggregator), &run.task, first),
+        &[],
+    );
+    println!(
+        "demand_open {open}, demand_answer {answer}, demand_close {close}, round_close {round}"
+    );
+    assert!(open < 20_000 && answer < 20_000 && close < 5_000 && round < 5_000);
+}

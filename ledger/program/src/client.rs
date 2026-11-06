@@ -544,6 +544,18 @@ pub fn demand_close(
     )
 }
 
+/// Closes a final, fully claimed round and returns its rent to the aggregator.
+pub fn round_close(aggregator: &[u8; 32], task: &[u8; 32], number: u32) -> Instruction {
+    Instruction::new(
+        crate::ix::ROUND_CLOSE,
+        std::vec![
+            AccountMeta::writable(*aggregator, false),
+            AccountMeta::readonly(*task, false),
+            AccountMeta::writable(round(task, number), false),
+        ],
+    )
+}
+
 /// Creates status list `list` of the issuer with `bits` bits.
 pub fn status_init(issuer: &[u8; 32], list: u32, bits: u32) -> Instruction {
     Instruction::new(

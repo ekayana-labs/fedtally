@@ -80,6 +80,8 @@ ledger_errors! {
     DemandAnswered = 6050, "The demand has been answered";
     DemandExpired = 6051, "The demand's deadline has passed";
     DemandNotOver = 6052, "The demand is still open";
+    LatestRound = 6053, "The latest round stays open for withdrawals";
+    SharesUnclaimed = 6054, "A share of the round is still unclaimed";
 }
 
 impl LedgerError {
