@@ -11,6 +11,7 @@ dependencies = ["numpy>=1.26"]
 dynamic = ["version"]
 
 [project.optional-dependencies]
+torch = ["torch"]
 dev = ["pytest", "safetensors", "nbclient", "ipykernel", "matplotlib"]
 
 [tool.maturin]

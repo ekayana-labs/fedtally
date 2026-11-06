@@ -46,7 +46,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-      - run: pip install maturin ".[dev]"
+      - run: pip install maturin ".[dev,torch]" --extra-index-url https://download.pytorch.org/whl/cpu
       - run: cargo build --release -p fedtally-cli
       - run: pytest
         env:
