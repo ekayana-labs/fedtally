@@ -577,7 +577,7 @@ fn watcher(run: &RunView, ledger: &Snapshot, notes: &Notes) -> Result<Step, Dive
 
     let posted = round.filter(|round| round.state == ROUND_POSTED);
     let open = posted.filter(|round| ledger.slot < window_end(task, round));
-    if let Some(step) = demanding(number, posted, ledger, notes) {
+    if let Some(step) = demanding(number, posted, open.is_some(), ledger, notes) {
         return Ok(step);
     }
     let answered = |leaf: Option<u64>| {
@@ -635,6 +635,7 @@ fn watcher(run: &RunView, ledger: &Snapshot, notes: &Notes) -> Result<Step, Dive
 fn demanding(
     number: u32,
     posted: Option<&RoundView>,
+    open: bool,
     ledger: &Snapshot,
     notes: &Notes,
 ) -> Option<Step> {
@@ -659,7 +660,7 @@ fn demanding(
             .find(|demand| demand.round == number && demand.part == part && demand.leaf == leaf);
         let round = number;
         match demand {
-            None if !wanted.opened && !settled && posted.is_some() => {
+            None if !wanted.opened && !settled && open => {
                 return Some(Step::OpenDemand { round, part, leaf });
             }
             Some(demand) if demand.answered && !wanted.taken => {
@@ -1518,6 +1519,37 @@ mod tests {
             after: None,
         };
         assert_eq!(found, Ok(dispute));
+    }
+
+    #[test]
+    fn a_demand_is_not_opened_once_the_window_has_closed() {
+        let mut run = run(2, 1);
+        run.rounds = vec![sealed(1, &[0, 1])];
+        let mut held = task(&run);
+        held.round = 1;
+        let mut ledger = snapshot(held, 10);
+        ledger
+            .rounds
+            .insert(1, mirrored(&run.rounds[0], ROUND_POSTED, 5));
+        let (part, leaf) = (ProofPart::Aggregate, 0);
+        let mut notes = Notes::default();
+        notes.wanted.insert(
+            1,
+            vec![Wanted {
+                part,
+                leaf,
+                opened: false,
+                taken: false,
+            }],
+        );
+        let round = 1;
+
+        ledger.slot = 5 + WINDOW - 1;
+        let asking = Ok(Step::OpenDemand { round, part, leaf });
+        assert_eq!(owed(Party::Watcher, &ME, &run, &ledger, &notes), asking);
+
+        ledger.slot = 5 + WINDOW;
+        assert_ne!(owed(Party::Watcher, &ME, &run, &ledger, &notes), asking);
     }
 
     #[test]
