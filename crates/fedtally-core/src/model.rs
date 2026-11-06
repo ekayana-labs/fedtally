@@ -368,6 +368,43 @@ fn finish_chunk(
     }
 }
 
+/// What it takes to put new masks on an update that is already masked.
+pub struct Remask<'a> {
+    pub layout: &'a Layout,
+    pub chunk_coords: u64,
+    pub from: &'a Path,
+    pub old_seeds: &'a [[u8; 32]],
+    pub pad: [Fp; PAD as usize],
+    pub seeds: &'a [[u8; 32]],
+    pub out: &'a Path,
+}
+
+/// The same update under new masks and a new pad, noise and all. The plain
+/// coordinates of a sum over these are exactly those of a sum over the old ones.
+pub fn remask(req: &Remask<'_>) -> Result<Manifest, ModelError> {
+    let plain = req.layout.coords();
+    let shape = req.layout.shape(req.chunk_coords);
+    let from = File::open(req.from)?;
+    Ok(vector::build(req.out, shape, |chunk, buf, scratch| {
+        vector::read_chunk(&from, shape, chunk, scratch)?;
+        buf.copy_from_slice(scratch);
+        for seed in req.old_seeds {
+            vector::remove_mask(seed, chunk, buf);
+        }
+        let (start, end) = shape.range(chunk);
+        finish_chunk(
+            shape,
+            plain,
+            chunk,
+            plain.saturating_sub(start).min(end - start) as usize,
+            buf,
+            &req.pad,
+            req.seeds,
+        );
+        Ok(())
+    })?)
+}
+
 /// Writes weight * (local - base) plus masks, one chunk at a time.
 pub fn encode_update(req: &EncodeRequest<'_>) -> Result<Encoded, ModelError> {
     check_views(req.layout, req.local)?;
@@ -776,6 +813,62 @@ mod tests {
         assert_eq!(clipped, 2);
         assert_eq!(encoding.encode(0.25, 2, &mut clipped).centered(), 8);
         assert!((encoding.decode(Fp::from_i64(-384), 3) - (-8.0)).abs() < 1e-12);
+    }
+
+    #[test]
+    fn remasking_keeps_the_update_and_changes_only_the_pad() {
+        let dir = tempfile::tempdir().unwrap();
+        let layout = Layout {
+            tensors: vec![TensorSpec {
+                name: "w".into(),
+                dtype: Dtype::F32,
+                shape: vec![100],
+            }],
+        };
+        let shape = layout.shape(64);
+        let (old_seeds, seeds) = ([[1u8; 32], [2u8; 32]], [[3u8; 32]]);
+        let plain: Vec<u64> = (0..100).map(|v| v * 7).collect();
+        let masked = dir.path().join("masked.bin");
+        let pad_of = |values: &mut Vec<u64>, pad: [u64; 2]| {
+            values.truncate(100);
+            values.extend(pad);
+        };
+        let mut x = plain.clone();
+        pad_of(&mut x, [11, 13]);
+        vector::build(&masked, shape, |chunk, buf, _| {
+            let (start, end) = shape.range(chunk);
+            buf.copy_from_slice(&x[start as usize..end as usize]);
+            for seed in &old_seeds {
+                vector::apply_mask(seed, chunk, buf);
+            }
+            Ok(())
+        })
+        .unwrap();
+
+        let out = dir.path().join("again.bin");
+        remask(&Remask {
+            layout: &layout,
+            chunk_coords: 64,
+            from: &masked,
+            old_seeds: &old_seeds,
+            pad: [Fp::new(17), Fp::new(19)],
+            seeds: &seeds,
+            out: &out,
+        })
+        .unwrap();
+
+        let file = File::open(&out).unwrap();
+        let mut got = Vec::new();
+        let mut chunk_values = Vec::new();
+        for chunk in 0..shape.chunks() {
+            vector::read_chunk(&file, shape, chunk, &mut chunk_values).unwrap();
+            for seed in &seeds {
+                vector::remove_mask(seed, chunk, &mut chunk_values);
+            }
+            got.extend_from_slice(&chunk_values);
+        }
+        assert_eq!(got[..100], plain[..]);
+        assert_eq!(got[100..], [17, 19]);
     }
 
     #[test]

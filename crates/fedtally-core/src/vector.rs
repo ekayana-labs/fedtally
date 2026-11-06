@@ -459,6 +459,19 @@ pub fn apply_mask(seed: &[u8; 32], chunk: u64, values: &mut [u64]) {
     }
 }
 
+/// Takes the mask stream for `seed` back off one chunk.
+pub fn remove_mask(seed: &[u8; 32], chunk: u64, values: &mut [u64]) {
+    let mut rng = mask_stream(seed, chunk);
+    let mut mask = [0u64; MASK_BLOCK];
+    for part in values.chunks_mut(MASK_BLOCK) {
+        let mask = &mut mask[..part.len()];
+        fill_uniform(&mut rng, mask);
+        for (v, m) in part.iter_mut().zip(mask.iter()) {
+            *v = (Fp::new(*v) - Fp::new(*m)).value();
+        }
+    }
+}
+
 /// Writes the mask stream itself, as `apply_mask` would add it to zeros.
 fn fill_mask(seed: &[u8; 32], chunk: u64, values: &mut [u64]) {
     let mut rng = mask_stream(seed, chunk);
