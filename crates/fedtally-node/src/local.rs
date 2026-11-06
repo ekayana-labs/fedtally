@@ -61,6 +61,8 @@ pub struct Options {
     pub bounded: bool,
     /// Score groups of at least this many sites for rewards.
     pub scoring: Option<u32>,
+    /// How many times a round may be redone without a site that went silent.
+    pub retries: u32,
     /// Sites that play dishonest, with how many times past the plan's clip
     /// each one reaches. For tests and attack benchmarks.
     pub cheats: BTreeMap<usize, u64>,
@@ -93,6 +95,7 @@ struct Overrides {
     did_bio: Option<String>,
     bounded: Option<bool>,
     scoring: Option<u32>,
+    retries: Option<u32>,
     cheats: Option<BTreeMap<usize, u64>>,
 }
 
@@ -132,6 +135,7 @@ impl Options {
             did_bio: None,
             bounded: false,
             scoring: None,
+            retries: 0,
             cheats: BTreeMap::new(),
         }
     }
@@ -164,6 +168,7 @@ impl Options {
         options.did_bio = given.did_bio;
         set(&mut options.bounded, given.bounded);
         options.scoring = given.scoring;
+        set(&mut options.retries, given.retries);
         set(&mut options.cheats, given.cheats);
         Ok(options)
     }
@@ -419,7 +424,7 @@ impl LocalFederation {
                 let (encoding, privacy) = request
                     .terms(
                         layout.coords(),
-                        options.rounds,
+                        options.rounds + options.retries,
                         options.scoring.unwrap_or(options.min_cohort),
                     )
                     .map_err(|e| check(&e))?;
@@ -506,6 +511,7 @@ impl LocalFederation {
             sample: options.sample,
             bounded: options.bounded,
             scoring: options.scoring.map(|group| Scoring { group }),
+            retries: options.retries,
         };
         edit(&mut plan);
         plan.validate().map_err(|e| check(&e))?;
@@ -524,6 +530,7 @@ impl LocalFederation {
             allow_plain: plan.helpers.is_empty(),
             min_audits: Some(options.audits),
             max_budget: privacy.map(|p| p.budget),
+            max_retries: (plan.retries > 0).then_some(plan.retries),
             ..Terms::default()
         };
         let mut grants = Vec::with_capacity(sites.len());

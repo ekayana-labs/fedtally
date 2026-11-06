@@ -134,6 +134,7 @@ impl Run {
             sample: None,
             bounded: false,
             scoring: None,
+            retries: 0,
         };
         edit(&mut plan);
         let record = Record::sign(&sponsor, &Body::Plan(Box::new(plan.clone()))).unwrap();
@@ -938,6 +939,126 @@ fn a_grant_can_limit_who_a_site_is_averaged_with() {
     terms.allowed_sites = everyone;
     let body = run.join_body(0, &terms);
     run.apply(&site, body);
+}
+
+fn retrying(budget: u64, retries: u32) -> impl FnOnce(&mut Plan) {
+    move |plan| {
+        private(budget)(plan);
+        plan.retries = retries;
+    }
+}
+
+#[test]
+fn a_plan_that_cannot_retry_safely_is_refused() {
+    let check = |change: &dyn Fn(&mut Plan), want: PlanError| {
+        let mut plan = Run::with(retrying(4 << 40, 1)).plan;
+        change(&mut plan);
+        assert_eq!(plan.validate().unwrap_err(), want);
+    };
+    check(&|p| p.privacy = None, PlanError::RetriesOpen);
+    check(
+        &|p| p.scoring = Some(fedtally_core::scoring::Scoring { group: 2 }),
+        PlanError::RetriesScoring,
+    );
+    check(&|p| p.min_cohort = 3, PlanError::RetriesCohort);
+    check(&|p| p.sample = Some(2), PlanError::RetriesCohort);
+    // Two rounds and a retry, at most 0.75 rho each.
+    check(
+        &|p| p.privacy.as_mut().unwrap().budget = 2 << 40,
+        PlanError::RetriesBudget,
+    );
+    check(&|p| p.retries = 100, PlanError::RetriesBudget);
+}
+
+#[test]
+fn a_plan_that_never_retries_is_the_same_plan_as_before() {
+    let run = Run::new();
+    let text = serde_json::to_string(&run.plan).unwrap();
+    assert!(!text.contains("retries"));
+    let args = admission::arguments(&run.plan_id, &run.plan);
+    assert!(!args.contains_key("retries"));
+    assert_eq!(args["rounds"], Ipld::Integer(2));
+}
+
+#[test]
+fn a_default_grant_refuses_a_plan_that_retries() {
+    let mut run = Run::with(retrying(4 << 40, 1));
+    let site = run.site(0);
+    let terms = run.terms();
+    let body = run.join_body(0, &terms);
+    assert!(matches!(run.refuse(&site, body), Fault::Admission(..)));
+}
+
+#[test]
+fn a_grant_says_how_many_retries_it_accepts() {
+    let with = |max_retries| {
+        let run = Run::with(retrying(4 << 40, 2));
+        let site = run.site(0);
+        let terms = Terms {
+            max_retries: Some(max_retries),
+            max_budget: Some(4 << 40),
+            ..run.terms()
+        };
+        let body = run.join_body(0, &terms);
+        (run, site, body)
+    };
+    let (mut run, site, body) = with(2);
+    run.apply(&site, body);
+    let (mut run, site, body) = with(1);
+    assert!(matches!(run.refuse(&site, body), Fault::Admission(..)));
+}
+
+#[test]
+fn a_grant_that_allows_retries_still_covers_a_plan_without_any() {
+    let mut run = Run::with(private(4 << 40));
+    let site = run.site(0);
+    let terms = Terms {
+        max_retries: Some(1),
+        max_budget: Some(4 << 40),
+        ..run.terms()
+    };
+    let body = run.join_body(0, &terms);
+    run.apply(&site, body);
+}
+
+#[test]
+fn a_grant_cannot_allow_retries_without_capping_the_budget() {
+    let terms = Terms {
+        max_retries: Some(1),
+        ..Terms::default()
+    };
+    assert!(matches!(
+        terms.policy(),
+        Err(AdmissionError::RetriesUncapped)
+    ));
+}
+
+#[test]
+fn a_site_limiting_its_rounds_counts_the_retries() {
+    let with = |max_rounds| {
+        let run = Run::with(retrying(4 << 40, 1));
+        let site = run.site(0);
+        let terms = Terms {
+            max_rounds: Some(max_rounds),
+            max_retries: Some(1),
+            max_budget: Some(4 << 40),
+            ..run.terms()
+        };
+        let body = run.join_body(0, &terms);
+        (run, site, body)
+    };
+    // The plan has two rounds and one retry.
+    let (mut run, site, body) = with(2);
+    assert!(matches!(run.refuse(&site, body), Fault::Admission(..)));
+    let (mut run, site, body) = with(3);
+    run.apply(&site, body);
+}
+
+#[test]
+fn a_plan_that_retries_cannot_be_anchored_yet() {
+    let run = Run::with(retrying(4 << 40, 1));
+    let refused = run.plan.ledger_terms(run.plan_id).unwrap_err();
+    assert!(refused.contains("retries"), "{refused}");
 }
 
 #[test]

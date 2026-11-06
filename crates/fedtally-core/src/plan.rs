@@ -87,6 +87,15 @@ pub struct Plan {
     /// score the groups for rewards.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub scoring: Option<Scoring>,
+    /// How many times a round may be given up and done again without a site
+    /// that went silent before its seal. Each attempt publishes another sum
+    /// over nearly the same updates, and pays for it.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub retries: u32,
+}
+
+fn is_zero(n: &u32) -> bool {
+    *n == 0
 }
 
 #[derive(Debug, Error, PartialEq, Eq)]
@@ -95,6 +104,14 @@ pub enum PlanError {
     Version(u32),
     #[error("plan needs at least one round")]
     NoRounds,
+    #[error("a plan with no noise cannot retry: two sums would give a site's update away")]
+    RetriesOpen,
+    #[error("a scoring plan cannot retry")]
+    RetriesScoring,
+    #[error("a round already at the minimum cohort has nobody to retry without")]
+    RetriesCohort,
+    #[error("the privacy budget cannot cover every round and every retry")]
+    RetriesBudget,
     #[error("plan needs at least one site")]
     NoSites,
     #[error("a DID appears in more than one role or twice: {0}")]
@@ -238,6 +255,27 @@ impl Plan {
             && (size < self.min_cohort || size as usize > self.sites.len())
         {
             return Err(PlanError::Sample);
+        }
+        if self.retries > 0 {
+            self.can_retry()?;
+        }
+        Ok(())
+    }
+
+    fn can_retry(&self) -> Result<(), PlanError> {
+        let privacy = self.privacy.as_ref().ok_or(PlanError::RetriesOpen)?;
+        if self.scoring.is_some() {
+            return Err(PlanError::RetriesScoring);
+        }
+        let drawn = self.sample.unwrap_or(self.sites.len() as u32);
+        if drawn <= self.min_cohort {
+            return Err(PlanError::RetriesCohort);
+        }
+        // Burning every retry must not be able to cut a run short.
+        let attempts = u128::from(self.rounds) + u128::from(self.retries);
+        let dearest = self.dearest_round().ok_or(PlanError::RetriesBudget)?;
+        if attempts * u128::from(dearest) > u128::from(privacy.budget) {
+            return Err(PlanError::RetriesBudget);
         }
         Ok(())
     }
@@ -391,6 +429,7 @@ mod tests {
             sample: None,
             bounded: false,
             scoring: None,
+            retries: 0,
         }
     }
 

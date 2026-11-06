@@ -110,6 +110,9 @@ enum Command {
         /// Only join a private plan that assumes this many sites give their noise away
         #[arg(long)]
         assume_colluding: Option<u32>,
+        /// Join a plan that may redo a round this many times. Needs --max-epsilon
+        #[arg(long)]
+        max_retries: Option<u32>,
         #[arg(long, default_value_t = 90)]
         days: u32,
         #[arg(long)]
@@ -326,6 +329,8 @@ struct PlanSpec {
     bounded: bool,
     #[serde(default)]
     scoring: Option<Scoring>,
+    #[serde(default)]
+    retries: u32,
 }
 
 impl PlanSpec {
@@ -343,7 +348,7 @@ impl PlanSpec {
         }
         let (encoding, terms) = spec.terms(
             self.layout.coords(),
-            self.rounds,
+            self.rounds + self.retries,
             self.scoring.map_or(self.min_cohort, |s| s.group),
         )?;
         Ok((encoding, 1, Some(terms)))
@@ -458,6 +463,7 @@ async fn run(command: Command) -> Result<ExitCode, Failure> {
             max_epsilon,
             delta,
             assume_colluding,
+            max_retries,
             days,
             out,
         } => {
@@ -484,6 +490,7 @@ async fn run(command: Command) -> Result<ExitCode, Failure> {
                     .zip(delta)
                     .map(|(epsilon, delta)| privacy::budget_for(epsilon, delta)),
                 min_colluding: assume_colluding,
+                max_retries,
             };
             let grant = admission::grant(&site, &Did::parse(&to)?, &terms, expiry(days)?)?;
             std::fs::write(&out, grant.bytes())?;
@@ -520,6 +527,7 @@ async fn run(command: Command) -> Result<ExitCode, Failure> {
                 sample: spec.sample,
                 bounded: spec.bounded,
                 scoring: spec.scoring,
+                retries: spec.retries,
             };
             plan.validate()?;
             let record = Record::sign(&sponsor, &Body::Plan(Box::new(plan)))?;

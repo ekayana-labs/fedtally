@@ -31,6 +31,8 @@ pub enum AdmissionError {
     Mismatch,
     #[error("authority check failed: {0}")]
     Refused(String),
+    #[error("a grant that allows retries must also cap the privacy budget")]
+    RetriesUncapped,
 }
 
 fn text(value: &str) -> Ipld {
@@ -40,10 +42,13 @@ fn text(value: &str) -> Ipld {
 /// The arguments an invocation must carry for this plan. A site's grant
 /// constrains them with an ordinary UCAN policy.
 pub fn arguments(plan_id: &Digest, plan: &Plan) -> BTreeMap<String, Ipld> {
-    BTreeMap::from([
+    // A site's `max_rounds` limits how many sums its data can go into, so a
+    // retry counts as a round.
+    let rounds = u64::from(plan.rounds) + u64::from(plan.retries);
+    let mut arguments = BTreeMap::from([
         ("plan".to_owned(), text(&plan_id.hex())),
         ("purpose".to_owned(), text(&plan.purpose)),
-        ("rounds".to_owned(), Ipld::Integer(plan.rounds.into())),
+        ("rounds".to_owned(), Ipld::Integer(rounds.into())),
         (
             "min_cohort".to_owned(),
             Ipld::Integer(plan.min_cohort.into()),
@@ -59,7 +64,12 @@ pub fn arguments(plan_id: &Digest, plan: &Plan) -> BTreeMap<String, Ipld> {
         ),
         ("audits".to_owned(), Ipld::Integer(plan.audits.into())),
         ("privacy".to_owned(), privacy_argument(plan)),
-    ])
+    ]);
+    if plan.retries > 0 {
+        let retries = Ipld::Integer(plan.retries.into());
+        arguments.insert("retries".to_owned(), retries);
+    }
+    arguments
 }
 
 /// The plan's privacy terms, or null for a plan that makes no such promise.
@@ -99,6 +109,10 @@ pub struct Terms {
     /// Only join a private plan that assumes at least this many sites in a
     /// round give their noise away.
     pub min_colluding: Option<u32>,
+    /// Join a plan that may redo a round this many times. A retry publishes a
+    /// second sum over nearly the same updates, so a grant refuses any unless
+    /// it says so here.
+    pub max_retries: Option<u32>,
 }
 
 impl Terms {
@@ -148,6 +162,18 @@ impl Terms {
                 Ipld::Integer(audits.into()),
             ]));
         }
+        let no_retries = list(vec![text("=="), text(".retries"), Ipld::Null]);
+        statements.push(match self.max_retries {
+            None => no_retries,
+            Some(_) if self.max_budget.is_none() => return Err(AdmissionError::RetriesUncapped),
+            Some(n) => list(vec![
+                text("or"),
+                list(vec![
+                    no_retries,
+                    list(vec![text("<="), text(".retries"), Ipld::Integer(n.into())]),
+                ]),
+            ]),
+        });
         if let Some(n) = self.max_rounds {
             statements.push(list(vec![
                 text("<="),

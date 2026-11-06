@@ -89,6 +89,9 @@ impl Plan {
             .iter()
             .map(|site| wallet(site))
             .collect::<Result<Vec<_>, _>>()?;
+        if self.retries > 0 {
+            return Err("a plan that retries cannot be anchored yet".into());
+        }
         if self.scoring.is_some() {
             // The program charges a round at its cohort and pays equal shares.
             return Err("a scoring plan cannot be anchored yet".into());

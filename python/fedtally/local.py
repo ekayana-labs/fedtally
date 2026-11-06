@@ -117,7 +117,8 @@ class LocalFederation:
         party by `did:bio` on that network), `bounded` (every site proves its
         update is within the privacy terms, and one that can't is left out),
         `scoring` (split each cohort into groups of at least this many sites
-        and score them for rewards) and `cheats` (a map from a site's number
+        and score them for rewards), `retries` (how many times a round may be
+        redone without a site that went silent, in a private plan) and `cheats` (a map from a site's number
         to how many times past the clip it reaches, for attack tests)."""
         self.root = Path(root)
         self.root.mkdir(parents=True, exist_ok=True)
