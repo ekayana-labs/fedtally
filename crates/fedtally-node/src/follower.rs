@@ -182,7 +182,10 @@ impl Follower {
                 ));
             }
             self.replay.apply_line(&line)?;
-            self.log.append(&line)?;
+            // Nobody sends a line twice, so carrying on would leave a hole in the log.
+            self.log
+                .append(&line)
+                .map_err(|e| NodeError::Check(format!("can't write the log: {e}")))?;
         }
         Ok(())
     }
