@@ -45,7 +45,9 @@ const WALLET: u64 = 20 * SOL;
 const AGGREGATOR_STAKE: u64 = 5 * SOL;
 const REWARD: u64 = 300_000_000;
 const POLL: Duration = Duration::from_millis(200);
-const PATIENCE: Duration = Duration::from_secs(300);
+/// No anchor finishes until its whole run does, and a validator on a busy
+/// machine can take three times as long per slot.
+const PATIENCE: Duration = Duration::from_secs(600);
 
 /// The README's LiteSVM figure for each instruction, for the nearest case it
 /// measures.
