@@ -550,7 +550,7 @@ pub fn round_close(aggregator: &[u8; 32], task: &[u8; 32], number: u32) -> Instr
         crate::ix::ROUND_CLOSE,
         std::vec![
             AccountMeta::writable(*aggregator, false),
-            AccountMeta::readonly(*task, false),
+            AccountMeta::writable(*task, false),
             AccountMeta::writable(round(task, number), false),
         ],
     )

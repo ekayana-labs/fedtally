@@ -333,3 +333,43 @@ fn a_burst_of_demands_cannot_outrun_an_honest_aggregator() {
     assert_eq!(run.round(number).state(), ROUND_POSTED);
     assert_eq!(run.state().stake_held(), run.terms.aggregator_stake);
 }
+
+#[test]
+fn an_unclaimed_share_expires_and_goes_back_to_the_publisher() {
+    let mut run = Run::started(2, |_| {});
+    let first = run.settle_round(&[0, 1]);
+    run.settle_round(&[0, 1]);
+    run.claim(0, first);
+    let aggregator = key(&run.aggregator);
+    let close = client::round_close(&aggregator, &run.task, first);
+
+    let time_to_claim = run.terms.challenge_slots * CLAIM_WINDOWS;
+    run.world
+        .warp(time_to_claim - 2 * run.terms.challenge_slots);
+    run.world
+        .refuse(close.clone(), &[], LedgerError::SharesUnclaimed);
+    run.world.warp(2 * run.terms.challenge_slots);
+
+    let before = run.state().owed();
+    let share = run.terms.reward_per_round / 2;
+    run.world.run(close, &[]);
+    assert_eq!(run.state().owed(), before - share);
+    assert!(!run.world.exists(&client::round(&run.task, first)));
+}
+
+#[test]
+fn the_latest_round_closes_once_the_task_is_over_and_the_stake_is_gone() {
+    let mut run = Run::started(2, |terms| terms.rounds = 1);
+    let number = run.settle_round(&[0, 1]);
+    run.claim(0, number);
+    run.claim(1, number);
+    let aggregator = key(&run.aggregator);
+    let close = client::round_close(&aggregator, &run.task, number);
+    run.world
+        .refuse(close.clone(), &[], LedgerError::LatestRound);
+
+    let withdraw = run.withdraw_aggregator_ix();
+    run.world.run(withdraw, &[&run.aggregator]);
+    run.world.run(close, &[]);
+    assert!(!run.world.exists(&client::round(&run.task, number)));
+}

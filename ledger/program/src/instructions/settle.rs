@@ -51,6 +51,7 @@ pub fn process(accounts: &mut [AccountView], args: &[u8]) -> ProgramResult {
 
     round.set_share(share);
     round.set_state(ROUND_FINAL);
+    round.set_settled_slot(slot);
     *task.model_mut() = *round.next_model();
     task.set_owed(owed);
     task.set_settled(round.round());

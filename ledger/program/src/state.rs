@@ -72,6 +72,11 @@ pub const SITE_ACTIVE: u8 = 0;
 pub const SITE_REVOKED: u8 = 1;
 pub const SITE_WITHDRAWN: u8 = 2;
 
+/// Challenge windows a site has to claim its share of a settled round. A task's
+/// window is what its parties agreed to watch at, so the time to claim scales
+/// with it.
+pub const CLAIM_WINDOWS: u64 = 16;
+
 pub const ROUND_COLLECTING: u8 = 0;
 pub const ROUND_COMMITTED: u8 = 1;
 pub const ROUND_POSTED: u8 = 2;
@@ -308,6 +313,8 @@ account! {
         demand_tail / set_demand_tail: u64,
         /// Lamports per cohort member, set when the round settles.
         share / set_share: u64,
+        /// The slot the round settled at. Shares can be claimed for a while from then.
+        settled_slot / set_settled_slot: u64,
         cohort / cohort_mut: [u8; 128],
         acked / acked_mut: [u8; 128],
         claimed / claimed_mut: [u8; 128],
@@ -397,10 +404,10 @@ const _: () = {
     assert!(ENROLLMENT_SPACE == 261);
     assert!(offset_of!(EnrollmentLayout, task) == 13);
     assert!(offset_of!(EnrollmentLayout, status_refs) == 117);
-    assert!(ROUND_SPACE == 780);
+    assert!(ROUND_SPACE == 788);
     assert!(offset_of!(RoundLayout, task) == 20);
     assert!(offset_of!(RoundLayout, posted_slot) == 372);
-    assert!(offset_of!(RoundLayout, cohort) == 396);
+    assert!(offset_of!(RoundLayout, cohort) == 404);
     assert!(DISPUTE_SPACE == 2275);
     assert!(offset_of!(DisputeLayout, task) == 19);
     assert!(offset_of!(DisputeLayout, acc) == 227);
