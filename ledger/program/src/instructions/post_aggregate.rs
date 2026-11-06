@@ -29,7 +29,7 @@ pub fn process(accounts: &mut [AccountView], args: &[u8]) -> ProgramResult {
         LedgerError::InvalidRoundState,
     )?;
     require(
-        mask_roots.len() == task.helpers() as usize * DIGEST_LEN,
+        mask_roots.len() == task.active_helpers() as usize * DIGEST_LEN,
         LedgerError::InvalidMaskRoots,
     )?;
 

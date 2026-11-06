@@ -72,7 +72,7 @@ pub fn open(accounts: &mut [AccountView], args: &[u8]) -> ProgramResult {
             LedgerError::ChallengeWindowClosed,
         )?;
         require(leaf_index < task.leaves(), LedgerError::InvalidLeafIndex)?;
-        let part = part(kind, position, task.helpers(), round.cohort_count())?;
+        let part = part(kind, position, task.active_helpers(), round.cohort_count())?;
         let length = proof_len(part, &task, &round, leaf_index)?;
         let disputes = round
             .disputes()
@@ -145,7 +145,7 @@ pub fn answer(accounts: &mut [AccountView], args: &[u8]) -> ProgramResult {
         let part = part(
             demand.kind(),
             demand.position(),
-            task.helpers(),
+            task.active_helpers(),
             round.cohort_count(),
         )?;
         let proof = buffer.contents();

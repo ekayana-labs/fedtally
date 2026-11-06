@@ -427,6 +427,11 @@ const _: () = {
 };
 
 impl<D: Deref<Target = [u8]>> Task<D> {
+    /// The helpers whose masks a round has.
+    pub fn active_helpers(&self) -> u8 {
+        self.helpers().saturating_sub(self.removed_helpers())
+    }
+
     /// The address the stored seeds and bump derive.
     pub fn address(&self) -> Address {
         derive(&[TASK_SEED, self.publisher(), self.plan_id()], self.bump())

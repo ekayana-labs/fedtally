@@ -59,7 +59,7 @@ pub fn process(accounts: &mut [AccountView], args: &[u8]) -> ProgramResult {
         )?;
 
         let slot = current_slot()?;
-        let complete = dispute.is_complete(round.cohort_count(), task.helpers());
+        let complete = dispute.is_complete(round.cohort_count(), task.active_helpers());
         let outcome = if round.state() == ROUND_FRAUD {
             Outcome::Moot
         } else if complete && !dispute.sums_match() {

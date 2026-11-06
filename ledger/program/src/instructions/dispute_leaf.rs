@@ -66,7 +66,7 @@ pub fn process(accounts: &mut [AccountView], args: &[u8]) -> ProgramResult {
         LedgerError::AccountMismatch,
     )?;
 
-    let part = part(kind, position, task.helpers(), round.cohort_count())?;
+    let part = part(kind, position, task.active_helpers(), round.cohort_count())?;
     require(!is_seen(&dispute, part), LedgerError::ProofPartRepeated)?;
     let leaf = proven_leaf(part, &task, &round, dispute.leaf_index(), buffer.contents())?;
     absorb(&mut dispute, part, leaf);
