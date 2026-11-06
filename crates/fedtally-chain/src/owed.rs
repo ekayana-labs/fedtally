@@ -4,6 +4,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use fedtally_ledger::client::ProofPart;
+#[cfg(test)]
+use fedtally_ledger::state::ROUND_VOID;
 use fedtally_ledger::state::{
     CLAIM_WINDOWS, LEAF_LEN, ROUND_COLLECTING, ROUND_COMMITTED, ROUND_FINAL, ROUND_FRAUD,
     ROUND_POSTED, SITE_REVOKED, SITE_WITHDRAWN, TASK_ABORTED, TASK_FINISHED,
@@ -200,6 +202,11 @@ pub enum Step {
         address: [u8; 32],
     },
     CloseRound(u32),
+    /// Gives up a committed round the log gave up.
+    VoidRound {
+        round: u32,
+        remove_helper: bool,
+    },
     InitList {
         list: u32,
         bits: u32,
@@ -472,6 +479,10 @@ fn aggregator(run: &RunView, ledger: &Snapshot) -> Result<Step, Divergence> {
                     None => Step::CommitRoot(number),
                 }
             }
+        },
+        ROUND_COMMITTED if log.voided => Step::VoidRound {
+            round: number,
+            remove_helper: log.removed_helper,
         },
         ROUND_COMMITTED => match (&log.committed, &log.posted) {
             (None, _) => return Err(Divergence::Ahead(number)),
@@ -833,6 +844,8 @@ mod tests {
             active: vec![0],
             aggregate: Some(Digest([tag + 40; 32])),
             acks: cohort.iter().map(|site| *site as u16).collect(),
+            voided: false,
+            removed_helper: false,
         }
     }
 
@@ -1657,6 +1670,51 @@ mod tests {
         run.rounds[0].acks.remove(&2);
         run.ending = Ending::Aborted;
         assert_eq!(decide(Party::Aggregator, &run, &ledger), Ok(Step::Abort));
+    }
+
+    #[test]
+    fn a_round_the_log_gave_up_is_voided_on_the_ledger_and_the_next_opens() {
+        let mut run = run(3, 2);
+        let shaped = sealed(1, &[0, 1, 2]);
+        let mut given_up = shaped.clone();
+        given_up.posted = None;
+        given_up.voided = true;
+        given_up.removed_helper = true;
+        run.rounds.push(given_up.clone());
+        run.rounds.push(sealed(2, &[0, 1, 2]));
+        let mut held = task(&run);
+        held.round = 1;
+        let mut ledger = snapshot(held, 200);
+        let aggregator = |ledger: &Snapshot| decide(Party::Aggregator, &run, ledger);
+
+        // The charge on the ledger follows the log's, so it commits first.
+        ledger
+            .rounds
+            .insert(1, mirrored(&shaped, ROUND_COLLECTING, 0));
+        assert_eq!(aggregator(&ledger), Ok(Step::CommitRoot(1)));
+
+        ledger
+            .rounds
+            .insert(1, mirrored(&shaped, ROUND_COMMITTED, 0));
+        let void = Step::VoidRound {
+            round: 1,
+            remove_helper: true,
+        };
+        assert_eq!(aggregator(&ledger), Ok(void));
+
+        let held = ledger.task.as_mut().unwrap();
+        (held.settled, held.voided, held.removed_helpers) = (1, 1, 1);
+        ledger.rounds.insert(1, mirrored(&shaped, ROUND_VOID, 0));
+        assert_eq!(aggregator(&ledger), Ok(Step::OpenRound(2)));
+
+        // A site owes nothing for it.
+        let me = run.wallets[0];
+        ledger.enrollments.insert(0, enrolled(me));
+        let site = owed(Party::Site(0), &me, &run, &ledger, &Notes::default());
+        assert!(!matches!(
+            site,
+            Ok(Step::Ack(1)) | Ok(Step::Claim(1)) | Err(_)
+        ));
     }
 
     #[test]

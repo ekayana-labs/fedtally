@@ -10,7 +10,7 @@ use fedtally_core::keys::Identity;
 use fedtally_core::merkle;
 use fedtally_ledger::client::{self, ProofPart, TaskTerms};
 use fedtally_ledger::state::{
-    DEMAND_DISCRIMINATOR, DemandLayout, MAX_STATUS_BITS, ROUND_FINAL, TASK_SPACE,
+    DEMAND_DISCRIMINATOR, DemandLayout, MAX_STATUS_BITS, ROUND_FINAL, ROUND_VOID, TASK_SPACE,
 };
 use fedtally_node::NodeError;
 use fedtally_node::observer::{self, ObserverConfig};
@@ -358,8 +358,9 @@ impl Anchor {
                 // not read again.
                 while self.cursor < latest {
                     let done = snapshot.rounds.get(&self.cursor).is_none_or(|round| {
-                        round.state == ROUND_FINAL
-                            && (!round.cohort.has(index) || round.claimed.has(index))
+                        round.state == ROUND_VOID
+                            || round.state == ROUND_FINAL
+                                && (!round.cohort.has(index) || round.claimed.has(index))
                     });
                     if !done {
                         break;
@@ -484,7 +485,7 @@ impl Anchor {
         // the next one is under way, unless it keeps its spool.
         for (i, log) in self.run.view().rounds.iter().enumerate().rev().take(2) {
             let number = i as u32 + 1;
-            if self.held.contains(&number) {
+            if self.held.contains(&number) || log.voided {
                 continue;
             }
             match vault.prefetch(number, log) {
@@ -757,6 +758,13 @@ impl Anchor {
                 let ix = client::demand_answer(&me, &task, round, address);
                 ("demand_answer", Some(round), ix)
             }
+            Step::VoidRound {
+                round: number,
+                remove_helper,
+            } => {
+                let ix = client::void_round(&view.aggregator, &task, number, remove_helper);
+                ("void_round", Some(number), ix)
+            }
             Step::CloseRound(number) => {
                 let ix = client::round_close(&view.aggregator, &task, number);
                 ("round_close", Some(number), ix)
@@ -781,7 +789,7 @@ impl Anchor {
             }
         };
         self.ledger.send(what, round, ix, ceiling)?;
-        if let Step::Settle(number) = step {
+        if let Step::Settle(number) | Step::VoidRound { round: number, .. } = step {
             self.prune(number);
         }
         Ok(())

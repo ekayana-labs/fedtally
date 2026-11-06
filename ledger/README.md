@@ -100,7 +100,7 @@ Some behaviour worth knowing before writing a client:
   settles only once none is open. The first dispute to prove fraud ends the
   task, and the others on that round then close with their bonds returned.
 - A fraud proof needs the vectors, so anyone refused a leaf during the challenge window can demand it. Anyone holding the leaf answers, with the proof a dispute takes. The answer pays a fee of 50,000 lamports, about the cost of its transactions, so withholding earns nothing, and the rest of the bond returns at the close. If nobody answers by the deadline, the round becomes Fraud and the aggregator's stake goes to the challenger. Deadlines on a round queue at least 64 slots apart, so a burst of demands can't outrun an honest aggregator. A demand holds the round open until it closes, and an answered one lets its challenger open a dispute over that leaf past the window.
-- An aggregator therefore has to keep every round's vectors until the round settles. Run it with `--keep-spool`. Its anchor deletes a round's folder once it has settled.
+- An aggregator therefore has to keep every round's vectors until the round settles. Run it with `--keep-spool`. Its anchor deletes a round's folder once it has settled or been given up.
 - A wrong leaf can be proven with the rest of a vector missing, so a watcher that holds that leaf of every vector disputes it at once. Getting a whole withheld chunk still means one demand per leaf. Each holds a bond and rent until it closes, so a plan that may be anchored should use small chunks, and a long enough window for it.
 - `publish` refuses a task whose `stall_slots` is not longer than its
   `challenge_slots`.
@@ -200,7 +200,7 @@ steps, so it can be stopped and started at any point.
 | Role | Sends |
 | --- | --- |
 | `publisher` | `publish` with the plan's terms and the stakes given, and `withdraw` once the task is over. It stays until every share is claimed or expired, and sends `round_close` itself for an expired round. |
-| `aggregator` | `back`, then per round `open_round`, `commit_root` and `post_aggregate` as the log reaches them, and `settle` after every ack and the window. `demand_answer` for any demand, from its spool. `round_close` once a round is spent, the last one at the very end. `abort` if the log was aborted, and also if the log has been over for `stall_slots` and a site's `ack` or enrollment still hasn't come, since it would otherwise wait for good. `stall_slots` should exceed the plan's phase timeouts in slots, since anyone can abort past it. `withdraw` at the end. |
+| `aggregator` | `back`, then per round `open_round`, `commit_root` and `post_aggregate` as the log reaches them, and `settle` after every ack and the window. `demand_answer` for any demand, from its spool. `void_round` for a round the log gave up. `round_close` once a round is spent, the last one at the very end. `abort` if the log was aborted, and also if the log has been over for `stall_slots` and a site's `ack` or enrollment still hasn't come, since it would otherwise wait for good. `stall_slots` should exceed the plan's phase timeouts in slots, since anyone can abort past it. `withdraw` at the end. |
 | `site` | `enroll` with the digest of its Join record. `ack` for a round it acknowledged in its own log, and only while the ledger holds that round's roots. `claim` for each final round, and `withdraw` at the end. |
 | `watcher` | Nothing while rounds add up. It is not in the plan, so the aggregator has to name it with `--watcher`. It fetches each round's vectors, checks them against the ledger's roots and adds them up. For a wrong leaf it sends `buffer_init`, `dispute_open`, then `buffer_write` and `dispute_leaf` for every part, and `dispute_close`. Refused a vector, it keeps the chunks it can check and adds up those it holds of every vector. Halfway through the window it sends `demand_open` for the leaves it still can't fetch, those missing from the fewest vectors first, and `demand_close` when that's settled. It stops asking once it has a wrong leaf. It also sends `revoke_check` for a site the log has revoked, again until the bit lands. |
 | `issuer` | `status_init` and `revoke`, for its own lists in the log, up to 80,000 bits. |
@@ -234,6 +234,9 @@ cargo test -p fedtally-chain --test validator -- --ignored --nocapture
 
 ## What it does not do
 
+- A site that goes silent only on the ledger, having acknowledged in the log,
+  still stalls the task until someone aborts it. Retries and removals follow the
+  log, which can only give up a round before its seal.
 - Rewards and stakes are lamports. There are no token rewards.
 - A dispute is over one leaf, and a challenger has one dispute per round at
   a time. Different challengers dispute a round side by side.

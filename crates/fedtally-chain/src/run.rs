@@ -30,11 +30,18 @@ pub struct RoundLog {
     pub active: Vec<usize>,
     pub aggregate: Option<Digest>,
     pub acks: BTreeSet<u16>,
+    /// Given up before its seal.
+    pub voided: bool,
+    /// Given up because a helper was removed.
+    pub removed_helper: bool,
 }
 
 impl RoundLog {
     /// Nothing the log can still add would change this round.
     fn is_settled(&self) -> bool {
+        if self.voided {
+            return true;
+        }
         match (&self.committed, &self.posted) {
             (Some(committed), Some(_)) => committed
                 .cohort
@@ -218,8 +225,9 @@ impl Run {
         };
         let settled = view.rounds.iter().take_while(|r| r.is_settled()).count();
         view.rounds.truncate(settled);
-        for state in &replay.rounds[settled..] {
+        for (at, state) in replay.rounds.iter().enumerate().skip(settled) {
             let narrow = |site: &usize| *site as u16;
+            let next = replay.rounds.get(at + 1);
             view.rounds.push(RoundLog {
                 committed: replay.committed(state.round),
                 posted: replay.posted(state.round),
@@ -235,6 +243,9 @@ impl Run {
                 active: state.active.clone(),
                 aggregate: state.outcome.as_ref().map(|outcome| outcome.aggregate),
                 acks: state.acks.iter().map(narrow).collect(),
+                voided: state.voided,
+                removed_helper: state.voided
+                    && next.is_some_and(|next| next.active.len() < state.active.len()),
             });
         }
     }
