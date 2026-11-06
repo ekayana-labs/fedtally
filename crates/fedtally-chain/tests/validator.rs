@@ -21,7 +21,7 @@ use std::time::{Duration, Instant};
 use fedtally_chain::ledger::{self, Ledger, RoundView, Sent, Sink, TaskView};
 use fedtally_chain::program::client;
 use fedtally_chain::program::state::{
-    ENROLLMENT_SPACE, ROUND_FINAL, ROUND_FRAUD, SITE_WITHDRAWN, TASK_ABORTED, TASK_FINISHED,
+    ENROLLMENT_SPACE, ROUND_FRAUD, SITE_WITHDRAWN, TASK_ABORTED, TASK_FINISHED,
 };
 use fedtally_chain::rpc::Rpc;
 use fedtally_chain::run::Run;
@@ -651,13 +651,15 @@ fn honest(runtime: &tokio::runtime::Runtime, validator: &Validator, price: Optio
     assert_eq!(task.state, TASK_FINISHED);
     assert_eq!((task.round, task.settled), (ROUNDS, ROUNDS));
     assert_eq!((task.owed, task.stake_held), (0, 0));
-    let last = running.round(ROUNDS).unwrap();
     let outcome = replay.rounds[ROUNDS as usize - 1].outcome.as_ref().unwrap();
-    assert_eq!(last.state, ROUND_FINAL);
-    assert_eq!(last.next_model, outcome.model.0);
-    assert_eq!(last.acked, last.cohort);
-    assert_eq!(last.claimed, last.cohort);
-    // Earlier rounds, once paid out, are closed and their rent is back.
+    assert_eq!(task.model, outcome.model.0);
+    // Every round is paid out and closed, and its rent is back.
+    for number in 1..=ROUNDS {
+        assert!(
+            running.round(number).is_none(),
+            "round {number} is still open"
+        );
+    }
     assert!(running.was_sent("settle").is_some());
 
     let costs = costs(&running);
@@ -755,7 +757,7 @@ fn withheld(runtime: &tokio::runtime::Runtime, validator: &Validator) {
         (task.state, task.fraud, task.stake_held),
         (TASK_ABORTED, true, 0)
     );
-    assert_eq!(running.round(1).unwrap().state, ROUND_FRAUD);
+    assert!(running.round(1).is_none(), "its rent was not returned");
     let costs = costs(&running);
     let paid = fees_of(&costs, &running.watcher);
     assert_eq!(

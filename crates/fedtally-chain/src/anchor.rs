@@ -300,6 +300,16 @@ impl Anchor {
                 };
                 self.task_rent = Some(rent);
                 snapshot.task_rent = rent;
+                if !task.is_open() && task.owed > 0 {
+                    let numbers: Vec<u32> = (1..=latest).collect();
+                    let addresses: Vec<[u8; 32]> =
+                        numbers.iter().map(|number| round_at(*number)).collect();
+                    let accounts = rpc.accounts(&addresses)?;
+                    for (number, account) in numbers.into_iter().zip(accounts) {
+                        let round = ledger::round(account.as_ref(), helpers);
+                        snapshot.rounds.extend(round.map(|round| (number, round)));
+                    }
+                }
             }
             Party::Aggregator if latest > 0 => {
                 let numbers: Vec<u32> = (self.cursor..=latest).collect();

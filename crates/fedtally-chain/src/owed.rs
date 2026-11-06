@@ -5,8 +5,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use fedtally_ledger::client::ProofPart;
 use fedtally_ledger::state::{
-    LEAF_LEN, ROUND_COLLECTING, ROUND_COMMITTED, ROUND_FINAL, ROUND_FRAUD, ROUND_POSTED,
-    SITE_REVOKED, SITE_WITHDRAWN, TASK_ABORTED, TASK_FINISHED,
+    CLAIM_WINDOWS, LEAF_LEN, ROUND_COLLECTING, ROUND_COMMITTED, ROUND_FINAL, ROUND_FRAUD,
+    ROUND_POSTED, SITE_REVOKED, SITE_WITHDRAWN, TASK_ABORTED, TASK_FINISHED,
 };
 use thiserror::Error;
 
@@ -141,6 +141,9 @@ pub enum Wait {
     Window(u64),
     /// The run goes on and nothing is due.
     Run,
+    /// Rounds are left that can't be closed yet: shares not claimed, or a
+    /// dispute still open.
+    Claims,
     /// The ledger's round is not the one this site acknowledged in its log.
     Refusing {
         round: u32,
@@ -296,6 +299,21 @@ fn disputable(task: &TaskView, round: &RoundView, slot: u64) -> bool {
     round.state == ROUND_POSTED && (round.disputes > 0 || slot < window_end(task, round))
 }
 
+/// Whether `round_close` takes this round now.
+fn closable(task: &TaskView, number: u32, round: &RoundView, slot: u64) -> bool {
+    let released = !task.is_open() && task.stake_held == 0;
+    if number >= task.round && !released {
+        return false;
+    }
+    match round.state {
+        ROUND_FINAL => {
+            let window = task.challenge_slots.saturating_mul(CLAIM_WINDOWS);
+            round.claimed == round.cohort || slot >= round.settled_slot.saturating_add(window)
+        }
+        _ => round.disputes == 0,
+    }
+}
+
 fn known<'a>(
     task: &'a Option<TaskView>,
     run: &RunView,
@@ -330,9 +348,21 @@ fn publisher(run: &RunView, ledger: &Snapshot) -> Result<Step, Divergence> {
         .task_rent
         .saturating_add(task.owed)
         .saturating_add(task.stake_held);
-    Ok(match task.lamports > locked {
-        true => Step::WithdrawPublisher,
-        false => Step::Done,
+    if task.lamports > locked {
+        return Ok(Step::WithdrawPublisher);
+    }
+    if task.owed == 0 {
+        return Ok(Step::Done);
+    }
+    // What sites never claim comes back once their rounds are closed. The
+    // aggregator gets the rent, so it would do this too, but it may be gone.
+    let expired = ledger
+        .rounds
+        .iter()
+        .find(|(number, round)| closable(task, **number, round, ledger.slot));
+    Ok(match expired {
+        Some((number, _)) => Step::CloseRound(*number),
+        None => Step::Wait(Wait::Claims),
     })
 }
 
@@ -369,10 +399,11 @@ fn aggregator(run: &RunView, ledger: &Snapshot) -> Result<Step, Divergence> {
     if ledger.buffer.is_some() {
         return Ok(Step::CloseBuffer);
     }
-    let paid_out = ledger.rounds.iter().find(|(number, round)| {
-        **number < task.round && round.state == ROUND_FINAL && round.claimed == round.cohort
-    });
-    if let Some((number, _)) = paid_out {
+    let spent = ledger
+        .rounds
+        .iter()
+        .find(|(number, round)| closable(task, **number, round, ledger.slot));
+    if let Some((number, _)) = spent {
         return Ok(Step::CloseRound(*number));
     }
     match task.state {
@@ -386,7 +417,12 @@ fn aggregator(run: &RunView, ledger: &Snapshot) -> Result<Step, Divergence> {
                 _ => Step::WithdrawAggregator,
             });
         }
-        TASK_FINISHED | TASK_ABORTED => return Ok(Step::Done),
+        TASK_FINISHED | TASK_ABORTED => {
+            return Ok(match ledger.rounds.is_empty() {
+                true => Step::Done,
+                false => Step::Wait(Wait::Claims),
+            });
+        }
         _ => {}
     }
     if !task.backed {
@@ -816,6 +852,10 @@ mod tests {
         assert_eq!(decide(Party::Publisher, &run, &ledger), withdraw);
         // Rent, unclaimed rewards and the aggregator's stake are not the publisher's.
         ledger.task.as_mut().unwrap().lamports = 300 + 100 + 500;
+        let waiting = Ok(Step::Wait(Wait::Claims));
+        assert_eq!(decide(Party::Publisher, &run, &ledger), waiting);
+        ledger.task.as_mut().unwrap().owed = 0;
+        ledger.task.as_mut().unwrap().lamports = 300 + 500;
         assert_eq!(decide(Party::Publisher, &run, &ledger), Ok(Step::Done));
     }
 
@@ -903,6 +943,9 @@ mod tests {
         (held.round, held.settled, held.state) = (2, 2, TASK_FINISHED);
         assert_eq!(aggregator(&run, &ledger), Ok(Step::WithdrawAggregator));
         ledger.task.as_mut().unwrap().stake_held = 0;
+        let unclaimed = Ok(Step::Wait(Wait::Claims));
+        assert_eq!(aggregator(&run, &ledger), unclaimed);
+        ledger.rounds.clear();
         assert_eq!(aggregator(&run, &ledger), Ok(Step::Done));
     }
 
@@ -963,7 +1006,11 @@ mod tests {
         ledger.rounds.get_mut(&1).unwrap().disputes = 1;
         assert_eq!(aggregator(&ledger), Ok(Step::Wait(Wait::Dispute)));
         ledger.task.as_mut().unwrap().fraud = true;
-        assert_eq!(aggregator(&ledger), Ok(Step::Done));
+        let holding = Ok(Step::Wait(Wait::Claims));
+        ledger.task.as_mut().unwrap().stake_held = 0;
+        assert_eq!(aggregator(&ledger), holding);
+        ledger.rounds.get_mut(&1).unwrap().disputes = 0;
+        assert_eq!(aggregator(&ledger), Ok(Step::CloseRound(1)));
     }
 
     fn enrolled(wallet: [u8; 32]) -> EnrollmentView {
@@ -1417,5 +1464,57 @@ mod tests {
         round.state = ROUND_COMMITTED;
         assert_eq!(differences(&round, &log), [Differs::Cohort]);
         assert_eq!(differences(&round, &RoundLog::default()), []);
+    }
+
+    #[test]
+    fn a_share_nobody_claims_expires_and_the_last_round_closes_at_the_end() {
+        let (run, mut ledger) = watched();
+        ledger.rounds.clear();
+        ledger.task_rent = 0;
+        let log = run.round(1).unwrap().clone();
+        let mut unclaimed = mirrored(&log, ROUND_FINAL, 50);
+        unclaimed.settled_slot = 100;
+        ledger.rounds.insert(1, unclaimed);
+        let deadline = 100 + WINDOW * CLAIM_WINDOWS;
+        let held = ledger.task.as_mut().unwrap();
+        (held.round, held.settled, held.owed) = (2, 1, 40);
+        held.lamports = 40;
+        let at = |slot, state, stake| {
+            let mut ledger = ledger.clone();
+            ledger.slot = slot;
+            let held = ledger.task.as_mut().unwrap();
+            (held.state, held.stake_held) = (state, stake);
+            ledger
+        };
+        let notes = Notes::default();
+        let by = |party, ledger: &Snapshot| owed(party, &[5; 32], &run, ledger, &notes);
+        let close = Ok(Step::CloseRound(1));
+
+        assert_ne!(
+            by(Party::Aggregator, &at(deadline - 1, TASK_OPEN, 500)),
+            close
+        );
+        assert_eq!(by(Party::Aggregator, &at(deadline, TASK_OPEN, 500)), close);
+
+        // Over, but a share is still in time: nobody can finish yet.
+        let early = at(deadline - 1, TASK_FINISHED, 0);
+        let waiting = Ok(Step::Wait(Wait::Claims));
+        assert_eq!(by(Party::Aggregator, &early), waiting);
+        assert_eq!(by(Party::Publisher, &early), waiting);
+        // The publisher closes it itself if the aggregator is gone.
+        assert_eq!(by(Party::Publisher, &at(deadline, TASK_FINISHED, 0)), close);
+
+        // The latest round waits for the stake, and for its disputes.
+        let mut last = at(10, TASK_ABORTED, 500);
+        last.task.as_mut().unwrap().round = 1;
+        last.task.as_mut().unwrap().owed = 0;
+        last.rounds.insert(1, mirrored(&log, ROUND_COMMITTED, 50));
+        assert_eq!(by(Party::Aggregator, &last), Ok(Step::WithdrawAggregator));
+        last.task.as_mut().unwrap().stake_held = 0;
+        assert_eq!(by(Party::Aggregator, &last), close);
+        last.rounds.get_mut(&1).unwrap().disputes = 1;
+        assert_eq!(by(Party::Aggregator, &last), waiting);
+        last.rounds.clear();
+        assert_eq!(by(Party::Aggregator, &last), Ok(Step::Done));
     }
 }
