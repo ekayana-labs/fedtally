@@ -1368,6 +1368,38 @@ fn a_plan_whose_rounds_would_not_fit_a_round_number_is_refused() {
 }
 
 #[test]
+fn a_removed_helper_no_longer_counts_as_an_operator() {
+    let dac = identity();
+    let mut run = Run::with_spare_helper({
+        let dac = dac.clone();
+        move |plan| {
+            certified(&dac, true)(plan);
+            for (h, serial) in [(1, 12), (2, 13)] {
+                let did = plan.helpers[h].did.clone();
+                plan.helpers[h].credentials =
+                    vec![credential(&dac, "Certification", &did, None, serial)];
+            }
+        }
+    });
+    run.status(list(&dac, &[], NOW - 5));
+    run.join(0..3);
+    run.open_and_close_all_at(1, 1);
+    run.mask_sum_by(0, 1);
+    run.mask_sum_by(1, 1);
+    run.remove(1, 2);
+
+    // Helper 2 is out, so losing its credential changes nothing.
+    run.status(list(&dac, &[13], NOW));
+    assert_eq!(run.replay.phase, Phase::Collecting);
+
+    // A helper still in the run ends it, as ever.
+    run.status(list(&dac, &[12, 13], NOW + 1));
+    assert_eq!(run.replay.phase, Phase::Aborted);
+    let reason = run.replay.abort.clone().unwrap();
+    assert!(reason.contains(&run.spare[0].did_string()), "{reason}");
+}
+
+#[test]
 fn a_silent_helper_is_removed_and_the_round_is_redone_without_it() {
     let mut run = Run::losing_a_helper_in_masking(|_| {});
     run.remove(1, 2);
