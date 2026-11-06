@@ -1338,6 +1338,27 @@ fn a_plan_that_needs_every_helper_says_nothing_new() {
 }
 
 #[test]
+fn a_site_trusting_only_a_removed_helper_is_no_longer_covered() {
+    let run = Run::with_spare_helper(|_| {});
+    let site = run.site(0);
+    let grant = |helper: usize| {
+        let terms = Terms {
+            trusted_helpers: vec![run.plan.helpers[helper].did.clone()],
+            ..run.terms()
+        };
+        let expires = timestamp(NOW + 3600);
+        let grant = admission::grant(site.as_ref(), &run.sponsor.did(), &terms, expires).unwrap();
+        vec![grant.bytes().to_vec()]
+    };
+    let covers = |proofs: &[Vec<u8>], active: &[usize]| {
+        admission::grants_cover_helpers(&run.plan_id, &run.plan, proofs, active).is_ok()
+    };
+    assert!(covers(&grant(2), &[0, 1, 2]));
+    assert!(!covers(&grant(2), &[0, 1]));
+    assert!(covers(&grant(1), &[0, 1]));
+}
+
+#[test]
 fn a_silent_helper_is_removed_and_the_round_is_redone_without_it() {
     let mut run = Run::losing_a_helper_in_masking(|_| {});
     run.remove(1, 2);

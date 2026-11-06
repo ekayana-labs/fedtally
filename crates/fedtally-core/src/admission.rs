@@ -89,6 +89,28 @@ fn privacy_argument(plan: &Plan) -> Ipld {
     ]))
 }
 
+/// Whether a site's own grants still hold for the helpers left in the run. The
+/// invocation names the plan's helpers, so checking it alone wouldn't notice
+/// that the one a site trusts has been removed.
+pub fn grants_cover_helpers(
+    plan_id: &Digest,
+    plan: &Plan,
+    proofs: &[Vec<u8>],
+    active: &[usize],
+) -> Result<(), AdmissionError> {
+    let mut args = arguments(plan_id, plan);
+    let helpers = active.iter().map(|h| text(&plan.helpers[*h].did)).collect();
+    args.insert("helpers".to_owned(), Ipld::List(helpers));
+    let args = Ipld::Map(args);
+    for proof in proofs {
+        let grant = Delegation::decode(proof).map_err(|e| AdmissionError::Token(e.to_string()))?;
+        grant.policy().check(&args).map_err(|_| {
+            AdmissionError::Refused("a grant does not cover the helpers left in the run".into())
+        })?;
+    }
+    Ok(())
+}
+
 /// The conditions a site puts on its participation.
 #[derive(Clone, Debug, Default)]
 pub struct Terms {
