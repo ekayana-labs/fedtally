@@ -124,7 +124,8 @@ A score for one site is a statistic about that site, which is what site-level pr
 - **The split can't be chosen by a site.** It comes from the head after Close. The aggregator signs Close, so it can influence the split by choosing who is in the cohort.
 - **It takes three groups.** Two groups always tie, since each scores the same inner product against the other. With no reference data, two groups can't show which of them is right.
 - **A score can be gamed in two ways we know of.** A free rider can replay last round's update, which points the same way as everyone else's new one and scores above zero. And one dataset split across two identities in different groups gains the inner product of its two halves. Credentials and stake price the second, and nothing prices the first.
-- A scoring plan can't be anchored on the ledger yet: the program charges a round at its cohort and pays equal shares.
+- **On a ledger, the sites vouch for the shares.** A score is an inner product over the whole model, so the program can't work it out. The aggregator posts a root over what each cohort member is owed: site, its group's share and its group's size. A site acknowledges only if that root is the one its own log gives, and a round settles only once its whole cohort has acknowledged. A site claims by showing its entry against the root, and the program works out the lamports from the reward it holds. So wrong shares stop the round rather than cost the aggregator its stake, since a fraud proof covers the aggregate and not the scores. And a cohort that agrees on a bad root can only split one round's reward among themselves, since a round never pays out more than that.
+- **The ledger charges what the log charges.** A scored round costs the budget at its smallest group, and a task has to be able to afford a group of the minimum size before a round opens.
 
 ## Admission
 

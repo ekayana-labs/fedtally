@@ -102,7 +102,7 @@ The difference underneath is that **the log is the only control state**. Aggrega
 
 - Anything but FedAvg, FedProx and FedAdam over float32 and float64 tensors. No asynchronous rounds or personalisation.
 - A norm bound that stops a backdoor. The proof leaves room for noise, so it passes updates several times the clip, enough for one dishonest site of 16 to backdoor a small model in [our tests](docs/benchmarks.md). Above a limit between a thousand and a hundred thousand parameters, depending on the privacy terms, it also holds a site only to a multiple of its bound, and a site working with a helper can pass anything.
-- Scores for single sites, which would contradict the privacy guarantee. Scored groups can't be anchored on the ledger yet, which pays equal shares.
+- Scores for single sites, which would contradict the privacy guarantee.
 - Run on a public cluster. The ledger program and its clients are tested on a local validator only.
 - Dropouts after a round is closed, by default. A site that drops then must return within the deadline or the run stops, and any single site or helper can stop a run this way. A private plan can opt in to a few retries without the silent site, at a privacy cost set out in [docs/design.md](docs/design.md).
 - Failover. The aggregator is one process, and restarting it is the only recovery. A helper needs durable disk. A plan can set `min_helpers` to survive losing a helper, by redoing the round without it, at a cost in how many helpers can collude. See [docs/design.md](docs/design.md).

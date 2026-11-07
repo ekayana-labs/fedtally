@@ -132,10 +132,6 @@ impl Plan {
             .iter()
             .map(|site| wallet(site))
             .collect::<Result<Vec<_>, _>>()?;
-        if self.scoring.is_some() {
-            // The program charges a round at its cohort and pays equal shares.
-            return Err("a scoring plan cannot be anchored yet".into());
-        }
         let shape = self.shape();
         if !shape.aligned() {
             return Err(

@@ -345,7 +345,7 @@ fn start_losing(
             *victim.lock().unwrap() = Some(helper.abort_handle());
         }
     }
-    let sites: Vec<_> = (0..SITES)
+    let sites: Vec<_> = (0..fed.plan.sites.len())
         .map(|i| {
             let trainer = Box::new(Towards(i as f32, gate.clone()));
             let site = run_site(fed.site_config(i, &addr), trainer);
@@ -482,7 +482,7 @@ impl Running {
     fn anchors(&self, runtime: &tokio::runtime::Runtime) -> (Anchors, Arc<AtomicBool>) {
         let mut anchors = Anchors::new();
         anchors.start("publisher", self.publisher());
-        for site in 0..SITES {
+        for site in 0..self.fed.plan.sites.len() {
             anchors.start("site", self.site(site));
         }
         let watcher = anchors.start("watcher", self.watching(runtime));
@@ -1097,6 +1097,75 @@ fn with_validator(scenario: fn(&tokio::runtime::Runtime, &Validator)) {
         .build()
         .unwrap();
     scenario(&runtime, &Validator::start());
+}
+
+/// Six sites in groups of two, with updates that score differently. Each is
+/// paid what the shares in the log give it.
+fn scored(runtime: &tokio::runtime::Runtime, validator: &Validator) {
+    let mut running = start_with(runtime, validator, None, 25, false, |options| {
+        options.sites = 6;
+        options.min_cohort = 4;
+        options.scoring = Some(2);
+        options.privacy = Some(Request {
+            epsilon: 8.0,
+            delta: 1e-5,
+            clip: 1.0,
+            colluding: 0,
+        });
+    });
+    let sites = running.fed.sites.clone();
+    let before: Vec<u64> = sites.iter().map(|site| running.balance(site)).collect();
+    let (mut anchors, _) = running.anchors(runtime);
+    anchors.start("aggregator", running.aggregator());
+    anchors.finish();
+    let aggregator = running.aggregator.take().unwrap();
+    let replay = runtime.block_on(aggregator).unwrap().unwrap();
+
+    let task = running.task().unwrap();
+    assert_eq!(task.state, TASK_FINISHED);
+    assert_eq!(task.score_group, 2);
+    assert_eq!(task.spent, replay.spent);
+    assert_eq!((task.owed, task.stake_held), (0, 0));
+    assert!(running.was_sent("claim").is_some());
+
+    let posted: Vec<_> = (1..=ROUNDS)
+        .map(|number| replay.posted(number).unwrap())
+        .collect();
+    assert!(
+        posted
+            .iter()
+            .any(|p| p.shares.iter().any(|s| s.share != p.shares[0].share)),
+        "every group scored the same, so this shows nothing"
+    );
+    let costs = costs(&running);
+    let rent = running.rpc().rent_exempt_minimum(ENROLLMENT_SPACE).unwrap();
+    for (index, (site, before)) in sites.iter().zip(before).enumerate() {
+        let owed: u64 = posted
+            .iter()
+            .map(|p| {
+                let (part, _) = p.share_of(index as u16).unwrap();
+                REWARD * u64::from(part.share) / 1_000_000 / u64::from(part.members)
+            })
+            .sum();
+        let paid = fees_of(&costs, site);
+        assert_eq!(
+            running.balance(site),
+            before + owed - rent - paid,
+            "site {index} ends with its stake and its parts, less the rent and the fees"
+        );
+    }
+    for number in 1..=ROUNDS {
+        assert!(
+            running.round(number).is_none(),
+            "round {number} is still open"
+        );
+    }
+}
+
+#[test]
+#[ignore = "needs solana-test-validator and the built program"]
+fn scored_groups_are_paid_what_the_log_gives_them() {
+    with_validator(scored);
 }
 
 #[test]
