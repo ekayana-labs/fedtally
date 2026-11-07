@@ -784,6 +784,7 @@ mod tests {
                 model: Digest([3; 32]),
                 retries: 0,
                 min_helpers: 0,
+                score_group: 0,
             },
             publisher: [4; 32],
             aggregator: [5; 32],
@@ -835,6 +836,8 @@ mod tests {
                 aggregate_root: Digest([tag + 40; 32]),
                 next_model: Digest([tag + 50; 32]),
                 seal_head: Digest([tag + 60; 32]),
+                shares: Vec::new(),
+                shares_root: [0; 32],
             }),
             vectors: cohort
                 .iter()

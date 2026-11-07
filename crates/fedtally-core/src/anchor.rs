@@ -34,6 +34,8 @@ pub struct Terms {
     pub retries: u32,
     /// The fewest helpers the run may carry on with, or 0 if it needs them all.
     pub min_helpers: u8,
+    /// The fewest sites a scored group may hold, or 0 if shares are equal.
+    pub score_group: u16,
 }
 
 /// What the aggregator posts once a round's cohort is fixed.
@@ -57,6 +59,43 @@ pub struct Posted {
     pub aggregate_root: Digest,
     pub next_model: Digest,
     pub seal_head: Digest,
+    /// What each cohort member is owed in a scored round, in cohort order, and
+    /// the root over it. Empty and zero otherwise.
+    pub shares: Vec<SiteShare>,
+    pub shares_root: Hash,
+}
+
+/// A cohort member's part of a scored round's reward.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SiteShare {
+    pub site: u16,
+    /// Its group's share of the reward, in millionths.
+    pub share: u32,
+    /// How many sites its group holds, who split that share alike.
+    pub members: u16,
+}
+
+impl SiteShare {
+    fn leaf(&self) -> [u8; 8] {
+        let mut bytes = [0u8; 8];
+        bytes[..2].copy_from_slice(&self.site.to_le_bytes());
+        bytes[2..6].copy_from_slice(&self.share.to_le_bytes());
+        bytes[6..].copy_from_slice(&self.members.to_le_bytes());
+        bytes
+    }
+}
+
+fn shares_tree(shares: &[SiteShare]) -> Vec<Hash> {
+    shares.iter().map(|s| merkle::leaf(&s.leaf())).collect()
+}
+
+impl Posted {
+    /// A site's part of the round and the path that shows it in `shares_root`.
+    pub fn share_of(&self, site: u16) -> Option<(SiteShare, Vec<Hash>)> {
+        let position = self.shares.iter().position(|s| s.site == site)?;
+        let path = merkle::path(shares_tree(&self.shares), position);
+        Some((self.shares[position], path))
+    }
 }
 
 /// The Solana address of a party: its Ed25519 key. A party with another kind
@@ -124,6 +163,7 @@ impl Plan {
             model: self.init_model,
             retries: self.retries,
             min_helpers: u8::try_from(self.min_helpers).map_err(|_| "too many helpers")?,
+            score_group: narrow("sites", self.scoring.map_or(0, |s| s.group) as usize)?,
         })
     }
 }
@@ -157,14 +197,40 @@ impl Replay {
 
     /// What follows once the round is sealed.
     pub fn posted(&self, round: u32) -> Option<Posted> {
+        let plan = self.plan()?;
         let state = self.rounds.get(round.checked_sub(1)? as usize)?;
         let (outcome, seal) = (state.outcome.as_ref()?, state.seal.as_ref()?);
+        let mut shares = Vec::new();
+        for (group, members) in plan
+            .groups(&state.close_head, state.included.len())
+            .iter()
+            .enumerate()
+        {
+            for position in members {
+                shares.push((
+                    *position,
+                    SiteShare {
+                        site: u16::try_from(state.included[*position]).ok()?,
+                        share: *seal.shares.get(group)?,
+                        members: u16::try_from(members.len()).ok()?,
+                    },
+                ));
+            }
+        }
+        shares.sort_unstable_by_key(|(position, _)| *position);
+        let shares: Vec<SiteShare> = shares.into_iter().map(|(_, share)| share).collect();
+        let shares_root = match shares.is_empty() {
+            true => [0; 32],
+            false => merkle::root(shares_tree(&shares)),
+        };
         Some(Posted {
             round,
             mask_roots: state.masks.values().copied().collect(),
             aggregate_root: outcome.aggregate,
             next_model: outcome.model,
             seal_head: seal.head,
+            shares,
+            shares_root,
         })
     }
 }
@@ -197,5 +263,36 @@ mod tests {
             assert_eq!(merkle::climb(leaf, position as u64, 7, &path), Some(top));
         }
         assert_ne!(inputs_root(&roots[..6]), top);
+    }
+
+    #[test]
+    fn every_share_can_be_shown_in_the_shares_root() {
+        let shares: Vec<SiteShare> = [0u16, 3, 4, 7, 9]
+            .iter()
+            .map(|site| SiteShare {
+                site: *site,
+                share: 200_000,
+                members: 2,
+            })
+            .collect();
+        let posted = Posted {
+            round: 1,
+            mask_roots: Vec::new(),
+            aggregate_root: Digest::default(),
+            next_model: Digest::default(),
+            seal_head: Digest::default(),
+            shares_root: merkle::root(shares_tree(&shares)),
+            shares: shares.clone(),
+        };
+        for (position, share) in shares.iter().enumerate() {
+            let (found, path) = posted.share_of(share.site).unwrap();
+            assert_eq!(found, *share);
+            let leaf = merkle::leaf(&share.leaf());
+            assert_eq!(
+                merkle::climb(leaf, position as u64, 5, &path),
+                Some(posted.shares_root)
+            );
+        }
+        assert!(posted.share_of(1).is_none());
     }
 }
