@@ -8,6 +8,15 @@ use crate::error::LedgerError;
 /// The fixed-point scale of a cost, 40 fractional bits.
 const SCALE_BITS: u32 = 40;
 
+/// A group's share of a round's reward is in millionths of it.
+pub const WHOLE_SHARE: u32 = 1_000_000;
+
+/// The size of the smallest group a cohort splits into, with groups of at least
+/// `group` sites. The log splits a cohort the same way.
+pub fn smallest_group(cohort: u16, group: u16) -> u16 {
+    cohort / (cohort / group.max(1)).max(1)
+}
+
 /// What a round with a cohort of `cohort` sites costs:
 /// `floor((s * s << 40) / (2 * noise * (cohort - colluding))) + 2`.
 ///

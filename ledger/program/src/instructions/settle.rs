@@ -1,7 +1,8 @@
 //! Settle a posted round once its whole cohort has acknowledged it and the
 //! challenge window has passed without an open dispute. Anyone may call it.
 //! The reward is split evenly and whatever does not divide stays with the
-//! task for the publisher.
+//! task for the publisher. When the task scores groups the whole reward is
+//! owed, and each site claims its part by showing it against the shares root.
 //!
 //! The accounts are `[task, round]`.
 
@@ -39,14 +40,19 @@ pub fn process(accounts: &mut [AccountView], args: &[u8]) -> ProgramResult {
         LedgerError::ChallengeWindowOpen,
     )?;
 
+    let reward = task.reward_per_round();
     let members = round.cohort_count() as u64;
-    let share = task
-        .reward_per_round()
-        .checked_div(members)
-        .ok_or(ProgramError::InvalidAccountData)?;
+    let (share, total) = if task.is_scored() {
+        (reward, reward)
+    } else {
+        let share = reward
+            .checked_div(members)
+            .ok_or(ProgramError::InvalidAccountData)?;
+        (share, share * members)
+    };
     let owed = task
         .owed()
-        .checked_add(share * members)
+        .checked_add(total)
         .ok_or(ProgramError::ArithmeticOverflow)?;
 
     round.set_share(share);

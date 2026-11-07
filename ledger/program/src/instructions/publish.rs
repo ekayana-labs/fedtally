@@ -37,6 +37,7 @@ struct Terms<'a> {
     stall_slots: u64,
     retries: u32,
     min_helpers: u8,
+    score_group: u16,
 }
 
 impl<'a> Terms<'a> {
@@ -65,6 +66,7 @@ impl<'a> Terms<'a> {
             stall_slots: r.u64()?,
             retries: r.u32()?,
             min_helpers: r.u8()?,
+            score_group: r.u16()?,
         };
         r.finish()?;
         Ok(terms)
@@ -111,16 +113,27 @@ impl<'a> Terms<'a> {
             self.stall_slots > self.challenge_slots,
             LedgerError::InvalidWindows,
         )?;
+        // A plan's log refuses scoring without masks, or with redos.
+        if self.score_group > 0 {
+            require(
+                self.score_group >= 2
+                    && self.score_group <= self.min_cohort
+                    && self.helpers > 0
+                    && self.retries == 0
+                    && self.min_helpers == 0,
+                LedgerError::InvalidScoring,
+            )?;
+        }
+        // The fewest sites whose noise can stand behind one released sum.
+        let fewest = match self.score_group {
+            0 => self.min_cohort,
+            group => group,
+        };
         require(
-            self.noise == 0 || self.colluding < self.min_cohort,
+            self.noise == 0 || self.colluding < fewest,
             LedgerError::InvalidCollusion,
         )?;
-        let cost = privacy::round_cost(
-            self.sensitivity,
-            self.noise,
-            self.colluding,
-            self.min_cohort,
-        )?;
+        let cost = privacy::round_cost(self.sensitivity, self.noise, self.colluding, fewest)?;
         require(self.budget >= cost, LedgerError::BudgetTooSmall)?;
         let redos = self.redos()?;
         if redos > 0 {
@@ -185,6 +198,7 @@ pub fn process(accounts: &mut [AccountView], args: &[u8]) -> ProgramResult {
     task.set_stall_slots(terms.stall_slots);
     task.set_retries(terms.retries);
     task.set_min_helpers(terms.min_helpers);
+    task.set_score_group(terms.score_group);
     task.set_last_change(current_slot()?);
     Ok(())
 }

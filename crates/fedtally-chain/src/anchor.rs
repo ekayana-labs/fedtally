@@ -135,6 +135,7 @@ fn task_terms(run: &RunView, stakes: &Stakes) -> TaskTerms {
         stall_slots: stakes.stall_slots,
         retries: terms.retries,
         min_helpers: terms.min_helpers,
+        score_group: terms.score_group,
     }
 }
 
@@ -631,6 +632,7 @@ impl Anchor {
                     &posted.aggregate_root.0,
                     &posted.next_model.0,
                     &posted.seal_head.0,
+                    &posted.shares_root,
                 );
                 ("post_aggregate", Some(number), ix)
             }

@@ -406,6 +406,7 @@ fn publish_arguments_are_laid_out_in_specification_order() {
         stall_slots: 20,
         retries: 0,
         min_helpers: 0,
+        score_group: 0,
     };
     let mut expected = vec![129, 177, 182, 160, 184, 224, 219, 5];
     for fill in 1..=4u8 {
@@ -423,6 +424,7 @@ fn publish_arguments_are_laid_out_in_specification_order() {
     }
     expected.extend(0u32.to_le_bytes());
     expected.push(0);
+    expected.extend([0, 0]);
     assert_eq!(client::publish(&[0; 32], &terms).data, expected);
 }
 

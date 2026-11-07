@@ -50,12 +50,19 @@ pub fn process(accounts: &mut [AccountView], args: &[u8]) -> ProgramResult {
                     current_slot()? >= window_end(round.settled_slot(), window)?,
                     LedgerError::SharesUnclaimed,
                 )?;
-                let owed = task
-                    .owed()
-                    .checked_sub(round.share() * unclaimed)
-                    .ok_or(ProgramError::InsufficientFunds)?;
-                task.set_owed(owed);
             }
+            // A scored round's `share` is what is left of it, shares that
+            // don't divide evenly included.
+            let dropped = if task.is_scored() {
+                round.share()
+            } else {
+                round.share() * unclaimed
+            };
+            let owed = task
+                .owed()
+                .checked_sub(dropped)
+                .ok_or(ProgramError::InsufficientFunds)?;
+            task.set_owed(owed);
         } else {
             require(round.disputes() == 0, LedgerError::RoundDisputed)?;
         }

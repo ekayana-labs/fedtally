@@ -84,6 +84,10 @@ ledger_errors! {
     SharesUnclaimed = 6054, "A share of the round is still unclaimed";
     InvalidRetries = 6055, "The budget or the plan's terms do not allow these redos";
     NoRetriesLeft = 6056, "The task has given up as many rounds as it may";
+    InvalidScoring = 6057, "A scored group needs two sites, a masked run and no redos";
+    InvalidSharesRoot = 6058, "A scored round posts a root over its shares, any other round none";
+    InvalidShareProof = 6059, "The share does not lead to the root the round posted";
+    ShareTooLarge = 6060, "The share is more than the round has left to pay";
 }
 
 impl LedgerError {

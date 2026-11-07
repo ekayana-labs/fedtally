@@ -1,6 +1,7 @@
 //! Post the round's result: the root of each helper's mask vector, the root
 //! of the aggregate, the digest of the model it leads to and the head of the
-//! log at the seal. The challenge window starts here.
+//! log at the seal, and when the task scores groups the root over what each
+//! cohort member is owed. The challenge window starts here.
 //!
 //! The accounts are `[aggregator, task, round]`.
 
@@ -21,6 +22,7 @@ pub fn process(accounts: &mut [AccountView], args: &[u8]) -> ProgramResult {
     let aggregate_root: &Digest = r.array()?;
     let next_model: &Digest = r.array()?;
     let seal_head: &Digest = r.array()?;
+    let shares_root: &Digest = r.array()?;
     r.finish()?;
 
     let (mut task, mut round) = aggregator_step(accounts)?;
@@ -33,11 +35,17 @@ pub fn process(accounts: &mut [AccountView], args: &[u8]) -> ProgramResult {
         LedgerError::InvalidMaskRoots,
     )?;
 
+    require(
+        task.is_scored() == (*shares_root != [0; DIGEST_LEN]),
+        LedgerError::InvalidSharesRoot,
+    )?;
+
     let slot = current_slot()?;
     round.mask_roots_mut()[..mask_roots.len()].copy_from_slice(mask_roots);
     *round.aggregate_root_mut() = *aggregate_root;
     *round.next_model_mut() = *next_model;
     *round.seal_head_mut() = *seal_head;
+    *round.shares_root_mut() = *shares_root;
     round.set_posted_slot(slot);
     round.set_state(ROUND_POSTED);
     task.set_last_change(slot);

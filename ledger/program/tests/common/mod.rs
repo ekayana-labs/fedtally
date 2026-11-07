@@ -288,6 +288,7 @@ pub struct Posting {
     pub aggregate_root: Hash,
     pub next_model: Hash,
     pub seal_head: Hash,
+    pub shares_root: Hash,
 }
 
 impl Posting {
@@ -301,6 +302,7 @@ impl Posting {
             aggregate_root: tag(3),
             next_model: tag(4),
             seal_head: tag(5),
+            shares_root: [0; 32],
         }
     }
 }
@@ -352,6 +354,7 @@ impl Run {
             stall_slots: 1_000,
             retries: 0,
             min_helpers: 0,
+            score_group: 0,
         };
         adjust(&mut terms);
         let task = client::task(&key(&publisher), &terms.plan_id);
@@ -453,6 +456,7 @@ impl Run {
             &posting.aggregate_root,
             &posting.next_model,
             &posting.seal_head,
+            &posting.shares_root,
         )
     }
 

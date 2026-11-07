@@ -47,6 +47,37 @@ impl Report {
     }
 }
 
+/// A site's claim in a scored round where all of `sites` sites took part.
+fn scored_claim(sites: u16) -> u64 {
+    let mut run = Run::in_world(World::fixed(), sites as usize, |t| {
+        (t.score_group, t.rounds) = (2, 1);
+    });
+    run.publish();
+    run.back();
+    let cohort: Vec<u16> = (0..sites).collect();
+    for index in &cohort {
+        run.enroll(*index);
+    }
+    let leaf = |site: u16| {
+        let mut bytes = [0u8; 8];
+        bytes[..2].copy_from_slice(&site.to_le_bytes());
+        bytes[2..6].copy_from_slice(&1_000u32.to_le_bytes());
+        bytes[6..].copy_from_slice(&2u16.to_le_bytes());
+        fedtally_core::merkle::leaf(&bytes)
+    };
+    let tree: Vec<Hash> = cohort.iter().map(|site| leaf(*site)).collect();
+    let posting = Posting {
+        shares_root: fedtally_core::merkle::root(tree.clone()),
+        ..Posting::filler(1, 1)
+    };
+    let number = run.settle_round_with(&cohort, &posting);
+    let site = sites - 1;
+    let path = fedtally_core::merkle::path(tree, site as usize);
+    let wallet = key(&run.sites[site as usize]);
+    let claim = client::claim_scored(&wallet, &run.task, site, number, 1_000, 2, &path);
+    run.world.run(claim, &[&run.sites[site as usize]])
+}
+
 /// A sampled task of `sites` sites with its first round open and only the
 /// invited sites enrolled. Returns the cost of committing the invited.
 fn sampled_commit(sites: usize, sample: u16) -> u64 {
@@ -396,5 +427,8 @@ fn demand_and_round_close_units() {
     println!(
         "demand_open {open}, demand_answer {answer}, demand_close {close}, round_close {round}"
     );
+    let (few, many) = (scored_claim(16), scored_claim(1024));
+    println!("claim (scored) cohort 16: {few}, cohort 1024: {many}");
+    assert!(few < 10_000 && many < 10_000);
     assert!(open < 20_000 && answer < 20_000 && close < 5_000 && round < 5_000);
 }

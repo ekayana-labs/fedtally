@@ -172,6 +172,7 @@ fn publish(trained: &Trained) -> Anchored {
         stall_slots: 10 * WINDOW,
         retries: 0,
         min_helpers: 0,
+        score_group: 0,
     };
     let task = client::task(&key(&publisher), &terms.plan.0);
     world.run(
@@ -235,6 +236,7 @@ impl Anchored {
                 &aggregate_root.0,
                 &posted.next_model.0,
                 &posted.seal_head.0,
+                &posted.shares_root,
             ),
             &[&self.aggregator],
         );

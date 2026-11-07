@@ -192,6 +192,8 @@ pub struct TaskTerms {
     pub retries: u32,
     /// The fewest helpers a run may carry on with, or 0 if it needs them all.
     pub min_helpers: u8,
+    /// The fewest sites a scored group may hold, or 0 if shares are equal.
+    pub score_group: u16,
 }
 
 /// One status list bit that revokes an enrollment when it is set.
@@ -254,6 +256,7 @@ pub fn publish(publisher: &[u8; 32], terms: &TaskTerms) -> Instruction {
     .raw(&terms.stall_slots.to_le_bytes())
     .raw(&terms.retries.to_le_bytes())
     .raw(&[terms.min_helpers])
+    .raw(&terms.score_group.to_le_bytes())
 }
 
 /// Stakes on a task as its aggregator.
@@ -348,7 +351,9 @@ pub fn commit_root(
         .raw(threshold)
 }
 
-/// Posts the round's mask roots, one per helper, and its result.
+/// Posts the round's mask roots, one per helper, and its result. `shares_root`
+/// is zero unless the task scores groups.
+#[allow(clippy::too_many_arguments)]
 pub fn post_aggregate(
     aggregator: &[u8; 32],
     task: &[u8; 32],
@@ -357,12 +362,14 @@ pub fn post_aggregate(
     aggregate_root: &Digest,
     next_model: &Digest,
     seal_head: &Digest,
+    shares_root: &Digest,
 ) -> Instruction {
     aggregator_step(crate::ix::POST_AGGREGATE, aggregator, task, number)
         .items(mask_roots)
         .raw(aggregate_root)
         .raw(next_model)
         .raw(seal_head)
+        .raw(shares_root)
 }
 
 /// Acknowledges round `number` as site `index`.
@@ -407,6 +414,26 @@ pub fn claim(wallet: &[u8; 32], task: &[u8; 32], index: u16, number: u32) -> Ins
             AccountMeta::writable(round(task, number), false),
         ],
     )
+}
+
+/// Claims the part of a scored round that site `index` is owed: its group's
+/// share in millionths and the group's size, with the path to the shares root.
+pub fn claim_scored(
+    wallet: &[u8; 32],
+    task: &[u8; 32],
+    index: u16,
+    number: u32,
+    share: u32,
+    members: u16,
+    path: &[Digest],
+) -> Instruction {
+    let mut ix = claim(wallet, task, index, number)
+        .raw(&share.to_le_bytes())
+        .raw(&members.to_le_bytes());
+    for sibling in path {
+        ix = ix.raw(sibling);
+    }
+    ix
 }
 
 /// Opens a dispute over leaf `leaf_index` of round `number`.

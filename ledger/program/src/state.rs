@@ -18,7 +18,7 @@ use core::{
 
 use pinocchio::{error::ProgramError, Address};
 
-use crate::{hash::Digest, privacy};
+use crate::{error::LedgerError, hash::Digest, privacy};
 
 /// The most sites a task can have.
 pub const MAX_SITES: usize = 1024;
@@ -277,6 +277,8 @@ account! {
         min_helpers / set_min_helpers: u8,
         /// Helpers removed so far.
         removed_helpers / set_removed_helpers: u8,
+        /// The fewest sites a scored group may hold, or 0 if shares are equal.
+        score_group / set_score_group: u16,
     }
 }
 
@@ -321,13 +323,17 @@ account! {
         posted_slot / set_posted_slot: u64,
         /// The latest deadline any demand on this round has been given.
         demand_tail / set_demand_tail: u64,
-        /// Lamports per cohort member, set when the round settles.
+        /// Set when the round settles: lamports per cohort member or, when the
+        /// task scores groups, lamports its sites can still claim.
         share / set_share: u64,
         /// The slot the round settled at. Shares can be claimed for a while from then.
         settled_slot / set_settled_slot: u64,
         cohort / cohort_mut: [u8; 128],
         acked / acked_mut: [u8; 128],
         claimed / claimed_mut: [u8; 128],
+        /// The root over what each cohort member is owed, when the task scores
+        /// groups. Zero otherwise.
+        shares_root / shares_root_mut: [u8; 32],
     }
 }
 
@@ -405,7 +411,7 @@ account! {
 
 // Clients read these layouts, so a field that moves fails the build.
 const _: () = {
-    assert!(TASK_SPACE == 571);
+    assert!(TASK_SPACE == 573);
     assert!(offset_of!(TaskLayout, sites) == 13);
     assert!(offset_of!(TaskLayout, publisher) == 33);
     assert!(offset_of!(TaskLayout, coords) == 193);
@@ -414,7 +420,7 @@ const _: () = {
     assert!(ENROLLMENT_SPACE == 261);
     assert!(offset_of!(EnrollmentLayout, task) == 13);
     assert!(offset_of!(EnrollmentLayout, status_refs) == 117);
-    assert!(ROUND_SPACE == 788);
+    assert!(ROUND_SPACE == 820);
     assert!(offset_of!(RoundLayout, task) == 20);
     assert!(offset_of!(RoundLayout, posted_slot) == 372);
     assert!(offset_of!(RoundLayout, cohort) == 404);
@@ -455,9 +461,40 @@ impl<D: Deref<Target = [u8]>> Task<D> {
         (self.coords() - before).min(LEAF_COORDS) as u16
     }
 
-    /// The privacy cost of a round with a cohort of `cohort` sites.
+    pub fn is_scored(&self) -> bool {
+        self.score_group() > 0
+    }
+
+    /// The privacy cost of a round with a cohort of `cohort` sites. A scored
+    /// round pays for its smallest group, since a site's data moves that
+    /// group's sum only.
     pub fn round_cost(&self, cohort: u16) -> Result<u64, ProgramError> {
-        privacy::round_cost(self.sensitivity(), self.noise(), self.colluding(), cohort)
+        let group = self.score_group();
+        let fewest = if group > 0 {
+            privacy::smallest_group(cohort, group)
+        } else {
+            cohort
+        };
+        privacy::round_cost(self.sensitivity(), self.noise(), self.colluding(), fewest)
+    }
+
+    /// The most a round can cost, whatever cohort commits it.
+    pub fn dearest_round(&self) -> Result<u64, ProgramError> {
+        let fewest = match self.score_group() {
+            0 => self.min_cohort(),
+            group => group,
+        };
+        privacy::round_cost(self.sensitivity(), self.noise(), self.colluding(), fewest)
+    }
+
+    /// What a site with this part of a scored round's reward is paid: its
+    /// group's share in millionths, split among the group's members.
+    pub fn scored_pay(&self, share: u32, members: u16) -> Result<u64, ProgramError> {
+        let whole = u128::from(privacy::WHOLE_SHARE) * u128::from(members);
+        let pay = (u128::from(self.reward_per_round()) * u128::from(share))
+            .checked_div(whole)
+            .ok_or(LedgerError::InvalidShareProof)?;
+        u64::try_from(pay).map_err(|_| LedgerError::ShareTooLarge.into())
     }
 }
 

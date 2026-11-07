@@ -36,9 +36,8 @@ pub fn process(accounts: &mut [AccountView], args: &[u8]) -> ProgramResult {
             task.settled() == task.round(),
             LedgerError::PreviousRoundNotFinal,
         )?;
-        // The smallest cohort is the dearest, so a round that cannot afford
-        // it could never commit.
-        let cost = task.round_cost(task.min_cohort())?;
+        // A round that cannot afford the dearest cohort might never commit.
+        let cost = task.dearest_round()?;
         let affordable = task
             .spent()
             .checked_add(cost)

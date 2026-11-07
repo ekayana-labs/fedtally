@@ -33,9 +33,9 @@ bitmap is 128 bytes, and bit `i` is bit `i % 8` of byte `i / 8`.
 
 | Account | Seeds | Bytes | Holds |
 | --- | --- | --- | --- |
-| Task | `"task", publisher, plan_id` | 571 | The terms, the budget spent, the latest round and model, the enrolled and revoked bitmaps. Above its rent: the reward escrow and the aggregator's stake. |
+| Task | `"task", publisher, plan_id` | 573 | The terms, the budget spent, the latest round and model, the enrolled and revoked bitmaps. Above its rent: the reward escrow and the aggregator's stake. |
 | Enrollment | `"site", task, index u16` | 261 | A site's wallet, index, status, admission digest and up to 4 status references. Above its rent: the site's stake. |
-| Round | `"round", task, round u32` | 788 | State, the number of open disputes, beacon, cohort, the committed and posted roots, the acked and claimed bitmaps, the share and when it settled. |
+| Round | `"round", task, round u32` | 820 | State, the number of open disputes, beacon, cohort, the committed and posted roots, the acked and claimed bitmaps, the share and when it settled, and the shares root when the task scores groups. |
 | Dispute | `"dispute", task, round u32, challenger` | 2275 | Challenger, disputed leaf, deadline, the running sum and the aggregate leaf. Above its rent: the bond. |
 | Demand | `"demand", task, challenger, round u32 + kind + position u16 + leaf u64` | 101 + proof | Who asks for which leaf, the deadline, and the proof once it is answered. Above its rent: the bond. |
 | StatusList | `"status", issuer, list u32` | 57 + bits / 8 | Issuer, size, sequence and the bitmap, up to 80,000 bits. |
@@ -55,12 +55,12 @@ Errors are custom codes from 6000, listed in
 | `publish` | publisher (signer), task, system program | the terms, in the order of `client::TaskTerms` | Creates the task and deposits `rounds * reward_per_round`. |
 | `back` | aggregator (signer), task, system program | | Deposits the aggregator's stake, once. |
 | `enroll` | wallet (signer), task, enrollment, system program | index u16, path list, admission, status reference list | Checks the wallet's path in the sites root, creates the enrollment and deposits the site's stake. |
-| `open_round` | aggregator (signer), task, round, system program | | Opens the next round and fixes its beacon. Needs budget for a round at the minimum cohort. |
-| `commit_root` | aggregator (signer), task, round | cohort bitmap, inputs root, close head, threshold | Checks the cohort and, in a sampling task, the tickets. Charges the budget for the cohort's size. |
-| `post_aggregate` | aggregator (signer), task, round | mask root list, aggregate root, next model, seal head | Posts the round. The challenge window starts. |
+| `open_round` | aggregator (signer), task, round, system program | | Opens the next round and fixes its beacon. Needs budget for the dearest round the task can have: at the minimum cohort, or at the group size when it scores groups. |
+| `commit_root` | aggregator (signer), task, round | cohort bitmap, inputs root, close head, threshold | Checks the cohort and, in a sampling task, the tickets. Charges the budget for the cohort's size, or for its smallest group when the task scores groups. |
+| `post_aggregate` | aggregator (signer), task, round | mask root list, aggregate root, next model, seal head, shares root | Posts the round. The challenge window starts. The shares root is zero unless the task scores groups. |
 | `ack` | wallet (signer), enrollment, round | round u32, seal head | Records a cohort member's acknowledgement. |
-| `settle` | task, round | | After every ack and the challenge window, without an open dispute: finalizes the round and sets the shares. |
-| `claim` | wallet (signer), enrollment, task, round | | Pays a cohort member its share of a final round. |
+| `settle` | task, round | | After every ack and the challenge window, without an open dispute: finalizes the round and sets the shares. When the task scores groups, the whole reward becomes owed. |
+| `claim` | wallet (signer), enrollment, task, round | when the task scores groups: share u32, group size u16, path | Pays a cohort member its share of a final round. A scored claim shows its part against the shares root, and a round never pays more than its reward. |
 | `dispute_open` | challenger (signer), task, round, dispute, system program | round u32, leaf index u64 | Opens the challenger's dispute over one leaf and takes the bond. |
 | `dispute_leaf` | challenger (signer), task, round, dispute, buffer | kind u8, position u16 | Checks one part of the proof from the buffer and folds it into the dispute. |
 | `dispute_close` | task, round, dispute, challenger, aggregator | | Decides the dispute and closes it. |
@@ -147,19 +147,21 @@ address. The binary is about 129 KB.
 
 | Instruction | CU |
 | --- | --- |
-| `publish` | 2429 |
+| `publish` | 2439 |
 | `back` | 1722 |
-| `enroll` (16 sites, 2 status references) | 3371 |
-| `open_round` | 3043 |
-| `commit_root` (no sampling, cohort of 16) | 2928 |
-| `commit_root` (sampling 8 of 16) | 5397 |
-| `commit_root` (sampling 32 of 128) | 22269 |
-| `commit_root` (sampling 64 of 1024) | 159001 |
-| `post_aggregate` (1 helper) | 974 |
+| `enroll` (16 sites, 2 status references) | 3409 |
+| `open_round` | 3044 |
+| `commit_root` (no sampling, cohort of 16) | 2929 |
+| `commit_root` (sampling 8 of 16) | 5398 |
+| `commit_root` (sampling 32 of 128) | 22270 |
+| `commit_root` (sampling 64 of 1024) | 159002 |
+| `post_aggregate` (1 helper) | 1006 |
 | `ack` | 751 |
-| `settle` | 920 |
-| `claim` | 1075 |
-| `dispute_open` | 2851 |
+| `settle` | 919 |
+| `claim` | 1086 |
+| `claim` (scored, cohort of 16) | 2443 |
+| `claim` (scored, cohort of 1024) | 4342 |
+| `dispute_open` | 2857 |
 | `dispute_leaf` (input of 16, full leaf, 2-level path) | 6189 |
 | `dispute_leaf` (mask, full leaf, 2-level path) | 4926 |
 | `dispute_leaf` (aggregate, full leaf, 2-level path) | 4019 |
@@ -170,7 +172,7 @@ address. The binary is about 129 KB.
 | `demand_open` | 3043 |
 | `demand_answer` (input of 3, full leaf) | 3344 |
 | `demand_close` (answered) | 1205 |
-| `round_close` | 3935 |
+| `round_close` | 4021 |
 | `void_round` | 879 |
 | `status_init` (80000 bits) | 2739 |
 | `status_init` (64 bits) | 2033 |

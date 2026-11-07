@@ -53,23 +53,23 @@ const PATIENCE: Duration = Duration::from_secs(600);
 /// The README's LiteSVM figure for each instruction, for the nearest case it
 /// measures.
 const LITESVM: &[(&str, u64)] = &[
-    ("round_close", 3935),
+    ("round_close", 4021),
     ("void_round", 879),
-    ("publish", 2429),
+    ("publish", 2439),
     ("back", 1722),
-    ("enroll", 3371),
-    ("open_round", 3043),
-    ("commit_root", 2928),
-    ("post_aggregate", 974),
+    ("enroll", 3409),
+    ("open_round", 3044),
+    ("commit_root", 2929),
+    ("post_aggregate", 1006),
     ("ack", 751),
-    ("settle", 920),
-    ("claim", 1075),
+    ("settle", 919),
+    ("claim", 1086),
     ("withdraw (site)", 750),
     ("withdraw (aggregator)", 471),
     ("withdraw (publisher)", 652),
     ("buffer_init", 2322),
     ("buffer_write", 427),
-    ("dispute_open", 2851),
+    ("dispute_open", 2857),
     ("dispute_leaf (input)", 6189),
     ("dispute_leaf (mask)", 4926),
     ("dispute_leaf (aggregate)", 4019),
@@ -971,6 +971,7 @@ fn post_wrong_aggregate_after(running: &Running, price: Option<u64>, voided: u32
         &wrong.0,
         &posted.next_model.0,
         &posted.seal_head.0,
+        &posted.shares_root,
     );
     send("post_aggregate", post, 10_000);
 }

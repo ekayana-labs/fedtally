@@ -21,6 +21,13 @@ pub fn count(bits: &[u8]) -> u32 {
     words(bits).map(u64::count_ones).sum()
 }
 
+/// How many bits below `index` are set, which is the place of bit `index`
+/// among the set bits.
+pub fn rank(bits: &[u8], index: usize) -> u32 {
+    let (byte, bit) = (index / 8, index % 8);
+    count(&bits[..byte]) + (bits[byte] & ((1u8 << bit) - 1)).count_ones()
+}
+
 /// Whether every bit set in `bits` is also set in `of`.
 pub fn is_subset(bits: &SiteBitmap, of: &SiteBitmap) -> bool {
     words(bits).zip(words(of)).all(|(a, b)| a & !b == 0)
