@@ -103,6 +103,7 @@ pub enum Differs {
     AggregateRoot,
     NextModel,
     SealHead,
+    SharesRoot,
 }
 
 impl std::fmt::Display for Differs {
@@ -116,6 +117,7 @@ impl std::fmt::Display for Differs {
             Differs::AggregateRoot => "aggregate root",
             Differs::NextModel => "next model",
             Differs::SealHead => "seal head",
+            Differs::SharesRoot => "shares root",
         })
     }
 }
@@ -262,6 +264,7 @@ pub fn differences(round: &RoundView, log: &RoundLog) -> Vec<Differs> {
         );
         check(round.next_model == posted.next_model.0, Differs::NextModel);
         check(round.seal_head == posted.seal_head.0, Differs::SealHead);
+        check(round.shares_root == posted.shares_root, Differs::SharesRoot);
     }
     found
 }
@@ -287,6 +290,7 @@ pub fn terms_differ(task: &TaskView, run: &RunView) -> Option<&'static str> {
         (task.budget == terms.budget, "budget"),
         (task.retries == terms.retries, "retries"),
         (task.min_helpers == terms.min_helpers, "minimum helpers"),
+        (task.score_group == terms.score_group, "scored group size"),
     ];
     checks.iter().find(|(same, _)| !same).map(|(_, what)| *what)
 }
@@ -871,6 +875,7 @@ mod tests {
             round.aggregate_root = posted.aggregate_root.0;
             round.next_model = posted.next_model.0;
             round.seal_head = posted.seal_head.0;
+            round.shares_root = posted.shares_root;
             round.posted_slot = posted_slot;
         }
         round
@@ -1542,8 +1547,14 @@ mod tests {
         round.cohort = [0, 2].into_iter().collect();
         round.mask_roots = vec![[0; 32]];
         round.seal_head = [0; 32];
+        round.shares_root = [9; 32];
         let found = differences(&round, &log);
-        let all = [Differs::Cohort, Differs::MaskRoots, Differs::SealHead];
+        let all = [
+            Differs::Cohort,
+            Differs::MaskRoots,
+            Differs::SealHead,
+            Differs::SharesRoot,
+        ];
         assert_eq!(found, all);
         // A committed round holds nothing yet where the log has the result.
         round.state = ROUND_COMMITTED;

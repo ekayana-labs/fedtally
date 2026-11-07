@@ -659,7 +659,25 @@ impl Anchor {
                 ("ack", Some(number), ix)
             }
             Step::Claim(number) => {
-                let ix = client::claim(&me, &task, index?, number);
+                let index = index?;
+                let log = view.round(number).and_then(|log| log.posted.as_ref());
+                let ix = match view.terms.score_group {
+                    0 => client::claim(&me, &task, index, number),
+                    _ => {
+                        let (share, path) = log
+                            .and_then(|posted| posted.share_of(index))
+                            .ok_or_else(behind)?;
+                        client::claim_scored(
+                            &me,
+                            &task,
+                            index,
+                            number,
+                            share.share,
+                            share.members,
+                            &path,
+                        )
+                    }
+                };
                 ("claim", Some(number), ix)
             }
             Step::WithdrawSite => {

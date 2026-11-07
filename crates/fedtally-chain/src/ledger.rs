@@ -92,6 +92,7 @@ pub struct TaskView {
     pub voided: u32,
     pub min_helpers: u8,
     pub removed_helpers: u8,
+    pub score_group: u16,
     pub enrolled: Sites,
     pub revoked: Sites,
 }
@@ -120,6 +121,7 @@ pub struct RoundView {
     pub aggregate_root: [u8; 32],
     pub next_model: [u8; 32],
     pub seal_head: [u8; 32],
+    pub shares_root: [u8; 32],
     pub posted_slot: u64,
     pub settled_slot: u64,
     pub acked: Sites,
@@ -214,6 +216,7 @@ pub fn task(account: Option<&Account>) -> Option<TaskView> {
         voided: task.voided(),
         min_helpers: task.min_helpers(),
         removed_helpers: task.removed_helpers(),
+        score_group: task.score_group(),
         enrolled: Sites(*task.enrolled()),
         revoked: Sites(*task.revoked()),
     })
@@ -234,6 +237,7 @@ pub fn round(account: Option<&Account>, helpers: u8) -> Option<RoundView> {
         aggregate_root: *round.aggregate_root(),
         next_model: *round.next_model(),
         seal_head: *round.seal_head(),
+        shares_root: *round.shares_root(),
         posted_slot: round.posted_slot(),
         settled_slot: round.settled_slot(),
         acked: Sites(*round.acked()),
